@@ -1,0 +1,29 @@
+# Rust/Cargo build output
+/target/
+
+# Qt installation (installed via aqtinstall - not committed)
+/6.8.0/
+
+# Packaged distribution folder
+/dist/
+
+# Compiled QML cache files
+*.qmlc
+
+# Build / debug logs
+*.log
+build_*.txt
+smtc_log.txt
+.qmlls.ini
+
+# Windows debug symbols
+*.pdb
+
+# Editor / IDE
+.idea/
+.vscode/
+*.user
+
+# OS
+Thumbs.db
+.DS_Store

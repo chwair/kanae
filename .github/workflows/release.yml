@@ -1,0 +1,215 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  VERSION: ${{ github.ref_name }}
+
+jobs:
+  # ─────────────────────────────────────────────────────────────── Windows ──
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.0'
+          arch: win64_msvc2022_64
+          modules: qtshadertools
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-msvc
+
+      - name: Set QMAKE
+        shell: pwsh
+        run: |
+          $q = (where.exe qmake 2>$null | Select-Object -First 1).Trim()
+          echo "QMAKE=$q" >> $env:GITHUB_ENV
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item target\release\kanae.exe dist\
+          windeployqt6 `
+            --release `
+            --no-translations `
+            --no-system-d3d-compiler `
+            --no-compiler-runtime `
+            --qmldir qml `
+            dist\kanae.exe
+          Compress-Archive -Path dist\* -DestinationPath "kanae-windows-x64-$env:VERSION.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kanae-windows
+          path: kanae-windows-x64-${{ env.VERSION }}.zip
+
+  # ──────────────────────────────────────────────────────────────── macOS ──
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.0'
+          modules: qtshadertools
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Set QMAKE
+        run: echo "QMAKE=$(which qmake)" >> $GITHUB_ENV
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Package
+        run: |
+          # Minimal .app bundle structure
+          mkdir -p dist/Kanae.app/Contents/MacOS
+          cp target/release/kanae dist/Kanae.app/Contents/MacOS/kanae
+
+          cat > dist/Kanae.app/Contents/Info.plist << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+              "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleExecutable</key>      <string>kanae</string>
+            <key>CFBundleIdentifier</key>      <string>com.kanae.player</string>
+            <key>CFBundleName</key>             <string>Kanae</string>
+            <key>CFBundlePackageType</key>      <string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>$VERSION</string>
+            <key>NSHighResolutionCapable</key>  <true/>
+            <key>LSMinimumSystemVersion</key>   <string>12.0</string>
+          </dict></plist>
+          EOF
+
+          macdeployqt dist/Kanae.app -qmldir=qml
+          cd dist && zip -r --symlinks "../kanae-macos-${VERSION}.zip" Kanae.app
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kanae-macos
+          path: kanae-macos-${{ env.VERSION }}.zip
+
+  # ──────────────────────────────────────────────────────────────── Linux ──
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libdbus-1-dev \
+            libglib2.0-dev \
+            libfuse2 \
+            patchelf
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.0'
+          modules: qtshadertools
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Set QMAKE
+        run: echo "QMAKE=$(which qmake)" >> $GITHUB_ENV
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Package (AppImage)
+        env:
+          QMAKE: ${{ env.QMAKE }}
+        run: |
+          # Download linuxdeploy + Qt plugin
+          curl -Lo linuxdeploy \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          curl -Lo linuxdeploy-plugin-qt \
+            https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy linuxdeploy-plugin-qt
+
+          # AppDir skeleton
+          mkdir -p AppDir/usr/bin
+          mkdir -p AppDir/usr/share/applications
+          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+
+          cp target/release/kanae AppDir/usr/bin/
+
+          cat > AppDir/usr/share/applications/kanae.desktop << 'EOF'
+          [Desktop Entry]
+          Name=Kanae
+          Exec=kanae
+          Icon=kanae
+          Type=Application
+          Categories=AudioVideo;Player;
+          EOF
+
+          # Generate a minimal placeholder icon (Python is always available)
+          python3 - << 'PYEOF'
+          import struct, zlib
+
+          def make_png(w, h, r, g, b):
+              def chunk(tag, data):
+                  c = tag + data
+                  return struct.pack('>I', len(data)) + c + struct.pack('>I', zlib.crc32(c) & 0xFFFFFFFF)
+              raw = (b'\x00' + bytes([r, g, b, 255]) * w) * h
+              return (b'\x89PNG\r\n\x1a\n'
+                  + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0))
+                  + chunk(b'IDAT', zlib.compress(raw))
+                  + chunk(b'IEND', b''))
+
+          with open('AppDir/usr/share/icons/hicolor/256x256/apps/kanae.png', 'wb') as f:
+              f.write(make_png(256, 256, 30, 30, 60))
+          PYEOF
+
+          # Build AppImage
+          EXTRA_QT_MODULES="qml;quick;quickcontrols2;quicktemplates2;quicklayouts;quickshapes;network" \
+          QMAKE_EXECUTABLE="$QMAKE" \
+          ./linuxdeploy \
+            --appdir AppDir \
+            --plugin qt \
+            --output appimage
+
+          mv Kanae*.AppImage "kanae-linux-x86_64-${VERSION}.AppImage"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kanae-linux
+          path: kanae-linux-x86_64-${{ env.VERSION }}.AppImage
+
+  # ─────────────────────────────────────────────────────────────── Release ──
+  release:
+    needs: [build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            kanae-windows-x64-${{ env.VERSION }}.zip
+            kanae-macos-${{ env.VERSION }}.zip
+            kanae-linux-x86_64-${{ env.VERSION }}.AppImage
