@@ -1655,7 +1655,6 @@ fn play_local_file(
     }
 }
 
-#[cfg(target_os = "windows")]
 fn eject_drive(drive_path: &str) {
     #[cfg(target_os = "windows")]
     eject_drive_windows(drive_path);
