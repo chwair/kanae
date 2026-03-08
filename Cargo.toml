@@ -16,7 +16,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 souvlaki = "0.8.3"
 lofty = "0.22"
-symphonia = { version = "0.5", features = ["mp3", "aac", "flac", "vorbis", "opus", "pcm", "isomp4", "ogg", "aiff"] }
+symphonia = { version = "0.5", features = ["mp3", "aac", "flac", "vorbis", "pcm", "isomp4", "ogg", "aiff"] }
 rfd = "0.15"
 
 [target.'cfg(windows)'.dependencies]
