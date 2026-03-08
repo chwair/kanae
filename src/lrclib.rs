@@ -103,6 +103,26 @@ pub fn fetch_synced_lyrics(
 
     eprintln!("[lrclib] {} result(s) returned", results.len());
 
+    let mut results = results;
+
+    // Fallback: if the structured search returned nothing, retry with a free-text query.
+    if results.is_empty() && !artist_name.is_empty() {
+        let q = format!("{} {}", artist_name, track_name);
+        let fallback_url = format!(
+            "https://lrclib.net/api/search?q={}",
+            url_encode(&q),
+        );
+        eprintln!("[lrclib] no results — retrying with fallback query: GET {}", fallback_url);
+        results = match ureq::get(&fallback_url)
+            .header("User-Agent", USER_AGENT)
+            .call()
+        {
+            Ok(r) => r.into_body().read_json().unwrap_or_default(),
+            Err(e) => { eprintln!("[lrclib] fallback request failed: {}", e); vec![] }
+        };
+        eprintln!("[lrclib] fallback: {} result(s) returned", results.len());
+    }
+
     let candidates: Vec<&SearchResult> = results
         .iter()
         .filter(|r| {
@@ -121,14 +141,21 @@ pub fn fetch_synced_lyrics(
         return None;
     }
 
-    let best = candidates.iter().max_by(|a, b| {
-        let sa = score_result(a, track_name, artist_name, duration_secs);
-        let sb = score_result(b, track_name, artist_name, duration_secs);
-        sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
-    })?;
+    // Similarity is only used to choose between multiple candidates — a single
+    // result is always accepted regardless of how well it matches.
+    let best = if candidates.len() == 1 {
+        candidates[0]
+    } else {
+        candidates.iter().max_by(|a, b| {
+            let sa = score_result(a, track_name, artist_name, duration_secs);
+            let sb = score_result(b, track_name, artist_name, duration_secs);
+            sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+        })?
+    };
 
     eprintln!(
-        "[lrclib] best match: \"{}\" by \"{}\" (duration: {:?}s)",
+        "[lrclib] {} match: \"{}\" by \"{}\" (duration: {:?}s)",
+        if candidates.len() == 1 { "only" } else { "best" },
         best.track_name.as_deref().unwrap_or("?"),
         best.artist_name.as_deref().unwrap_or("?"),
         best.duration,

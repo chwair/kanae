@@ -15,6 +15,7 @@
 build_*.txt
 smtc_log.txt
 .qmlls.ini
+.cargo/config.toml
 
 # Windows debug symbols
 *.pdb

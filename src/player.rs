@@ -50,6 +50,8 @@ mod player_bridge {
         #[qproperty(bool, is_loading)]
         #[qproperty(QStringList, lyric_lines)]
         #[qproperty(QStringList, lyric_times)]
+        #[qproperty(bool, is_file_mode)]
+        #[qproperty(bool, is_single_file)]
         type PlayerController = super::PlayerControllerRust;
 
         #[qinvokable]
@@ -110,6 +112,22 @@ mod player_bridge {
         #[qinvokable]
         #[cxx_name = "initSmtc"]
         fn init_smtc(self: Pin<&mut Self>);
+
+        #[qinvokable]
+        #[cxx_name = "openFilesDialog"]
+        fn open_files_dialog(self: Pin<&mut Self>);
+
+        #[qinvokable]
+        #[cxx_name = "openFolderDialog"]
+        fn open_folder_dialog(self: Pin<&mut Self>);
+
+        #[qinvokable]
+        #[cxx_name = "ejectOrClose"]
+        fn eject_or_close(self: Pin<&mut Self>);
+
+        #[qinvokable]
+        #[cxx_name = "openDroppedPaths"]
+        fn open_dropped_paths(self: Pin<&mut Self>, urls: QStringList);
     }
 }
 
@@ -141,6 +159,8 @@ pub struct PlayerState {
     smtc_album:        String,
     smtc_album_artist: String,
     smtc_cover_url:    String,
+    is_file_mode: bool,
+    file_tracks: Vec<crate::file_player::LocalTrack>,
 }
 
 impl Default for PlayerState {
@@ -173,6 +193,8 @@ impl Default for PlayerState {
             smtc_album:        String::new(),
             smtc_album_artist: String::new(),
             smtc_cover_url:    String::new(),
+            is_file_mode: false,
+            file_tracks: Vec::new(),
         }
     }
 }
@@ -196,6 +218,8 @@ pub struct PlayerControllerRust {
     is_loading: bool,
     lyric_lines: QStringList,
     lyric_times: QStringList,
+    is_file_mode: bool,
+    is_single_file: bool,
 
     state: Arc<Mutex<PlayerState>>,
 }
@@ -221,6 +245,8 @@ impl Default for PlayerControllerRust {
             is_loading: false,
             lyric_lines: QStringList::default(),
             lyric_times: QStringList::default(),
+            is_file_mode: false,
+            is_single_file: false,
             state: Arc::new(Mutex::new(PlayerState::default())),
         }
     }
@@ -254,7 +280,12 @@ impl player_bridge::PlayerController {
         }
         
         self.as_mut().set_drive_list(list);
-        
+
+        // Don't auto-select or interact with drives while local files are playing.
+        if self.state.lock().unwrap().is_file_mode {
+            return;
+        }
+
         // Auto-select first drive with audio CD
         if auto_select_index >= 0 {
             self.as_mut().set_selected_drive_index(auto_select_index);
@@ -266,6 +297,10 @@ impl player_bridge::PlayerController {
     }
 
     pub fn select_drive(mut self: Pin<&mut Self>, index: i32) {
+        // Don't let drive selection interrupt local file playback.
+        if self.state.lock().unwrap().is_file_mode {
+            return;
+        }
         let drive_path = {
             let state = self.state.lock().unwrap();
             if index < 0 || index as usize >= state.drives.len() {
@@ -416,15 +451,18 @@ impl player_bridge::PlayerController {
     }
 
     pub fn load_track(mut self: Pin<&mut Self>, index: i32) {
-        let state_lock = self.state.lock().unwrap();
-        
-        if index < 0 || index as usize >= state_lock.tracks.len() {
-            return;
-        }
-        
-        let track_info = state_lock.tracks[index as usize].clone();
-        drop(state_lock);
-        
+        let (duration, _is_file) = {
+            let state = self.state.lock().unwrap();
+            if index < 0 { return; }
+            if state.is_file_mode {
+                if index as usize >= state.file_tracks.len() { return; }
+                (state.file_tracks[index as usize].duration_secs, true)
+            } else {
+                if index as usize >= state.tracks.len() { return; }
+                (state.tracks[index as usize].duration_seconds, false)
+            }
+        };
+
         self.as_mut().stop_playback_internal();
         {
             let mut state = self.state.lock().unwrap();
@@ -432,24 +470,24 @@ impl player_bridge::PlayerController {
             state.current_position.store(0u64, Ordering::Relaxed);
         }
         self.as_mut().set_current_track(index);
-        self.as_mut().set_total_time(track_info.duration_seconds);
+        self.as_mut().set_total_time(duration);
         self.as_mut().set_current_time(0.0);
         {
             let mut state = self.state.lock().unwrap();
-            let idx    = index as usize;
+            let idx     = index as usize;
             let title   = state.track_titles_plain.get(idx).cloned().unwrap_or_default();
             let raw_art = state.track_artists_plain.get(idx).cloned().unwrap_or_default();
             let artist  = if raw_art.is_empty() { state.smtc_album_artist.clone() } else { raw_art };
-            let album    = state.smtc_album.clone();
-            let cover    = state.smtc_cover_url.clone();
-            let duration = std::time::Duration::from_secs_f64(track_info.duration_seconds.max(0.0));
+            let album   = state.smtc_album.clone();
+            let cover   = state.smtc_cover_url.clone();
+            let dur     = std::time::Duration::from_secs_f64(duration.max(0.0));
             if let Some(ref mut h) = state.smtc_handle {
                 h.update(crate::smtc::SmtcUpdate::Metadata {
                     title,
                     artist,
                     album,
                     cover_url: if cover.is_empty() { None } else { Some(cover) },
-                    duration:  Some(duration),
+                    duration:  Some(dur),
                 });
                 h.update(crate::smtc::SmtcUpdate::Stopped);
             }
@@ -471,7 +509,43 @@ impl player_bridge::PlayerController {
         }
 
         let current_track = *self.as_ref().current_track();
-        
+
+        // File mode: decode local audio file instead of reading CD.
+        if self.state.lock().unwrap().is_file_mode {
+            let (file_path, stop_flag, start_offset, current_position, volume_arc,
+                 playback_ended_arc, heard_position_arc) = {
+                let state = self.state.lock().unwrap();
+                if current_track < 0 || (current_track as usize) >= state.file_tracks.len() {
+                    eprintln!("[file] invalid track index {}", current_track); return;
+                }
+                let file_path = state.file_tracks[current_track as usize].path.clone();
+                state.stop_playback.store(false, Ordering::Relaxed);
+                state.playback_ended.store(false, Ordering::Relaxed);
+                state.playback_disc_error.store(false, Ordering::Relaxed);
+                let offset = state.playback_start_offset;
+                state.heard_position.store(offset.to_bits(), Ordering::Relaxed);
+                (file_path, state.stop_playback.clone(), offset,
+                 state.current_position.clone(), state.volume.clone(),
+                 state.playback_ended.clone(), state.heard_position.clone())
+            };
+            let handle = thread::spawn(move || {
+                play_local_file(file_path, start_offset, stop_flag, volume_arc,
+                                heard_position_arc, current_position, playback_ended_arc);
+            });
+            self.state.lock().unwrap().playback_thread = Some(handle);
+            self.as_mut().set_is_playing(true);
+            {
+                let mut state = self.state.lock().unwrap();
+                let pos = std::time::Duration::from_secs_f64(
+                    f64::from_bits(state.heard_position.load(Ordering::Relaxed)).max(0.0)
+                );
+                if let Some(ref mut h) = state.smtc_handle {
+                    h.update(crate::smtc::SmtcUpdate::Playing { progress: pos });
+                }
+            }
+            return;
+        }
+
         // Extract needed data and release the CD reader handle so the thread can open its own
         let (drive_path, track_number, stop_flag, start_offset, current_position, volume_arc, playback_ended_arc, playback_error_arc, heard_position_arc) = {
             let mut state = self.state.lock().unwrap();
@@ -726,7 +800,7 @@ impl player_bridge::PlayerController {
                 // Re-open the CdReader now that the thread has released its exclusive handle
         {
             let mut state = self.state.lock().unwrap();
-            if state.cd_reader.is_none() {
+            if !state.is_file_mode && state.cd_reader.is_none() {
                 if let Some(path) = state.current_drive_path.clone() {
                     if let Ok(reader) = cd_reader::open_drive(&path) {
                         state.cd_reader = Some(reader);
@@ -844,6 +918,9 @@ impl player_bridge::PlayerController {
 
     pub fn check_drive(mut self: Pin<&mut Self>) {
         if *self.as_ref().is_playing() || *self.as_ref().is_loading() {
+            return;
+        }
+        if self.state.lock().unwrap().is_file_mode {
             return;
         }
         if self.state.lock().unwrap().disc_check_active.load(Ordering::Relaxed) {
@@ -1202,5 +1279,450 @@ impl player_bridge::PlayerController {
             }
             None => {}
         }
+    }
+
+    pub fn open_files_dialog(self: Pin<&mut Self>) {
+        let paths = rfd::FileDialog::new()
+            .add_filter("Audio", &["mp3", "flac", "ogg", "opus", "m4a", "aac", "wav", "aiff", "aif", "wma", "ape"])
+            .set_title("Open Audio Files")
+            .pick_files();
+        if let Some(paths) = paths {
+            let strs: Vec<String> = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+            // Single-file mode when exactly one file was chosen.
+            let is_single = strs.len() == 1;
+            self.load_local_tracks(strs, is_single);
+        }
+    }
+
+    pub fn open_folder_dialog(self: Pin<&mut Self>) {
+        let path = rfd::FileDialog::new()
+            .set_title("Open Folder")
+            .pick_folder();
+        if let Some(path) = path {
+            self.load_local_tracks(vec![path.to_string_lossy().into_owned()], false);
+        }
+    }
+
+    pub fn open_dropped_paths(mut self: Pin<&mut Self>, urls: QStringList) {
+        // Convert file:// URLs to local filesystem paths.
+        let paths: Vec<String> = (0..urls.len())
+            .filter_map(|i| {
+                let s = urls.get(i).map(|qs| qs.to_string())?;
+                let path = if let Some(p) = s.strip_prefix("file:///") {
+                    // Windows:  file:///C:/...  → C:/...
+                    // Unix:     file:///home/... → /home/...  (re-add the leading /)
+                    #[cfg(target_os = "windows")]
+                    { p.to_string() }
+                    #[cfg(not(target_os = "windows"))]
+                    { format!("/{}" , p) }
+                } else if let Some(p) = s.strip_prefix("file://") {
+                    p.to_string()
+                } else {
+                    s.clone()
+                };
+                if path.is_empty() { None } else { Some(path) }
+            })
+            .collect();
+
+        if paths.is_empty() { return; }
+
+        // Stop and clear whatever is currently playing (CD or file mode).
+        {
+            let mut state = self.state.lock().unwrap();
+            state.is_file_mode = false;
+            state.file_tracks.clear();
+            state.tracks.clear();
+            state.metadata_loaded = false;
+            state.smtc_album.clear();
+            state.smtc_album_artist.clear();
+            state.smtc_cover_url.clear();
+            state.track_titles_plain.clear();
+            state.track_artists_plain.clear();
+            if let Some(ref mut h) = state.smtc_handle {
+                h.update(crate::smtc::SmtcUpdate::Stopped);
+            }
+        }
+        self.as_mut().stop_playback_internal();
+        self.as_mut().set_is_file_mode(false);
+        self.as_mut().set_is_single_file(false);
+        self.as_mut().set_total_tracks(0);
+        self.as_mut().set_current_track(-1);
+        self.as_mut().set_current_time(0.0);
+        self.as_mut().set_total_time(0.0);
+        self.as_mut().set_track_names(QStringList::default());
+        self.as_mut().set_track_titles(QStringList::default());
+        self.as_mut().set_track_artists(QStringList::default());
+        self.as_mut().set_album_title(QString::from("Unknown Album"));
+        self.as_mut().set_album_artist(QString::from("Unknown Artist"));
+        self.as_mut().set_album_year(QString::from(""));
+        self.as_mut().set_cover_art_path(QString::from(""));
+        self.as_mut().set_lyric_lines(QStringList::default());
+        self.as_mut().set_lyric_times(QStringList::default());
+
+        let is_single = paths.len() == 1 && !std::path::Path::new(&paths[0]).is_dir();
+        self.load_local_tracks(paths, is_single);
+    }
+
+    pub fn eject_or_close(mut self: Pin<&mut Self>) {
+        if *self.as_ref().is_file_mode() {
+            // File mode: stop playback and return to the disc/welcome screen.
+            {
+                let mut state = self.state.lock().unwrap();
+                state.is_file_mode = false;
+                state.file_tracks.clear();
+                state.tracks.clear();
+                state.metadata_loaded    = false;
+                state.smtc_album.clear();
+                state.smtc_album_artist.clear();
+                state.smtc_cover_url.clear();
+                state.track_titles_plain.clear();
+                state.track_artists_plain.clear();
+                if let Some(ref mut h) = state.smtc_handle {
+                    h.update(crate::smtc::SmtcUpdate::Stopped);
+                }
+            }
+            self.as_mut().stop_playback_internal();
+            self.as_mut().set_is_file_mode(false);
+            self.as_mut().set_is_single_file(false);
+            self.as_mut().set_total_tracks(0);
+            self.as_mut().set_current_track(-1);
+            self.as_mut().set_current_time(0.0);
+            self.as_mut().set_total_time(0.0);
+            self.as_mut().set_track_names(QStringList::default());
+            self.as_mut().set_track_titles(QStringList::default());
+            self.as_mut().set_track_artists(QStringList::default());
+            self.as_mut().set_album_title(QString::from("Unknown Album"));
+            self.as_mut().set_album_artist(QString::from("Unknown Artist"));
+            self.as_mut().set_album_year(QString::from(""));
+            self.as_mut().set_cover_art_path(QString::from(""));
+            self.as_mut().set_lyric_lines(QStringList::default());
+            self.as_mut().set_lyric_times(QStringList::default());
+            self.as_mut().set_drive_status(QString::from("No disc inserted"));
+            // Trigger a fresh drive scan so the CD path resumes normally.
+            self.as_mut().scan_drives();
+        } else {
+            // CD mode: stop playback and physically eject the disc.
+            self.as_mut().stop_playback_internal();
+            let drive_path = self.state.lock().unwrap().current_drive_path.clone();
+            if let Some(path) = drive_path {
+                eject_drive(&path);
+            }
+        }
+    }
+
+    fn load_local_tracks(mut self: Pin<&mut Self>, input_paths: Vec<String>, is_single: bool) {
+        // Local files have no disc ID — clear it so the lyric cache is never
+        // read from or written to during file-mode playback.
+        self.state.lock().unwrap().current_disc_id.clear();
+
+        let tracks = crate::file_player::collect_files_from_paths(&input_paths);
+        if tracks.is_empty() {
+            eprintln!("[file] no audio files found in provided paths");
+            return;
+        }
+
+        let track_count = tracks.len() as i32;
+        let mut dur_list    = QStringList::default();
+        let mut title_list  = QStringList::default();
+        let mut artist_list = QStringList::default();
+        let mut title_plain  = Vec::new();
+        let mut artist_plain = Vec::new();
+
+        for track in &tracks {
+            dur_list.append(QString::from(track.display_duration().as_str()));
+            title_list.append(QString::from(track.title.as_str()));
+            artist_list.append(QString::from(track.artist.as_str()));
+            title_plain.push(track.title.clone());
+            artist_plain.push(track.artist.clone());
+        }
+
+        // Album-level metadata: for a single file, show the track's own title/artist.
+        // For multiple files, try to find a common album; fall back to the folder name.
+        let (album_title, album_artist, album_year, cover_art) = if is_single {
+            let t = &tracks[0];
+            (t.title.clone(), t.artist.clone(), t.year.clone(), t.cover_art_path.clone())
+        } else {
+            let first_album = tracks[0].album.clone();
+            let all_same = tracks.iter().all(|t| t.album == first_album);
+            let album = if all_same && !first_album.is_empty() {
+                first_album
+            } else {
+                input_paths.first()
+                    .and_then(|p| std::path::Path::new(p).file_name())
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string()
+            };
+            let first_aa = tracks[0].album_artist.clone();
+            let same_aa  = tracks.iter().all(|t| t.album_artist == first_aa);
+            let album_artist = if same_aa && !first_aa.is_empty() { first_aa } else { String::new() };
+            let first_year = tracks[0].year.clone();
+            let same_year  = tracks.iter().all(|t| t.year == first_year);
+            let year = if same_year { first_year } else { String::new() };
+            let cover = tracks[0].cover_art_path.clone();
+            (album, album_artist, year, cover)
+        };
+
+        // Set file mode flag and clear CD path before stopping playback so
+        // stop_playback_internal does not attempt to reopen a CD drive.
+        {
+            let mut state = self.state.lock().unwrap();
+            state.is_file_mode = true;
+            state.current_drive_path = None;
+        }
+        self.as_mut().stop_playback_internal();
+
+        {
+            let mut state = self.state.lock().unwrap();
+            state.file_tracks        = tracks;
+            state.tracks.clear();
+            state.metadata_loaded    = true;
+            state.smtc_album         = album_title.clone();
+            state.smtc_album_artist  = album_artist.clone();
+            state.smtc_cover_url     = String::new();
+            state.track_titles_plain = title_plain;
+            state.track_artists_plain = artist_plain;
+        }
+
+        self.as_mut().set_is_file_mode(true);
+        self.as_mut().set_is_single_file(is_single);
+        self.as_mut().set_track_names(dur_list);
+        self.as_mut().set_track_titles(title_list);
+        self.as_mut().set_track_artists(artist_list);
+        self.as_mut().set_total_tracks(track_count);
+        self.as_mut().set_current_track(-1);
+        self.as_mut().set_current_time(0.0);
+        self.as_mut().set_total_time(0.0);
+        self.as_mut().set_album_title(QString::from(album_title.as_str()));
+        self.as_mut().set_album_artist(QString::from(album_artist.as_str()));
+        self.as_mut().set_album_year(QString::from(album_year.as_str()));
+        self.as_mut().set_cover_art_path(QString::from(cover_art.as_deref().unwrap_or("")));
+        self.as_mut().set_drive_status(QString::from(""));
+        self.as_mut().set_lyric_lines(QStringList::default());
+        self.as_mut().set_lyric_times(QStringList::default());
+
+        {
+            let mut state = self.state.lock().unwrap();
+            if let Some(ref mut h) = state.smtc_handle {
+                h.update(crate::smtc::SmtcUpdate::Stopped);
+            }
+        }
+    }
+}
+
+/// Decode and play back a local audio file on a background thread.
+/// Progress is reported via `heard_position_arc` and `current_position`.
+fn play_local_file(
+    file_path: std::path::PathBuf,
+    start_offset: f64,
+    stop_flag: Arc<AtomicBool>,
+    volume_arc: Arc<AtomicU64>,
+    heard_position_arc: Arc<AtomicU64>,
+    current_position: Arc<AtomicU64>,
+    playback_ended_arc: Arc<AtomicBool>,
+) {
+    use crate::audio_player::AudioController;
+    use symphonia::core::{
+        audio::SampleBuffer,
+        codecs::DecoderOptions,
+        formats::{FormatOptions, SeekMode, SeekTo},
+        io::MediaSourceStream,
+        meta::MetadataOptions,
+        probe::Hint,
+        units::Time,
+    };
+
+    let audio_controller = match AudioController::new() {
+        Ok(c)  => c,
+        Err(e) => { eprintln!("[file] audio init: {}", e); playback_ended_arc.store(true, Ordering::Relaxed); return; }
+    };
+
+    let file = match std::fs::File::open(&file_path) {
+        Ok(f)  => f,
+        Err(e) => { eprintln!("[file] open {}: {}", file_path.display(), e); playback_ended_arc.store(true, Ordering::Relaxed); return; }
+    };
+
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    if let Some(ext) = file_path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+
+    let probed = match symphonia::default::get_probe().format(
+        &hint, mss, &FormatOptions::default(), &MetadataOptions::default(),
+    ) {
+        Ok(p)  => p,
+        Err(e) => { eprintln!("[file] probe {}: {}", file_path.display(), e); playback_ended_arc.store(true, Ordering::Relaxed); return; }
+    };
+
+    let mut format = probed.format;
+    let track = match format.default_track() {
+        Some(t) => t,
+        None    => { eprintln!("[file] no audio track in {}", file_path.display()); playback_ended_arc.store(true, Ordering::Relaxed); return; }
+    };
+
+    let sample_rate = track.codec_params.sample_rate.unwrap_or(44100);
+    let n_channels  = track.codec_params.channels.map(|c| c.count()).unwrap_or(2);
+    let track_id    = track.id;
+    let time_base   = track.codec_params.time_base;
+
+    let mut decoder = match symphonia::default::get_codecs()
+        .make(&track.codec_params, &DecoderOptions::default())
+    {
+        Ok(d)  => d,
+        Err(e) => { eprintln!("[file] decoder: {}", e); playback_ended_arc.store(true, Ordering::Relaxed); return; }
+    };
+
+    if start_offset > 0.1 {
+        let _ = format.seek(SeekMode::Accurate, SeekTo::Time {
+            time: Time { seconds: start_offset as u64, frac: start_offset.fract() },
+            track_id: Some(track_id),
+        });
+    }
+
+    let mut current_vol = f64::from_bits(volume_arc.load(Ordering::Relaxed)) as f32;
+    let mut pending: std::collections::VecDeque<f64> = std::collections::VecDeque::new();
+    let mut sample_buf: Option<SampleBuffer<f32>> = None;
+
+    loop {
+        if stop_flag.load(Ordering::Relaxed) { audio_controller.stop(); break; }
+
+        let packet = match format.next_packet() {
+            Ok(p) => p,
+            Err(symphonia::core::errors::Error::IoError(ref e))
+                if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(symphonia::core::errors::Error::ResetRequired) => continue,
+            Err(e) => { eprintln!("[file] packet: {}", e); break; }
+        };
+        if packet.track_id() != track_id { continue; }
+
+        let chunk_start = if let Some(tb) = time_base {
+            let t = tb.calc_time(packet.ts());
+            t.seconds as f64 + t.frac
+        } else {
+            packet.ts() as f64 / sample_rate as f64
+        };
+
+        let decoded = match decoder.decode(&packet) {
+            Ok(d) => d,
+            Err(symphonia::core::errors::Error::DecodeError(ref msg)) => { eprintln!("[file] decode: {}", msg); continue; }
+            Err(e) => { eprintln!("[file] decode fatal: {}", e); break; }
+        };
+
+        if sample_buf.as_ref().map_or(true, |b| b.capacity() < decoded.capacity()) {
+            sample_buf = Some(SampleBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec()));
+        }
+        let sb = sample_buf.as_mut().unwrap();
+        sb.copy_interleaved_ref(decoded);
+
+        let target_vol = f64::from_bits(volume_arc.load(Ordering::Relaxed)) as f32;
+        let raw = sb.samples();
+        let n   = raw.len() as f32;
+        let samples: Vec<f32> = raw.iter().enumerate().map(|(i, &s)| {
+            let t = i as f32 / n;
+            s * (current_vol + (target_vol - current_vol) * t)
+        }).collect();
+        current_vol = target_vol;
+
+        audio_controller.append_samples(samples, sample_rate, n_channels as u16);
+        pending.push_back(chunk_start);
+
+        while audio_controller.queue_len() > 2 && !stop_flag.load(Ordering::Relaxed) {
+            thread::sleep(std::time::Duration::from_millis(50));
+            let q = audio_controller.queue_len();
+            while pending.len() > q.max(1) { pending.pop_front(); }
+            if let Some(&hp) = pending.front() { heard_position_arc.store(hp.to_bits(), Ordering::Relaxed); }
+            thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let q = audio_controller.queue_len();
+        while pending.len() > q.max(1) { pending.pop_front(); }
+        let heard = pending.front().copied().unwrap_or(chunk_start);
+        heard_position_arc.store(heard.to_bits(), Ordering::Relaxed);
+        current_position.store(chunk_start.to_bits(), Ordering::Relaxed);
+    }
+
+    // Drain remaining buffered audio.
+    while !audio_controller.is_empty() {
+        if stop_flag.load(Ordering::Relaxed) { audio_controller.stop(); break; }
+        let q = audio_controller.queue_len();
+        while pending.len() > q.max(1) { pending.pop_front(); }
+        if let Some(&hp) = pending.front() { heard_position_arc.store(hp.to_bits(), Ordering::Relaxed); }
+        thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    if !stop_flag.load(Ordering::Relaxed) {
+        playback_ended_arc.store(true, Ordering::Relaxed);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn eject_drive(drive_path: &str) {
+    #[cfg(target_os = "windows")]
+    eject_drive_windows(drive_path);
+
+    #[cfg(target_os = "linux")]
+    match std::process::Command::new("eject").arg(drive_path).status() {
+        Ok(s) if s.success() => eprintln!("[eject] ejected {}", drive_path),
+        Ok(s) => eprintln!("[eject] eject exited with {} for {}", s, drive_path),
+        Err(e) => eprintln!("[eject] failed to run eject: {}", e),
+    }
+
+    #[cfg(target_os = "macos")]
+    match std::process::Command::new("diskutil").args(["eject", drive_path]).status() {
+        Ok(s) if s.success() => eprintln!("[eject] ejected {}", drive_path),
+        Ok(s) => eprintln!("[eject] diskutil eject exited with {} for {}", s, drive_path),
+        Err(e) => eprintln!("[eject] failed to run diskutil: {}", e),
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    eprintln!("[eject] eject not implemented on this platform ({})", drive_path);
+}
+
+#[cfg(target_os = "windows")]
+fn eject_drive_windows(drive_path: &str) {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    // Build a wide "\\.\D:" style device path from e.g. "D:\" or "\\.\D:".
+    // The path may start with '\' so find the first alphabetic character.
+    let letter = drive_path.chars()
+        .find(|c| c.is_ascii_alphabetic())
+        .unwrap_or('D')
+        .to_ascii_uppercase();
+    let device = format!("\\\\.\\{}:", letter);
+    let wide: Vec<u16> = OsStr::new(&device)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    unsafe {
+        let handle = winapi::um::fileapi::CreateFileW(
+            wide.as_ptr(),
+            winapi::um::winnt::GENERIC_READ | winapi::um::winnt::GENERIC_WRITE,
+            winapi::um::winnt::FILE_SHARE_READ | winapi::um::winnt::FILE_SHARE_WRITE,
+            std::ptr::null_mut(),
+            winapi::um::fileapi::OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        );
+        if handle == winapi::um::handleapi::INVALID_HANDLE_VALUE {
+            eprintln!("[eject] CreateFileW failed for {}", device);
+            return;
+        }
+        let mut bytes_returned: u32 = 0;
+        let ok = winapi::um::ioapiset::DeviceIoControl(
+            handle,
+            winapi::um::winioctl::IOCTL_STORAGE_EJECT_MEDIA,
+            std::ptr::null_mut(), 0,
+            std::ptr::null_mut(), 0,
+            &mut bytes_returned,
+            std::ptr::null_mut(),
+        );
+        if ok == 0 {
+            eprintln!("[eject] DeviceIoControl EJECT_MEDIA failed for {}", device);
+        } else {
+            eprintln!("[eject] ejected {}", device);
+        }
+        winapi::um::handleapi::CloseHandle(handle);
     }
 }

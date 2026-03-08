@@ -3,6 +3,7 @@
 
 mod cd_reader;
 mod audio_player;
+mod file_player;
 mod musicbrainz;
 mod lrclib;
 mod lyric_cache;

@@ -35,7 +35,7 @@ ApplicationWindow {
 
     Timer { interval: 500; repeat: true; running: true
             onTriggered: player.updatePosition() }
-    Timer { interval: player.total_tracks > 0 ? 1000 : 3000; repeat: true; running: !player.is_loading
+    Timer { interval: player.total_tracks > 0 ? 1000 : 3000; repeat: true; running: !player.is_loading && !player.is_file_mode
             onTriggered: {
                 if (player.drive_list.length === 0)
                     player.scanDrives()
@@ -46,6 +46,21 @@ ApplicationWindow {
             onTriggered: player.pollLoad() }
     Timer { interval: 300; repeat: true; running: true
             onTriggered: player.pollLyrics() }
+
+    // ── Drag-and-drop file loading ─────────────────────────────────────────
+    DropArea {
+        anchors.fill: parent
+        keys: ["text/uri-list"]
+        onDropped: {
+            var urls = []
+            for (var i = 0; i < drop.urls.length; i++)
+                urls.push(drop.urls[i].toString())
+            if (urls.length > 0) {
+                player.openDroppedPaths(urls)
+                drop.accept()
+            }
+        }
+    }
 
     property int _lyricsTrackIdx: player.current_track
     on_LyricsTrackIdxChanged: {
@@ -156,13 +171,55 @@ ApplicationWindow {
 
                 Rectangle {
                     width: 32; height: parent.height; color: "transparent"
+                    visible: player.is_file_mode || player.total_tracks > 0
+                    Rectangle {
+                        anchors.fill: parent
+                        color: ejectHov.containsMouse ? clrSurf2 : "transparent"
+                        Behavior on color { ColorAnimation { duration: 100 } }
+                    }
+                    Canvas {
+                        anchors.centerIn: parent; width: 8; height: 8
+                        property color ic: ejectHov.containsMouse ? clrText : clrText2
+                        onIcChanged: requestPaint()
+                        onPaint: {
+                            var ctx = getContext("2d")
+                            ctx.clearRect(0, 0, width, height)
+                            ctx.fillStyle = ic
+                            // triangle (upward pointing)
+                            ctx.beginPath()
+                            ctx.moveTo(4, 0); ctx.lineTo(8, 5); ctx.lineTo(0, 5)
+                            ctx.closePath(); ctx.fill()
+                            // bar
+                            ctx.fillRect(0, 6, 8, 2)
+                        }
+                    }
+                    MouseArea { id: ejectHov; anchors.fill: parent; hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: player.ejectOrClose() }
+                }
+
+                Rectangle {
+                    width: 1; height: parent.height
+                    visible: player.is_file_mode || player.total_tracks > 0
+                    color: clrBorder
+                }
+
+                Rectangle {
+                    width: 32; height: parent.height; color: "transparent"
                     Rectangle {
                         anchors.fill: parent
                         color: minHov.containsMouse ? clrSurf2 : "transparent"
                         Behavior on color { ColorAnimation { duration: 100 } }
                     }
-                    Text { anchors.centerIn: parent; text: "\u2014"
-                           color: clrText2; font.pixelSize: 11 }
+                    Canvas {
+                        anchors.centerIn: parent; width: 8; height: 1
+                        onPaint: {
+                            var ctx = getContext("2d")
+                            ctx.clearRect(0, 0, width, height)
+                            ctx.fillStyle = clrText2
+                            ctx.fillRect(0, 0, width, height)
+                        }
+                    }
                     MouseArea { id: minHov; anchors.fill: parent; hoverEnabled: true
                                 onClicked: window.showMinimized() }
                 }
@@ -173,10 +230,20 @@ ApplicationWindow {
                         color: clsHov.containsMouse ? "#3c1a1a" : "transparent"
                         Behavior on color { ColorAnimation { duration: 100 } }
                     }
-                    Text { anchors.centerIn: parent; text: "\u00D7"
-                           color: clsHov.containsMouse ? "#d07070" : clrText2
-                           font.pixelSize: 14
-                           Behavior on color { ColorAnimation { duration: 100 } } }
+                    Canvas {
+                        anchors.centerIn: parent; width: 8; height: 8
+                        property color ic: clsHov.containsMouse ? "#d07070" : clrText2
+                        onIcChanged: requestPaint()
+                        onPaint: {
+                            var ctx = getContext("2d")
+                            ctx.clearRect(0, 0, width, height)
+                            ctx.strokeStyle = ic
+                            ctx.lineWidth = 1.5
+                            ctx.lineCap = "round"
+                            ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(8, 8); ctx.stroke()
+                            ctx.beginPath(); ctx.moveTo(8, 0); ctx.lineTo(0, 8); ctx.stroke()
+                        }
+                    }
                     MouseArea { id: clsHov; anchors.fill: parent; hoverEnabled: true
                                 onClicked: Qt.quit() }
                 }
@@ -475,6 +542,8 @@ ApplicationWindow {
                             clip: true
                             model: player.lyric_lines
                             spacing: 0
+                            flickDeceleration: 600
+                            maximumFlickVelocity: 6000
 
                             Behavior on contentY {
                                 NumberAnimation { duration: 700; easing.type: Easing.InOutQuart }
@@ -641,6 +710,49 @@ ApplicationWindow {
                                   ? player.drive_status : "No disc inserted"
                             color: clrText2; font.pixelSize: 13; font.family: "Segoe UI"
                         }
+
+                        Row {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            spacing: 8
+
+                            Rectangle {
+                                width: openFilesLbl.implicitWidth + 20; height: 26
+                                radius: 3
+                                color: openFilesHov.containsMouse ? clrSurf2 : "transparent"
+                                border.color: clrBorder; border.width: 1
+                                Behavior on color { ColorAnimation { duration: 100 } }
+                                Text {
+                                    id: openFilesLbl
+                                    anchors.centerIn: parent
+                                    text: "Open Files"
+                                    color: clrText2; font.pixelSize: 11; font.family: "Segoe UI"
+                                }
+                                MouseArea {
+                                    id: openFilesHov; anchors.fill: parent
+                                    hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                    onClicked: player.openFilesDialog()
+                                }
+                            }
+
+                            Rectangle {
+                                width: openFolderLbl.implicitWidth + 20; height: 26
+                                radius: 3
+                                color: openFolderHov.containsMouse ? clrSurf2 : "transparent"
+                                border.color: clrBorder; border.width: 1
+                                Behavior on color { ColorAnimation { duration: 100 } }
+                                Text {
+                                    id: openFolderLbl
+                                    anchors.centerIn: parent
+                                    text: "Open Folder"
+                                    color: clrText2; font.pixelSize: 11; font.family: "Segoe UI"
+                                }
+                                MouseArea {
+                                    id: openFolderHov; anchors.fill: parent
+                                    hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                    onClicked: player.openFolderDialog()
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -650,6 +762,8 @@ ApplicationWindow {
                     visible: !player.is_loading && player.total_tracks > 0
                     clip: true; spacing: 0
                     boundsBehavior: Flickable.StopAtBounds
+                    flickDeceleration: 600
+                    maximumFlickVelocity: 6000
                     model: player.track_titles
 
                     add: Transition { NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 180 } }
@@ -758,7 +872,7 @@ ApplicationWindow {
 
                     ScrollText {
                         anchors.fill: parent
-                        visible: player.total_tracks > 0 && player.current_track >= 0
+                        visible: player.total_tracks > 0 && player.current_track >= 0 && !player.is_single_file
                         centered: true
                         text: {
                             if (player.total_tracks === 0 || player.current_track < 0) return ""

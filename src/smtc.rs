@@ -41,9 +41,9 @@ impl SmtcHandle {
         match u {
             SmtcUpdate::Metadata { title, artist, album, cover_url, duration } => {
                 eprintln!("[smtc] set_metadata {:?} – {:?}", artist, title);
-                // souvlaki's Windows backend passes cover_url straight to
-                // Uri::CreateUri, which rejects local file:// paths. Only
-                // pass through http(s) URLs.
+                // souvlaki's set_metadata aborts before calling Update() if cover loading
+                // fails, leaving SMTC frozen. Only pass http(s) URLs; local file thumbnails
+                // are skipped to ensure text metadata always updates cleanly.
                 let safe_cover = cover_url.as_deref().filter(|u| u.starts_with("http"));
                 let res = self.controls.set_metadata(MediaMetadata {
                     title:     Some(title.as_str()),
@@ -147,7 +147,10 @@ pub fn init() -> Option<SmtcHandle> {
     }
 
     eprintln!("[smtc] ready");
-    Some(SmtcHandle { controls, commands })
+    Some(SmtcHandle {
+        controls,
+        commands,
+    })
 }
 
 #[cfg(target_os = "windows")]
@@ -216,3 +219,4 @@ fn find_main_hwnd() -> usize {
     unsafe { winapi::um::winuser::EnumWindows(Some(enum_cb), 0) };
     FOUND.load(Ordering::SeqCst)
 }
+
