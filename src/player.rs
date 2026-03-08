@@ -1627,7 +1627,7 @@ fn play_local_file(
         audio_controller.append_samples(samples, sample_rate, n_channels as u16);
         pending.push_back(chunk_start);
 
-        while audio_controller.queue_len() > 2 && !stop_flag.load(Ordering::Relaxed) {
+        while audio_controller.queue_len() > 64 && !stop_flag.load(Ordering::Relaxed) {
             thread::sleep(std::time::Duration::from_millis(50));
             let q = audio_controller.queue_len();
             while pending.len() > q.max(1) { pending.pop_front(); }
