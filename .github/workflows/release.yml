@@ -119,6 +119,7 @@ jobs:
             libasound2-dev \
             libdbus-1-dev \
             libglib2.0-dev \
+            libwayland-dev \
             libfuse2 \
             patchelf
 
