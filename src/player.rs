@@ -177,7 +177,7 @@ impl Default for PlayerState {
             playback_start_offset: 0.0,
             playback_ended: Arc::new(AtomicBool::new(false)),
             playback_disc_error: Arc::new(AtomicBool::new(false)),
-            volume: Arc::new(AtomicU64::new((0.8_f64).to_bits())),
+            volume: Arc::new(AtomicU64::new((1.0_f64).to_bits())),
             heard_position: Arc::new(AtomicU64::new(0)),
             disc_load_result: Arc::new(Mutex::new(None)),
             disc_load_thread: None,
@@ -479,7 +479,14 @@ impl player_bridge::PlayerController {
             let raw_art = state.track_artists_plain.get(idx).cloned().unwrap_or_default();
             let artist  = if raw_art.is_empty() { state.smtc_album_artist.clone() } else { raw_art };
             let album   = state.smtc_album.clone();
-            let cover   = state.smtc_cover_url.clone();
+            // In file mode, prefer per-track embedded cover art; fall back to album-level cover.
+            let cover = if state.is_file_mode {
+                state.file_tracks.get(idx)
+                    .and_then(|t| t.cover_art_path.clone())
+                    .unwrap_or_else(|| state.smtc_cover_url.clone())
+            } else {
+                state.smtc_cover_url.clone()
+            };
             let dur     = std::time::Duration::from_secs_f64(duration.max(0.0));
             if let Some(ref mut h) = state.smtc_handle {
                 h.update(crate::smtc::SmtcUpdate::Metadata {
@@ -1479,7 +1486,7 @@ impl player_bridge::PlayerController {
             state.metadata_loaded    = true;
             state.smtc_album         = album_title.clone();
             state.smtc_album_artist  = album_artist.clone();
-            state.smtc_cover_url     = String::new();
+            state.smtc_cover_url     = cover_art.clone().unwrap_or_default();
             state.track_titles_plain = title_plain;
             state.track_artists_plain = artist_plain;
         }

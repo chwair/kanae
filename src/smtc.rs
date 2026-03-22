@@ -41,20 +41,46 @@ impl SmtcHandle {
         match u {
             SmtcUpdate::Metadata { title, artist, album, cover_url, duration } => {
                 eprintln!("[smtc] set_metadata {:?} – {:?}", artist, title);
-                // souvlaki's set_metadata aborts before calling Update() if cover loading
-                // fails, leaving SMTC frozen. Only pass http(s) URLs; local file thumbnails
-                // are skipped to ensure text metadata always updates cleanly.
-                let safe_cover = cover_url.as_deref().filter(|u| u.starts_with("http"));
+                // souvlaki's Windows backend strips exactly "file://" to obtain the path,
+                // so "file:///C:/foo" must be normalised to "file://C:/foo" before passing.
+                // http(s) URLs are forwarded as-is. Anything else is dropped.
+                let normalised: Option<String> = cover_url.as_deref().and_then(|u| {
+                    if u.starts_with("http") {
+                        Some(u.to_string())
+                    } else if u.starts_with("file:///") {
+                        // "file:///C:/foo" → "file://C:/foo" so souvlaki gets "C:/foo"
+                        Some(format!("file://{}", &u["file:///".len()..]))
+                    } else {
+                        None
+                    }
+                });
+                eprintln!("[smtc] cover_url={:?}", normalised);
                 let res = self.controls.set_metadata(MediaMetadata {
                     title:     Some(title.as_str()),
                     artist:    Some(artist.as_str()),
                     album:     Some(album.as_str()),
-                    cover_url: safe_cover,
+                    cover_url: normalised.as_deref(),
                     duration,
                 });
                 match res {
                     Ok(()) => eprintln!("[smtc] set_metadata OK"),
-                    Err(e) => eprintln!("[smtc] set_metadata ERR: {:?}", e),
+                    Err(e) => {
+                        eprintln!("[smtc] set_metadata ERR: {:?}", e);
+                        // If cover loading caused the failure, retry without it so
+                        // text metadata still appears in SMTC.
+                        if normalised.is_some() {
+                            eprintln!("[smtc] retrying without cover art");
+                            if let Err(e2) = self.controls.set_metadata(MediaMetadata {
+                                title:     Some(title.as_str()),
+                                artist:    Some(artist.as_str()),
+                                album:     Some(album.as_str()),
+                                cover_url: None,
+                                duration,
+                            }) {
+                                eprintln!("[smtc] retry ERR: {:?}", e2);
+                            }
+                        }
+                    }
                 }
             }
             SmtcUpdate::Playing { progress } => {

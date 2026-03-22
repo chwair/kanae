@@ -11,8 +11,6 @@ ApplicationWindow {
     height: 540
     minimumWidth: 660
     minimumHeight: 540
-    maximumWidth: 660
-    maximumHeight: 540
     title: "Kanae"
     flags: Qt.FramelessWindowHint | Qt.Window
     color: "transparent"
@@ -137,17 +135,180 @@ ApplicationWindow {
             color: "transparent"
             z: 10
 
+            // ── Drag handler — must be declared first so child items sit above it.
+            // On macOS, startSystemMove() must be called immediately on mouseDown
+            // (the system tracks whether a drag follows); a DragHandler's threshold
+            // delay causes the spotty behaviour. mouse.accepted = false lets the
+            // press propagate to traffic-light buttons underneath.
             MouseArea {
                 anchors.fill: parent
-                anchors.rightMargin: 66
-                onPressed: window.startSystemMove()
+                acceptedButtons: Qt.LeftButton
+                propagateComposedEvents: true
+                onPressed: function(mouse) {
+                    window.startSystemMove()
+                    mouse.accepted = false
+                }
+            }
+
+            // ── macOS traffic lights ────────────────────────────────────────
+            Item {
+                id: trafficLights
+                visible: Qt.platform.os === "osx"
+                anchors.left: parent.left
+                anchors.leftMargin: 12
+                anchors.verticalCenter: parent.verticalCenter
+                width: 52; height: 12
+
+                // Single hover handler covering the whole group.
+                HoverHandler { id: tlHover }
+
+                // Close (red)
+                Rectangle {
+                    x: 0; width: 12; height: 12; radius: 6
+                    color: tlHover.hovered ? "#FF5F57" : "#606060"
+                    Behavior on color { ColorAnimation { duration: 120 } }
+                    Canvas {
+                        anchors.centerIn: parent; width: 8; height: 8
+                        visible: tlCloseArea.containsMouse
+                        onVisibleChanged: if (visible) requestPaint()
+                        onPaint: {
+                            var ctx = getContext("2d")
+                            ctx.clearRect(0, 0, width, height)
+                            ctx.strokeStyle = "#5a0000"
+                            ctx.lineWidth = 1.2; ctx.lineCap = "round"
+                            ctx.beginPath(); ctx.moveTo(2, 2); ctx.lineTo(6, 6); ctx.stroke()
+                            ctx.beginPath(); ctx.moveTo(6, 2); ctx.lineTo(2, 6); ctx.stroke()
+                        }
+                    }
+                    MouseArea {
+                        id: tlCloseArea; anchors.fill: parent; hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: Qt.quit()
+                    }
+                }
+
+                // Minimize (yellow)
+                Rectangle {
+                    x: 20; width: 12; height: 12; radius: 6
+                    color: tlHover.hovered ? "#FEBC2E" : "#606060"
+                    Behavior on color { ColorAnimation { duration: 120 } }
+                    Canvas {
+                        anchors.centerIn: parent; width: 8; height: 2
+                        visible: tlMinArea.containsMouse
+                        onVisibleChanged: if (visible) requestPaint()
+                        onPaint: {
+                            var ctx = getContext("2d")
+                            ctx.clearRect(0, 0, width, height)
+                            ctx.fillStyle = "#4b3300"
+                            ctx.fillRect(0, 0, 8, 2)
+                        }
+                    }
+                    MouseArea {
+                        id: tlMinArea; anchors.fill: parent; hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: window.showMinimized()
+                    }
+                }
+
+                // Maximize / restore (green)
+                Rectangle {
+                    x: 40; width: 12; height: 12; radius: 6
+                    color: tlHover.hovered ? "#28C840" : "#606060"
+                    Behavior on color { ColorAnimation { duration: 120 } }
+                    Canvas {
+                        id: tlMaxCanvas
+                        anchors.centerIn: parent; width: 8; height: 8
+                        visible: tlMaxArea.containsMouse
+                        onVisibleChanged: if (visible) requestPaint()
+                        property bool isFs: window.visibility === Window.FullScreen
+                        onIsFsChanged: if (visible) requestPaint()
+                        onPaint: {
+                            var ctx = getContext("2d")
+                            ctx.clearRect(0, 0, width, height)
+                            ctx.fillStyle = "#003a00"
+                            if (isFs) {
+                                // Two inward-pointing arrows → "exit fullscreen"
+                                ctx.beginPath(); ctx.moveTo(0,3); ctx.lineTo(3,0); ctx.lineTo(3,3); ctx.closePath(); ctx.fill()
+                                ctx.beginPath(); ctx.moveTo(8,5); ctx.lineTo(5,8); ctx.lineTo(5,5); ctx.closePath(); ctx.fill()
+                                ctx.beginPath(); ctx.moveTo(5,0); ctx.lineTo(8,3); ctx.lineTo(5,3); ctx.closePath(); ctx.fill()
+                                ctx.beginPath(); ctx.moveTo(3,8); ctx.lineTo(0,5); ctx.lineTo(3,5); ctx.closePath(); ctx.fill()
+                            } else {
+                                // Two outward-pointing arrows → "enter fullscreen"
+                                ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(3,0); ctx.lineTo(0,3); ctx.closePath(); ctx.fill()
+                                ctx.beginPath(); ctx.moveTo(8,8); ctx.lineTo(5,8); ctx.lineTo(8,5); ctx.closePath(); ctx.fill()
+                                ctx.beginPath(); ctx.moveTo(8,0); ctx.lineTo(8,3); ctx.lineTo(5,0); ctx.closePath(); ctx.fill()
+                                ctx.beginPath(); ctx.moveTo(0,8); ctx.lineTo(0,5); ctx.lineTo(3,8); ctx.closePath(); ctx.fill()
+                            }
+                        }
+                    }
+                    MouseArea {
+                        id: tlMaxArea; anchors.fill: parent; hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            if (window.visibility === Window.FullScreen)
+                                window.showNormal()
+                            else
+                                window.showFullScreen()
+                        }
+                    }
+                }
+            }
+
+            // ── macOS eject button (right side, only when something is loaded) ──
+            Rectangle {
+                id: macEjectBtn
+                visible: Qt.platform.os === "osx" && (player.is_file_mode || player.total_tracks > 0)
+                anchors.right: parent.right
+                anchors.rightMargin: 10
+                anchors.verticalCenter: parent.verticalCenter
+                width: macEjectArea.containsMouse ? macEjectLabel.implicitWidth + 16 : 22
+                height: 18; radius: 3
+                color: macEjectArea.containsMouse ? clrSurf2 : "transparent"
+                border.color: macEjectArea.containsMouse ? clrBorder : "transparent"
+                border.width: 1
+                Behavior on width { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+                Behavior on color { ColorAnimation { duration: 100 } }
+                clip: true
+
+                Row {
+                    anchors.centerIn: parent; spacing: 5
+
+                    Canvas {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 8; height: 8
+                        property color ic: macEjectArea.containsMouse ? clrText : clrText2
+                        onIcChanged: requestPaint()
+                        Component.onCompleted: requestPaint()
+                        onPaint: {
+                            var ctx = getContext("2d")
+                            ctx.clearRect(0, 0, width, height)
+                            ctx.fillStyle = ic
+                            ctx.beginPath()
+                            ctx.moveTo(4, 0); ctx.lineTo(8, 5); ctx.lineTo(0, 5)
+                            ctx.closePath(); ctx.fill()
+                            ctx.fillRect(0, 6.5, 8, 1.5)
+                        }
+                    }
+                    Text {
+                        id: macEjectLabel
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: macEjectArea.containsMouse
+                        text: player.is_file_mode ? "Close" : "Eject"
+                        color: clrText2; font.pixelSize: 10; font.family: "Segoe UI"
+                    }
+                }
+                MouseArea {
+                    id: macEjectArea; anchors.fill: parent; hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: player.ejectOrClose()
+                }
             }
 
             Text {
                 id: titleText
-                anchors.left: parent.left
-                anchors.right: winButtons.left
-                anchors.leftMargin: 12
+                anchors.left: Qt.platform.os === "osx" ? trafficLights.right : parent.left
+                anchors.right: Qt.platform.os === "osx" ? macEjectBtn.left : winButtons.left
+                anchors.leftMargin: 8
                 anchors.rightMargin: 8
                 anchors.verticalCenter: parent.verticalCenter
                 elide: Text.ElideRight
@@ -163,8 +324,10 @@ ApplicationWindow {
                 color: clrText2; font.pixelSize: 11; font.family: "Segoe UI"
             }
 
+            // ── Windows-style controls (non-macOS) ──────────────────────────
             Row {
                 id: winButtons
+                visible: Qt.platform.os !== "osx"
                 anchors.right: parent.right
                 anchors.top: parent.top
                 height: titleBar.height
@@ -185,11 +348,9 @@ ApplicationWindow {
                             var ctx = getContext("2d")
                             ctx.clearRect(0, 0, width, height)
                             ctx.fillStyle = ic
-                            // triangle (upward pointing)
                             ctx.beginPath()
                             ctx.moveTo(4, 0); ctx.lineTo(8, 5); ctx.lineTo(0, 5)
                             ctx.closePath(); ctx.fill()
-                            // bar
                             ctx.fillRect(0, 6, 8, 2)
                         }
                     }
@@ -263,26 +424,38 @@ ApplicationWindow {
             spacing: 0
 
             // ── Main area: metadata sidebar + track list ──────────────────
-            RowLayout {
+            SplitView {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                spacing: 0
+                orientation: Qt.Horizontal
+
+                handle: Item {
+                    implicitWidth: 5
+                    implicitHeight: 1
+                    Rectangle {
+                        anchors.centerIn: parent
+                        width: 1; height: parent.height
+                        color: SplitHandle.pressed ? clrAccent
+                             : SplitHandle.hovered  ? clrMuted
+                             : clrBorder
+                        Behavior on color { ColorAnimation { duration: 100 } }
+                    }
+                }
 
                 // ─── Left metadata panel ──────────────────────────────────
                 ColumnLayout {
                     id: sidebarColumn
-                    Layout.preferredWidth: 200
-                    Layout.minimumWidth: 200
-                    Layout.maximumWidth: 200
-                    Layout.fillHeight: true
+                    SplitView.preferredWidth: 200
+                    SplitView.minimumWidth: 140
+                    SplitView.maximumWidth: 400
                     spacing: 0
                     clip: true
 
                     // ── Animation state ───────────────────────────────────
                     readonly property real _naturalCoverH:
                         (coverImg.status === Image.Ready && coverImg.implicitWidth > 0)
-                        ? 200 * coverImg.implicitHeight / coverImg.implicitWidth
-                        : 200
+                        ? sidebarColumn.width * coverImg.implicitHeight / coverImg.implicitWidth
+                        : sidebarColumn.width
 
                     property real _curtainH:   _naturalCoverH
                     property real _topSepH:    1
@@ -639,15 +812,10 @@ ApplicationWindow {
                     }
                 }
 
-                Rectangle {
-                    Layout.fillHeight: true
-                    width: 1; color: clrBorder
-                }
-
                 // ─── Track list panel ─────────────────────────────────────
                 Item {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
+                    SplitView.fillWidth: true
+                    SplitView.minimumWidth: 220
 
                 Item {
                     anchors.fill: parent
@@ -845,6 +1013,8 @@ ApplicationWindow {
                             implicitWidth: 4
                             radius: 2
                             color: clrMuted
+                            // Hide completely when all tracks fit without scrolling.
+                            visible: vScrollBar.size < 1.0
                             opacity: vScrollBar.active ? 0.85 : 0.3
                             Behavior on opacity { NumberAnimation { duration: 200 } }
                         }
@@ -857,6 +1027,16 @@ ApplicationWindow {
             // ── Seek section ──────────────────────────────────────────────
             Rectangle { Layout.fillWidth: true; height: 1; color: clrBorder }
 
+            // Measures the widest possible time string once so both flanking
+            // time labels stay a fixed, equal width — keeping the center label
+            // truly centered regardless of which digits are on screen.
+            TextMetrics {
+                id: timeMetrics
+                font.pixelSize: 11
+                font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas"
+                text: "00:00"
+            }
+
             RowLayout {
                 Layout.fillWidth: true
                 Layout.leftMargin: 14; Layout.rightMargin: 14
@@ -864,7 +1044,10 @@ ApplicationWindow {
                 spacing: 0
 
                 Text { text: formatTime(player.current_time)
-                       color: clrText; font.pixelSize: 11; font.family: "Consolas, monospace" }
+                       color: clrText; font.pixelSize: 11
+                       font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas"
+                       Layout.preferredWidth: timeMetrics.advanceWidth
+                       horizontalAlignment: Text.AlignLeft }
                 Item { Layout.preferredWidth: 8 }
                 Item {
                     Layout.fillWidth: true
@@ -889,7 +1072,10 @@ ApplicationWindow {
                 }
                 Item { Layout.preferredWidth: 8 }
                 Text { text: formatTime(player.total_time)
-                       color: clrText2; font.pixelSize: 11; font.family: "Consolas, monospace" }
+                       color: clrText2; font.pixelSize: 11
+                       font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas"
+                       Layout.preferredWidth: timeMetrics.advanceWidth
+                       horizontalAlignment: Text.AlignRight }
             }
 
             Slider {
@@ -1083,7 +1269,8 @@ ApplicationWindow {
                     Layout.preferredWidth: 88
                     implicitHeight: 30
                     padding: 0
-                    from: 0; to: 1; value: 0.8
+                    from: 0; to: 1; value: 1.0
+                    Component.onCompleted: player.setVolumeLevel(1.0)
                     onMoved: player.setVolumeLevel(value)
 
                     background: Item {
