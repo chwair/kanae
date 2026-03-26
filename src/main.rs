@@ -9,6 +9,9 @@ mod lrclib;
 mod lyric_cache;
 mod smtc;
 mod player;
+mod library;
+mod library_cache;
+mod library_controller;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 
@@ -24,3 +27,6 @@ fn main() {
         app.exec();
     }
 }
+
+// Pull in the generated CXX-Qt code for the library controller.
+use library_controller::library_bridge;

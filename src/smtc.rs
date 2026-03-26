@@ -41,15 +41,12 @@ impl SmtcHandle {
         match u {
             SmtcUpdate::Metadata { title, artist, album, cover_url, duration } => {
                 eprintln!("[smtc] set_metadata {:?} – {:?}", artist, title);
-                // souvlaki's Windows backend strips exactly "file://" to obtain the path,
-                // so "file:///C:/foo" must be normalised to "file://C:/foo" before passing.
-                // http(s) URLs are forwarded as-is. Anything else is dropped.
+                // Pass http(s) URLs as-is. For local files, pass the full file:///
+                // URI — WinRT's Windows::Foundation::Uri requires the standard
+                // three-slash form (file:///C:/path) for absolute Windows paths.
                 let normalised: Option<String> = cover_url.as_deref().and_then(|u| {
-                    if u.starts_with("http") {
+                    if u.starts_with("http") || u.starts_with("file:///") {
                         Some(u.to_string())
-                    } else if u.starts_with("file:///") {
-                        // "file:///C:/foo" → "file://C:/foo" so souvlaki gets "C:/foo"
-                        Some(format!("file://{}", &u["file:///".len()..]))
                     } else {
                         None
                     }

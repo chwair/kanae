@@ -126,6 +126,10 @@ mod player_bridge {
         fn eject_or_close(self: Pin<&mut Self>);
 
         #[qinvokable]
+        #[cxx_name = "loadDisc"]
+        fn load_disc(self: Pin<&mut Self>);
+
+        #[qinvokable]
         #[cxx_name = "openDroppedPaths"]
         fn open_dropped_paths(self: Pin<&mut Self>, urls: QStringList);
     }
@@ -177,7 +181,7 @@ impl Default for PlayerState {
             playback_start_offset: 0.0,
             playback_ended: Arc::new(AtomicBool::new(false)),
             playback_disc_error: Arc::new(AtomicBool::new(false)),
-            volume: Arc::new(AtomicU64::new((1.0_f64).to_bits())),
+            volume: Arc::new(AtomicU64::new((0.8_f64).to_bits())),
             heard_position: Arc::new(AtomicU64::new(0)),
             disc_load_result: Arc::new(Mutex::new(None)),
             disc_load_thread: None,
@@ -479,14 +483,7 @@ impl player_bridge::PlayerController {
             let raw_art = state.track_artists_plain.get(idx).cloned().unwrap_or_default();
             let artist  = if raw_art.is_empty() { state.smtc_album_artist.clone() } else { raw_art };
             let album   = state.smtc_album.clone();
-            // In file mode, prefer per-track embedded cover art; fall back to album-level cover.
-            let cover = if state.is_file_mode {
-                state.file_tracks.get(idx)
-                    .and_then(|t| t.cover_art_path.clone())
-                    .unwrap_or_else(|| state.smtc_cover_url.clone())
-            } else {
-                state.smtc_cover_url.clone()
-            };
+            let cover   = state.smtc_cover_url.clone();
             let dur     = std::time::Duration::from_secs_f64(duration.max(0.0));
             if let Some(ref mut h) = state.smtc_handle {
                 h.update(crate::smtc::SmtcUpdate::Metadata {
@@ -716,7 +713,7 @@ impl player_bridge::PlayerController {
                         let n = raw.len() as f32;
                         let samples: Vec<f32> = raw.iter().enumerate().map(|(i, &s)| {
                             let t = i as f32 / n;
-                            s * (current_vol + (target_vol - current_vol) * t)
+                            (s * (current_vol + (target_vol - current_vol) * t)).clamp(-1.0, 1.0)
                         }).collect();
                         current_vol = target_vol;
 
@@ -725,9 +722,9 @@ impl player_bridge::PlayerController {
                         // Register this chunk in the heard-position ring.
                         pending.push_back(chunk_start);
 
-                        // Throttle: keep at most 2 chunks queued ahead (reduces
-                        // volume-change lag to ~160 ms, imperceptible to the ear).
-                        while audio_controller.queue_len() > 2
+                        // Throttle: keep at most 1 chunk queued ahead so volume
+                        // changes take effect quickly (within one chunk, ~80 ms).
+                        while audio_controller.queue_len() > 1
                             && !stop_flag.load(Ordering::Relaxed)
                         {
                             thread::sleep(std::time::Duration::from_millis(50));
@@ -1370,6 +1367,40 @@ impl player_bridge::PlayerController {
         self.load_local_tracks(paths, is_single);
     }
 
+    /// Switch back to CD mode from file mode.
+    /// Clears file-mode state, restores CD mode, and triggers a disc load
+    /// so the track list is repopulated from the previously selected drive.
+    pub fn load_disc(mut self: Pin<&mut Self>) {
+        // Stop file playback and clear file-mode state.
+        self.as_mut().stop_playback_internal();
+        {
+            let mut state = self.state.lock().unwrap();
+            state.is_file_mode = false;
+            state.file_tracks.clear();
+            state.tracks.clear();
+            state.metadata_loaded = false;
+            state.smtc_album.clear();
+            state.smtc_album_artist.clear();
+            state.smtc_cover_url.clear();
+            state.track_titles_plain.clear();
+            state.track_artists_plain.clear();
+            if let Some(ref mut h) = state.smtc_handle {
+                h.update(crate::smtc::SmtcUpdate::Stopped);
+            }
+        }
+        self.as_mut().set_is_file_mode(false);
+        self.as_mut().set_is_single_file(false);
+        self.as_mut().set_total_tracks(0);
+        self.as_mut().set_current_track(-1);
+        self.as_mut().set_current_time(0.0);
+        self.as_mut().set_total_time(0.0);
+        self.as_mut().set_track_names(QStringList::default());
+        self.as_mut().set_track_titles(QStringList::default());
+        self.as_mut().set_track_artists(QStringList::default());
+        // Trigger a disc read from the current drive.
+        self.as_mut().refresh_disc();
+    }
+
     pub fn eject_or_close(mut self: Pin<&mut Self>) {
         if *self.as_ref().is_file_mode() {
             // File mode: stop playback and return to the disc/welcome screen.
@@ -1470,12 +1501,13 @@ impl player_bridge::PlayerController {
             (album, album_artist, year, cover)
         };
 
-        // Set file mode flag and clear CD path before stopping playback so
-        // stop_playback_internal does not attempt to reopen a CD drive.
+        // Set file mode flag before stopping playback so stop_playback_internal
+        // does not attempt to reopen a CD drive (it checks is_file_mode).
+        // Intentionally keep current_drive_path so the user can switch back to
+        // the disc without losing the selected drive.
         {
             let mut state = self.state.lock().unwrap();
             state.is_file_mode = true;
-            state.current_drive_path = None;
         }
         self.as_mut().stop_playback_internal();
 
@@ -1486,7 +1518,7 @@ impl player_bridge::PlayerController {
             state.metadata_loaded    = true;
             state.smtc_album         = album_title.clone();
             state.smtc_album_artist  = album_artist.clone();
-            state.smtc_cover_url     = cover_art.clone().unwrap_or_default();
+            state.smtc_cover_url     = String::new();
             state.track_titles_plain = title_plain;
             state.track_artists_plain = artist_plain;
         }
@@ -1532,7 +1564,7 @@ fn play_local_file(
     use symphonia::core::{
         audio::SampleBuffer,
         codecs::DecoderOptions,
-        formats::{FormatOptions, SeekMode, SeekTo},
+        formats::{SeekMode, SeekTo},
         io::MediaSourceStream,
         meta::MetadataOptions,
         probe::Hint,
@@ -1555,8 +1587,9 @@ fn play_local_file(
         hint.with_extension(ext);
     }
 
+    let fmt_opts = symphonia::core::formats::FormatOptions { enable_gapless: true, ..Default::default() };
     let probed = match symphonia::default::get_probe().format(
-        &hint, mss, &FormatOptions::default(), &MetadataOptions::default(),
+        &hint, mss, &fmt_opts, &MetadataOptions::default(),
     ) {
         Ok(p)  => p,
         Err(e) => { eprintln!("[file] probe {}: {}", file_path.display(), e); playback_ended_arc.store(true, Ordering::Relaxed); return; }
@@ -1588,17 +1621,27 @@ fn play_local_file(
     }
 
     let mut current_vol = f64::from_bits(volume_arc.load(Ordering::Relaxed)) as f32;
-    let mut pending: std::collections::VecDeque<f64> = std::collections::VecDeque::new();
     let mut sample_buf: Option<SampleBuffer<f32>> = None;
+    // Fade-in: ramp volume from 0 over the first packet to mask encoder-delay clicks.
+    let mut fade_first_packet = start_offset < 0.05;
+
+    // One continuous source per track so rodio's sample-rate converter is
+    // initialised once and never reset between packets.  Re-initialising the
+    // converter at each SamplesBuffer boundary causes a phase discontinuity
+    // that manifests as an audible click, which this approach eliminates.
+    // Buffer 4 packets so volume changes take effect within ~100 ms.
+    let (stream_sender, samples_emitted_arc) = audio_controller.begin_stream(
+        sample_rate, n_channels as u16, stop_flag.clone(), 4,
+    );
 
     loop {
-        if stop_flag.load(Ordering::Relaxed) { audio_controller.stop(); break; }
+        if stop_flag.load(Ordering::Relaxed) { break; }
 
         let packet = match format.next_packet() {
             Ok(p) => p,
             Err(symphonia::core::errors::Error::IoError(ref e))
                 if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-            Err(symphonia::core::errors::Error::ResetRequired) => continue,
+            Err(symphonia::core::errors::Error::ResetRequired) => { decoder.reset(); continue; }
             Err(e) => { eprintln!("[file] packet: {}", e); break; }
         };
         if packet.track_id() != track_id { continue; }
@@ -1625,41 +1668,44 @@ fn play_local_file(
         let target_vol = f64::from_bits(volume_arc.load(Ordering::Relaxed)) as f32;
         let raw = sb.samples();
         let n   = raw.len() as f32;
+        let fade = fade_first_packet;
+        fade_first_packet = false;
         let samples: Vec<f32> = raw.iter().enumerate().map(|(i, &s)| {
             let t = i as f32 / n;
-            s * (current_vol + (target_vol - current_vol) * t)
+            let fi = if fade { t } else { 1.0 };
+            (s * (current_vol + (target_vol - current_vol) * t) * fi).clamp(-1.0, 1.0)
         }).collect();
         current_vol = target_vol;
 
-        audio_controller.append_samples(samples, sample_rate, n_channels as u16);
-        pending.push_back(chunk_start);
+        // Push into the continuous stream; returns false on stop or sink close.
+        if !stream_sender.send(samples) { break; }
 
-        while audio_controller.queue_len() > 64 && !stop_flag.load(Ordering::Relaxed) {
-            thread::sleep(std::time::Duration::from_millis(50));
-            let q = audio_controller.queue_len();
-            while pending.len() > q.max(1) { pending.pop_front(); }
-            if let Some(&hp) = pending.front() { heard_position_arc.store(hp.to_bits(), Ordering::Relaxed); }
-            thread::sleep(std::time::Duration::from_millis(20));
-        }
-        let q = audio_controller.queue_len();
-        while pending.len() > q.max(1) { pending.pop_front(); }
-        let heard = pending.front().copied().unwrap_or(chunk_start);
-        heard_position_arc.store(heard.to_bits(), Ordering::Relaxed);
+        // Derive heard position from how many samples the audio thread has consumed.
+        let denom = sample_rate as f64 * (n_channels as f64).max(1.0);
+        let heard_pos = start_offset
+            + samples_emitted_arc.load(Ordering::Relaxed) as f64 / denom;
+        heard_position_arc.store(heard_pos.to_bits(), Ordering::Relaxed);
         current_position.store(chunk_start.to_bits(), Ordering::Relaxed);
     }
 
-    // Drain remaining buffered audio.
+    // Stopped externally: clear the player immediately and return.
+    if stop_flag.load(Ordering::Relaxed) {
+        audio_controller.stop();
+        return;
+    }
+
+    // Natural end-of-file: signal the stream and drain the device buffer.
+    stream_sender.finish();
     while !audio_controller.is_empty() {
-        if stop_flag.load(Ordering::Relaxed) { audio_controller.stop(); break; }
-        let q = audio_controller.queue_len();
-        while pending.len() > q.max(1) { pending.pop_front(); }
-        if let Some(&hp) = pending.front() { heard_position_arc.store(hp.to_bits(), Ordering::Relaxed); }
+        if stop_flag.load(Ordering::Relaxed) { audio_controller.stop(); return; }
+        let denom = sample_rate as f64 * (n_channels as f64).max(1.0);
+        let heard_pos = start_offset
+            + samples_emitted_arc.load(Ordering::Relaxed) as f64 / denom;
+        heard_position_arc.store(heard_pos.to_bits(), Ordering::Relaxed);
         thread::sleep(std::time::Duration::from_millis(50));
     }
 
-    if !stop_flag.load(Ordering::Relaxed) {
-        playback_ended_arc.store(true, Ordering::Relaxed);
-    }
+    playback_ended_arc.store(true, Ordering::Relaxed);
 }
 
 fn eject_drive(drive_path: &str) {

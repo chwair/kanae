@@ -7,5 +7,6 @@ fn main() {
     )
     .qt_module("Network")
     .file("src/player.rs")
+    .file("src/library_controller.rs")
     .build();
 }
