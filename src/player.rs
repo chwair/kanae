@@ -263,9 +263,13 @@ impl player_bridge::PlayerController {
         if drives.is_empty() {
             self.as_mut().set_drive_list(QStringList::default());
             self.as_mut().set_selected_drive_index(-1);
-            self.as_mut().set_track_names(QStringList::default());
-            self.as_mut().set_total_tracks(0);
-            self.as_mut().set_drive_status(QString::from("No optical drive detected"));
+            // Don't wipe file-mode track state — the timer calls scan_drives
+            // periodically and would otherwise clear the loaded track list.
+            if !self.state.lock().unwrap().is_file_mode {
+                self.as_mut().set_track_names(QStringList::default());
+                self.as_mut().set_total_tracks(0);
+                self.as_mut().set_drive_status(QString::from("No optical drive detected"));
+            }
             return;
         }
         
@@ -484,6 +488,7 @@ impl player_bridge::PlayerController {
             let artist  = if raw_art.is_empty() { state.smtc_album_artist.clone() } else { raw_art };
             let album   = state.smtc_album.clone();
             let cover   = state.smtc_cover_url.clone();
+            eprintln!("[smtc] load_track cover raw={:?}", cover);
             let dur     = std::time::Duration::from_secs_f64(duration.max(0.0));
             if let Some(ref mut h) = state.smtc_handle {
                 h.update(crate::smtc::SmtcUpdate::Metadata {
@@ -1308,6 +1313,10 @@ impl player_bridge::PlayerController {
     }
 
     pub fn open_dropped_paths(mut self: Pin<&mut Self>, urls: QStringList) {
+        eprintln!("[dbg] open_dropped_paths: {} url(s)", urls.len());
+        for i in 0..urls.len() {
+            if let Some(s) = urls.get(i) { eprintln!("[dbg]   raw[{}]: {}", i, s); }
+        }
         // Convert file:// URLs to local filesystem paths.
         let paths: Vec<String> = (0..urls.len())
             .filter_map(|i| {
@@ -1328,7 +1337,12 @@ impl player_bridge::PlayerController {
             })
             .collect();
 
-        if paths.is_empty() { return; }
+        eprintln!("[dbg] open_dropped_paths: {} resolved path(s)", paths.len());
+        for (i, p) in paths.iter().enumerate() {
+            eprintln!("[dbg]   path[{}]: {} (exists={})", i, p, std::path::Path::new(p).exists());
+        }
+
+        if paths.is_empty() { eprintln!("[dbg] open_dropped_paths: no paths after resolve, returning"); return; }
 
         // Stop and clear whatever is currently playing (CD or file mode).
         {
@@ -1449,11 +1463,16 @@ impl player_bridge::PlayerController {
     }
 
     fn load_local_tracks(mut self: Pin<&mut Self>, input_paths: Vec<String>, is_single: bool) {
+        eprintln!("[dbg] load_local_tracks: {} input path(s), is_single={}", input_paths.len(), is_single);
+        for (i, p) in input_paths.iter().enumerate() {
+            eprintln!("[dbg]   input[{}]: {}", i, p);
+        }
         // Local files have no disc ID — clear it so the lyric cache is never
         // read from or written to during file-mode playback.
         self.state.lock().unwrap().current_disc_id.clear();
 
         let tracks = crate::file_player::collect_files_from_paths(&input_paths);
+        eprintln!("[dbg] load_local_tracks: collect_files_from_paths found {} track(s)", tracks.len());
         if tracks.is_empty() {
             eprintln!("[file] no audio files found in provided paths");
             return;
@@ -1518,7 +1537,7 @@ impl player_bridge::PlayerController {
             state.metadata_loaded    = true;
             state.smtc_album         = album_title.clone();
             state.smtc_album_artist  = album_artist.clone();
-            state.smtc_cover_url     = String::new();
+            state.smtc_cover_url     = cover_art.clone().unwrap_or_default();
             state.track_titles_plain = title_plain;
             state.track_artists_plain = artist_plain;
         }

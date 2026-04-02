@@ -107,7 +107,7 @@ pub fn fetch_synced_lyrics(
 
     // Fallback: if the structured search returned nothing, retry with a free-text query.
     if results.is_empty() && !artist_name.is_empty() {
-        let q = format!("{} {}", artist_name, track_name);
+        let q = format!("{} {}", track_name, artist_name);
         let fallback_url = format!(
             "https://lrclib.net/api/search?q={}",
             url_encode(&q),

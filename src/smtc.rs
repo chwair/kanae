@@ -41,12 +41,20 @@ impl SmtcHandle {
         match u {
             SmtcUpdate::Metadata { title, artist, album, cover_url, duration } => {
                 eprintln!("[smtc] set_metadata {:?} – {:?}", artist, title);
-                // Pass http(s) URLs as-is. For local files, pass the full file:///
-                // URI — WinRT's Windows::Foundation::Uri requires the standard
-                // three-slash form (file:///C:/path) for absolute Windows paths.
+                // Pass http(s) URLs as-is.
+                // Windows: WinRT requires the three-slash form file:///C:/path — pass as-is.
+                // macOS/Linux: souvlaki expects a file:// URI; convert bare absolute paths.
                 let normalised: Option<String> = cover_url.as_deref().and_then(|u| {
-                    if u.starts_with("http") || u.starts_with("file:///") {
+                    if u.starts_with("http") {
                         Some(u.to_string())
+                    } else if u.starts_with("file:///") {
+                        Some(u.to_string())
+                    } else if u.starts_with('/') {
+                        // Bare absolute POSIX path → file:// URI (macOS/Linux only)
+                        #[cfg(not(target_os = "windows"))]
+                        { Some(format!("file://{}", u)) }
+                        #[cfg(target_os = "windows")]
+                        { None }
                     } else {
                         None
                     }

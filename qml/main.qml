@@ -52,7 +52,11 @@ ApplicationWindow {
     property var _browseTracks: {
         var j = library.album_tracks_json.toString()
         if (!j || j === "[]") return []
-        try { return JSON.parse(j) } catch(e) { return [] }
+        try {
+            var parsed = JSON.parse(j)
+            if (parsed.length > 0) console.log("[dbg] _browseTracks updated: " + parsed.length + " tracks, first=" + JSON.stringify(parsed[0]))
+            return parsed
+        } catch(e) { return [] }
     }
 
     // Unified track list model: use browse data when previewing, player data when playing.
@@ -121,6 +125,24 @@ ApplicationWindow {
         _view = "album"
     }
 
+    // Called from the track list delegate to start playing a browsed library album.
+    // All window-property mutations live here so delegate scope issues are avoided.
+    property bool _suppressFileModeFlag: false
+    function playBrowsedTrack(idx) {
+        if (_browseDir !== "") {
+            var paths = _browseTracks.map(function(t){ return t.path })
+            console.log("[dbg] playBrowsedTrack: idx=" + idx + " paths=" + paths.length)
+            _browseDir = ""; _browseAlbumName = ""
+            _suppressFileModeFlag = true
+            player.openDroppedPaths(paths)
+            _suppressFileModeFlag = false
+            console.log("[dbg] after openDroppedPaths: total_tracks=" + player.total_tracks + " is_file_mode=" + player.is_file_mode)
+            Qt.callLater(function() { player.loadTrack(idx); player.playPause() })
+        } else {
+            player.loadTrack(idx); player.playPause()
+        }
+    }
+
     // Breadcrumbs computed relative to library search roots;
     // appends album name when viewing an album's track list
     property var _crumbs: {
@@ -156,6 +178,11 @@ ApplicationWindow {
         }
         if (_view === "album") {
             var aName = _browseDir !== "" ? _browseAlbumName : player.album_title.toString()
+            // For drag-and-drop / file mode, insert an unclickable 'Files' segment
+            // between Library and the album name.
+            if (_fileMode) {
+                base = base.concat([{name: "Files", path: "__files__"}])
+            }
             if (aName.length > 0) {
                 return base.concat([{name: aName, path: "__album__"}])
             }
@@ -175,7 +202,7 @@ ApplicationWindow {
     Connections {
         target: player
         function onIs_file_modeChanged() {
-            if (player.is_file_mode) { _fileMode = true; _browseDir = ""; _browseAlbumName = ""; _view = "album" }
+            if (player.is_file_mode && !window._suppressFileModeFlag) { _fileMode = true; _browseDir = ""; _browseAlbumName = ""; _view = "album" }
         }
     }
 
@@ -461,10 +488,51 @@ ApplicationWindow {
                         onClicked: window.visibility===Window.FullScreen?window.showNormal():window.showFullScreen()} }
             }
 
+            // macOS settings button (right side of titlebar)
+            Item {
+                id: macSettingsBtn
+                visible: Qt.platform.os === "osx"
+                anchors.right: parent.right; anchors.rightMargin: 12
+                anchors.verticalCenter: parent.verticalCenter
+                width: 22; height: 22
+
+                Rectangle {
+                    anchors.fill: parent; radius: 4
+                    color: macSettingsHov.containsMouse ? clrSurf2 : "transparent"
+                    border.color: macSettingsHov.containsMouse ? clrBorder : "transparent"
+                    border.width: 1
+                    Behavior on color { ColorAnimation { duration: 100 } }
+                }
+                Canvas {
+                    anchors.centerIn: parent; width: 12; height: 12
+                    property color ic: macSettingsHov.containsMouse ? clrText : clrText2
+                    onIcChanged: requestPaint()
+                    Component.onCompleted: requestPaint()
+                    onPaint: {
+                        var c = getContext("2d"); c.clearRect(0,0,12,12)
+                        c.fillStyle = ic
+                        var cx=6,cy=6,ri=2.6,ro=5.4,n=6
+                        c.beginPath()
+                        for(var i=0;i<n*2;i++){
+                            var a=(i*Math.PI/n)-Math.PI/2
+                            var r=i%2===0?ro:ri
+                            if(i===0)c.moveTo(cx+r*Math.cos(a),cy+r*Math.sin(a))
+                            else c.lineTo(cx+r*Math.cos(a),cy+r*Math.sin(a))
+                        }
+                        c.closePath(); c.fill()
+                        c.globalCompositeOperation="destination-out"
+                        c.beginPath(); c.arc(cx,cy,1.8,0,2*Math.PI); c.fill()
+                        c.globalCompositeOperation="source-over"
+                    }
+                }
+                MouseArea { id: macSettingsHov; anchors.fill: parent; hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor; onClicked: settingsWindow.show() }
+            }
+
             // Now playing (centre)
             Text {
                 anchors.left: Qt.platform.os === "osx" ? trafficLights.right : parent.left
-                anchors.right: Qt.platform.os === "osx" ? parent.right : winButtons.left
+                anchors.right: Qt.platform.os === "osx" ? macSettingsBtn.left : winButtons.left
                 anchors.leftMargin: 8; anchors.rightMargin: 8
                 anchors.verticalCenter: parent.verticalCenter
                 elide: Text.ElideRight
@@ -743,10 +811,10 @@ ApplicationWindow {
                                 Layout.fillWidth: true; spacing: 0; clip: true
 
                                 function navigateCrumb(itemPath) {
-                                    if (itemPath === "__album__") return
-                                    _canGoForwardToAlbum = false
-                                    _browseDir = ""; _browseAlbumName = ""; _fileMode = false; _showingCdView = false
-                                    _view = "library"
+                                    if (itemPath === "__album__" || itemPath === "__files__") return
+                                    window._canGoForwardToAlbum = false
+                                    window._browseDir = ""; window._browseAlbumName = ""; window._fileMode = false; window._showingCdView = false
+                                    window._view = "library"
                                     if (itemPath === "") library.navigateToRoot()
                                     else library.navigateTo(itemPath)
                                 }
@@ -759,7 +827,7 @@ ApplicationWindow {
                                         required property int index
                                         property bool crumbIsLast: window._view === "library"
                                             ? crumbDelegate.index === window._crumbs.length - 1
-                                            : crumbDelegate.modelData.path === "__album__"
+                                            : (crumbDelegate.modelData.path === "__album__" || crumbDelegate.modelData.path === "__files__")
                                         height: 34
                                         width: crumbInner.implicitWidth
 
@@ -1024,7 +1092,7 @@ ApplicationWindow {
                                             }
                                             if (modelData.kind === "cd") { if (player.is_file_mode) player.loadDisc(); window._canGoForwardToAlbum = false; window._showingCdView = true; window._browseDir = ""; window._browseAlbumName = ""; window._fileMode = false; window._view = "album" }
                                             else if (modelData.kind === "folder") library.navigateTo(modelData.path)
-                                            else { window._canGoForwardToAlbum = false; window._showingCdView = false; library.browseAlbum(modelData.path); window._browseDir = modelData.path; window._browseAlbumName = modelData.name; window._view = "album" }
+                                            else { window._canGoForwardToAlbum = false; window._showingCdView = false; window._fileMode = false; library.browseAlbum(modelData.path); window._browseDir = modelData.path; window._browseAlbumName = modelData.name; window._view = "album" }
                                         }
                                         onPressAndHold: {
                                             if (modelData.kind !== "cd") {
@@ -1080,7 +1148,7 @@ ApplicationWindow {
                                             }
                                             if(modelData.kind==="cd"){if(player.is_file_mode)player.loadDisc();window._canGoForwardToAlbum=false;window._showingCdView=true;window._browseDir="";window._browseAlbumName="";window._fileMode=false;window._view="album"}
                                             else if(modelData.kind==="folder") library.navigateTo(modelData.path)
-                                            else { window._canGoForwardToAlbum=false; window._showingCdView=false; library.browseAlbum(modelData.path); window._browseDir = modelData.path; window._browseAlbumName = modelData.name; window._view = "album" }
+                                            else { window._canGoForwardToAlbum=false; window._showingCdView=false; window._fileMode=false; library.browseAlbum(modelData.path); window._browseDir = modelData.path; window._browseAlbumName = modelData.name; window._view = "album" }
                                         }
                                     }
                                 }
@@ -1128,11 +1196,8 @@ ApplicationWindow {
                                     Text{text:modelData.duration;color:isCurrent?"#888":"#3a3a3a";font.pixelSize:11;font.family:"Consolas, monospace";Behavior on color{ColorAnimation{duration:110}}}
                                 }
                                 MouseArea{id:rowMs;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor;onClicked:{
-                                    if (_browseDir !== "") {
-                                        player.openDroppedPaths([_browseDir])
-                                        _browseDir = ""; _browseAlbumName = ""
-                                    }
-                                    player.loadTrack(index); player.playPause()
+                                    console.log("[dbg] track clicked: idx=" + index)
+                                    window.playBrowsedTrack(index)
                                 }}
                             }
                             ScrollBar.vertical:ScrollBar{id:vScrollBar;policy:ScrollBar.AsNeeded
@@ -1180,10 +1245,10 @@ ApplicationWindow {
             // ── Transport + volume ────────────────────────────────────────
             Rectangle{Layout.fillWidth:true;height:1;color:clrBorder}
             RowLayout{Layout.fillWidth:true;Layout.leftMargin:14;Layout.rightMargin:14;Layout.topMargin:10;Layout.bottomMargin:12;spacing:2
-                Item{width:30;height:30;opacity:player.current_track>0?1.0:0.26;Behavior on opacity{NumberAnimation{duration:160}}
+                Item{width:30;height:30;opacity:(player.current_track>0||player.current_time>4)?1.0:0.26;Behavior on opacity{NumberAnimation{duration:160}}
                     Canvas{anchors.centerIn:parent;width:13;height:13;onPaint:{var c=getContext("2d");c.clearRect(0,0,13,13);c.fillStyle=clrText;c.fillRect(0,0,2,13);c.beginPath();c.moveTo(12,0);c.lineTo(2,6.5);c.lineTo(12,13);c.closePath();c.fill()}}
-                    MouseArea{anchors.fill:parent;enabled:player.current_track>0;cursorShape:enabled?Qt.PointingHandCursor:Qt.ArrowCursor
-                        onClicked:{var wp=player.is_playing;player.previousTrack();if(wp)player.playPause()}}}
+                    MouseArea{anchors.fill:parent;enabled:player.current_track>0||player.current_time>4;cursorShape:enabled?Qt.PointingHandCursor:Qt.ArrowCursor
+                        onClicked:{if(player.current_time>4){player.seek(0)}else{var wp=player.is_playing;player.previousTrack();if(wp)player.playPause()}}}}
                 Rectangle{id:ppBtn;width:38;height:38;radius:4;color:ppMs.pressed?clrSurf2:ppMs.containsMouse?"#1c1c1c":clrSurface
                     opacity:player.total_tracks>0&&player.current_track>=0?1.0:0.32;border.color:clrBorder;border.width:1
                     Behavior on color{ColorAnimation{duration:90}}
@@ -1333,22 +1398,7 @@ ApplicationWindow {
             }
         }
 
-        // ── macOS eject button ────────────────────────────────────────────
-        Rectangle {
-            visible: Qt.platform.os==="osx" && (player.is_file_mode||player.total_tracks>0) && _view==="album"
-            anchors.right:parent.right;anchors.top:parent.top;anchors.rightMargin:10;anchors.topMargin:6
-            width:macEjectArea.containsMouse?macEjectLabel.implicitWidth+16:22; height:18; radius:3
-            color:macEjectArea.containsMouse?clrSurf2:"transparent"
-            border.color:macEjectArea.containsMouse?clrBorder:"transparent";border.width:1
-            Behavior on width{NumberAnimation{duration:120;easing.type:Easing.OutCubic}}
-            Behavior on color{ColorAnimation{duration:100}}
-            clip:true
-            Row{anchors.centerIn:parent;spacing:5
-                Canvas{anchors.verticalCenter:parent.verticalCenter;width:8;height:8;property color ic:macEjectArea.containsMouse?clrText:clrText2;onIcChanged:requestPaint();Component.onCompleted:requestPaint()
-                    onPaint:{var c=getContext("2d");c.clearRect(0,0,8,8);c.fillStyle=ic;c.beginPath();c.moveTo(4,0);c.lineTo(8,5);c.lineTo(0,5);c.closePath();c.fill();c.fillRect(0,6.5,8,1.5)}}
-                Text{id:macEjectLabel;anchors.verticalCenter:parent.verticalCenter;visible:macEjectArea.containsMouse;text:player.is_file_mode?"Close":"Eject";color:clrText2;font.pixelSize:10;font.family:"Segoe UI"}}
-            MouseArea{id:macEjectArea;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor;onClicked:player.ejectOrClose()}
-        }
+
     }
 
     Timer{id:smtcInitTimer;interval:500;repeat:false;running:false;onTriggered:player.initSmtc()}

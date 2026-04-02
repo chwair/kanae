@@ -289,7 +289,7 @@ impl library_bridge::LibraryController {
                 let meta = read_file_metadata(p);
                 let secs = meta.duration_secs as u64;
                 let dur = format!("{:02}:{:02}", secs / 60, secs % 60);
-                serde_json::json!({ "title": meta.title, "artist": meta.artist, "duration": dur })
+                serde_json::json!({ "title": meta.title, "artist": meta.artist, "duration": dur, "path": p.to_string_lossy() })
             })
             .collect();
         let json = serde_json::to_string(&tracks).unwrap_or_else(|_| "[]".to_string());
