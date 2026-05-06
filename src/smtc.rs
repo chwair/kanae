@@ -114,9 +114,51 @@ impl SmtcHandle {
     }
 }
 
-pub fn init() -> Option<SmtcHandle> {
-    println!("[smtc] smtc::init() reached");
+/// On macOS TUI mode: briefly pump the main run loop so MPRemoteCommandCenter
+/// can deliver queued media-key callbacks. Safe to call every tick; returns
+/// immediately when there is nothing pending.
+pub fn pump_runloop() {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        use objc::{class, msg_send, sel, sel_impl};
+        use objc::runtime::Object;
+        // [NSDate dateWithTimeIntervalSinceNow: 0.0]  →  returns "now"
+        let date_cls = class!(NSDate);
+        let now: *mut Object = msg_send![date_cls, dateWithTimeIntervalSinceNow: 0.0f64];
+        // [[NSRunLoop mainRunLoop] runUntilDate: now]  →  drains pending work, non-blocking
+        let rl_cls = class!(NSRunLoop);
+        let rl: *mut Object = msg_send![rl_cls, mainRunLoop];
+        let _: () = msg_send![rl, runUntilDate: now];
+    }
+}
+
+/// On macOS: initialise NSApplication once so the process is registered with
+/// the system media server (required for Now Playing / MPRemoteCommandCenter).
+#[cfg(target_os = "macos")]
+fn ensure_nsapplication(regular_app: bool) {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| unsafe {
+        use objc::{class, msg_send, sel, sel_impl};
+        use objc::runtime::Object;
+        let cls = class!(NSApplication);
+        let app: *mut Object = msg_send![cls, sharedApplication];
+        // Regular (0): normal GUI app, visible in Dock.
+        // Accessory (1): background/accessory app, no Dock icon/window binding.
+        let policy = if regular_app { 0i64 } else { 1i64 };
+        let _: () = msg_send![app, setActivationPolicy: policy];
+        eprintln!(
+            "[smtc] NSApplication initialized as {} app",
+            if regular_app { "regular" } else { "accessory" }
+        );
+    });
+}
+
+fn init_with_mode(regular_app_on_macos: bool) -> Option<SmtcHandle> {
     eprintln!("[smtc] init() called");
+
+    #[cfg(target_os = "macos")]
+    ensure_nsapplication(regular_app_on_macos);
 
     #[cfg(target_os = "windows")]
     set_app_user_model_id("com.chair.kanae");
@@ -184,6 +226,18 @@ pub fn init() -> Option<SmtcHandle> {
     })
 }
 
+pub fn init_for_gui() -> Option<SmtcHandle> {
+    init_with_mode(true)
+}
+
+pub fn init_for_tui() -> Option<SmtcHandle> {
+    init_with_mode(false)
+}
+
+pub fn init() -> Option<SmtcHandle> {
+    init_for_gui()
+}
+
 #[cfg(target_os = "windows")]
 fn set_app_user_model_id(id: &str) {
     use std::ffi::OsStr;
@@ -248,6 +302,16 @@ fn find_main_hwnd() -> usize {
     }
 
     unsafe { winapi::um::winuser::EnumWindows(Some(enum_cb), 0) };
-    FOUND.load(Ordering::SeqCst)
+    let found = FOUND.load(Ordering::SeqCst);
+    if found != 0 {
+        return found;
+    }
+    // Fallback for TUI mode (no Qt window): use the console window.
+    let console_hwnd = unsafe { winapi::um::wincon::GetConsoleWindow() };
+    if !console_hwnd.is_null() {
+        eprintln!("[smtc] using console HWND 0x{:X} as fallback", console_hwnd as usize);
+        return console_hwnd as usize;
+    }
+    0
 }
 

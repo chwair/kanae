@@ -50,6 +50,8 @@ pub struct ScanProgress {
     pub files_found: usize,
     pub dirs_visited: usize,
     pub current_dir: PathBuf,
+    /// Albums newly discovered since the last progress event (may be empty).
+    pub new_albums: Vec<LibraryAlbum>,
 }
 
 /// Final result of a completed scan.
@@ -122,6 +124,7 @@ fn scan_dir(
         files_found: files_count,
         dirs_visited: dirs_count,
         current_dir: dir.to_path_buf(),
+        new_albums: vec![],
     });
 
     let entries: Vec<PathBuf> = match std::fs::read_dir(dir) {
@@ -146,11 +149,19 @@ fn scan_dir(
         }
         // Group audio files in this directory by album tag.
         let tracks: Vec<_> = audio_files.iter().map(|p| read_file_metadata(p)).collect();
-        let albums = group_into_albums(dir, &tracks);
-        for album in albums {
-            result.albums.push(album);
+        let new_albums = group_into_albums(dir, &tracks);
+        for album in &new_albums {
+            result.albums.push(album.clone());
         }
         result.dirs.push(dir.to_path_buf());
+        // Deliver newly found albums to the UI incrementally.
+        let (fc, dc) = { let lock = counter.lock().unwrap(); (lock.0, lock.1) };
+        let _ = progress_tx.try_send(ScanProgress {
+            files_found: fc,
+            dirs_visited: dc,
+            current_dir: dir.to_path_buf(),
+            new_albums,
+        });
     } else if sub_dirs.is_empty() {
         // Empty directory — don't add to dirs (no point navigating here).
     } else if !audio_files.is_empty() || !sub_dirs.is_empty() {

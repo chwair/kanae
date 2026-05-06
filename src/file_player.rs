@@ -174,7 +174,8 @@ pub fn read_file_metadata(path: &Path) -> LocalTrack {
                     }, ext));
                 if std::fs::write(&dest, pic.data()).is_ok() {
                     let url_path = dest.to_string_lossy().replace('\\', "/");
-                    track.cover_art_path = Some(format!("file:///{}", url_path));
+                    // Trim any leading slash so format!() produces exactly 3 slashes.
+                    track.cover_art_path = Some(format!("file:///{}", url_path.trim_start_matches('/')));
                 }
             }
         }
@@ -187,7 +188,7 @@ pub fn read_file_metadata(path: &Path) -> LocalTrack {
                 let candidate = dir.join(name);
                 if candidate.exists() {
                     let url_path = candidate.to_string_lossy().replace('\\', "/");
-                    track.cover_art_path = Some(format!("file:///{}", url_path));
+                    track.cover_art_path = Some(format!("file:///{}", url_path.trim_start_matches('/')));
                     break;
                 }
             }

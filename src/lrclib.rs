@@ -27,7 +27,7 @@ struct GetResult {
     instrumental: Option<bool>,
 }
 
-const USER_AGENT: &str = "Kanae v0.1.0 (https://github.com/chwair/kanae)";
+const USER_AGENT: &str = concat!("Kanae v", env!("CARGO_PKG_VERSION"), " (https://github.com/chwair/kanae)");
 
 pub fn fetch_by_id(id: u64) -> Option<Vec<LyricLine>> {
     let url = format!("https://lrclib.net/api/get/{}", id);

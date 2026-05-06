@@ -186,17 +186,32 @@ impl library_bridge::LibraryController {
     }
 
     pub fn poll_scan(mut self: Pin<&mut Self>) {
-        let prog = {
+        // Drain all queued progress events, accumulate new albums and last message.
+        let (new_albums, last_msg) = {
             let st = self.state.lock().unwrap();
             if let Some(ref rx) = st.progress_rx {
-                let mut last = None;
-                while let Ok(p) = rx.try_recv() { last = Some(p); }
-                last
-            } else { None }
+                let mut all_new: Vec<crate::library::LibraryAlbum> = Vec::new();
+                let mut last_msg: Option<String> = None;
+                while let Ok(p) = rx.try_recv() {
+                    all_new.extend(p.new_albums);
+                    if p.files_found > 0 || p.dirs_visited > 0 {
+                        last_msg = Some(format!("Scanning\u{2026} {} files, {} folders", p.files_found, p.dirs_visited));
+                    }
+                }
+                (all_new, last_msg)
+            } else { (vec![], None) }
         };
-        if let Some(p) = prog {
-            let msg = format!("Scanning\u{2026} {} files, {} folders", p.files_found, p.dirs_visited);
+        if let Some(msg) = last_msg {
             self.as_mut().set_scan_message(QString::from(msg.as_str()));
+        }
+        // Merge partial albums into the scan result and refresh nodes incrementally.
+        if !new_albums.is_empty() {
+            {
+                let mut st = self.state.lock().unwrap();
+                let result = st.scan_result.get_or_insert_with(|| LibraryScanResult { albums: vec![], dirs: vec![] });
+                result.albums.extend(new_albums);
+            }
+            self.as_mut().refresh_nodes();
         }
 
         let picker = {

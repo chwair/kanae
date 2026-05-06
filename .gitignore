@@ -24,6 +24,7 @@ smtc_log.txt
 .idea/
 .vscode/
 *.user
+AGENTS.md
 
 # OS
 Thumbs.db

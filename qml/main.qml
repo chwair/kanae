@@ -127,11 +127,13 @@ ApplicationWindow {
 
     // Called from the track list delegate to start playing a browsed library album.
     // All window-property mutations live here so delegate scope issues are avoided.
-    property bool _suppressFileModeFlag: false
+    property bool   _suppressFileModeFlag: false
+    property string _playingAlbumDir: ""   // album dir currently loaded in the player from library
     function playBrowsedTrack(idx) {
         if (_browseDir !== "") {
             var paths = _browseTracks.map(function(t){ return t.path })
             console.log("[dbg] playBrowsedTrack: idx=" + idx + " paths=" + paths.length)
+            _playingAlbumDir = _browseDir
             _browseDir = ""; _browseAlbumName = ""
             _suppressFileModeFlag = true
             player.openDroppedPaths(paths)
@@ -447,6 +449,19 @@ ApplicationWindow {
                     }
 
                     Item { height: 12 }
+
+                    Rectangle { Layout.fillWidth:true; height:1; color:"#282828" }
+
+                    // Rescan library
+                    Rectangle {
+                        width:swRescanLbl.implicitWidth+20;height:28;radius:4
+                        color:swRescanHov.containsMouse?"#1e1e1e":"transparent";border.color:"#282828";border.width:1
+                        Behavior on color{ColorAnimation{duration:100}}
+                        Text{id:swRescanLbl;anchors.centerIn:parent;text:"↺ Rescan Library";color:"#686868";font.pixelSize:11;font.family:"Segoe UI"}
+                        MouseArea{id:swRescanHov;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor;onClicked:library.startScan()}
+                    }
+
+                    Item { height: 8 }
                 }
             }
         }
@@ -757,6 +772,44 @@ ApplicationWindow {
                             width:resyncLabel.implicitWidth+16;height:20;radius:3;color:clrSurf2;border.color:clrBorder;border.width:1;z:2
                             Text{id:resyncLabel;anchors.centerIn:parent;text:"\u21A9 resync";color:clrText2;font.pixelSize:10;font.family:"Segoe UI"}
                             MouseArea{anchors.fill:parent;cursorShape:Qt.PointingHandCursor;onClicked:{lyricsArea.userScrolled=false;lyricsArea.syncScroll(lyricsArea.activeIdx)}}
+                        }
+
+                        // ── Loading / empty overlay ───────────────────────
+                        Item {
+                            anchors.centerIn: parent; z: 3
+                            visible: player.lyrics_loading || (!player.lyrics_loading && player.lyric_lines.length === 0 && player.total_tracks > 0)
+                            width: parent.width; height: 40
+
+                            Text {
+                                id: noLyricsText
+                                anchors.centerIn: parent
+                                text: "No lyrics found."
+                                font.pixelSize: 11; font.family: "Segoe UI"
+                                visible: !player.lyrics_loading
+                                color: clrText2
+                            }
+
+                            Row {
+                                anchors.centerIn: parent
+                                visible: player.lyrics_loading
+                                spacing: 0
+                                Repeater {
+                                    model: 18  // "Loading lyrics...".length
+                                    delegate: Text {
+                                        text: "Loading lyrics..."[index]
+                                        font.pixelSize: 11; font.family: "Segoe UI"
+                                        color: clrText2
+                                        SequentialAnimation on color {
+                                            loops: Animation.Infinite
+                                            running: player.lyrics_loading
+                                            PauseAnimation  { duration: index * 70 }
+                                            ColorAnimation  { to: clrText;  duration: 300; easing.type: Easing.InOutSine }
+                                            ColorAnimation  { to: clrText2; duration: 300; easing.type: Easing.InOutSine }
+                                            PauseAnimation  { duration: (17 - index) * 70 }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1092,7 +1145,13 @@ ApplicationWindow {
                                             }
                                             if (modelData.kind === "cd") { if (player.is_file_mode) player.loadDisc(); window._canGoForwardToAlbum = false; window._showingCdView = true; window._browseDir = ""; window._browseAlbumName = ""; window._fileMode = false; window._view = "album" }
                                             else if (modelData.kind === "folder") library.navigateTo(modelData.path)
-                                            else { window._canGoForwardToAlbum = false; window._showingCdView = false; window._fileMode = false; library.browseAlbum(modelData.path); window._browseDir = modelData.path; window._browseAlbumName = modelData.name; window._view = "album" }
+                                            else {
+                                                window._canGoForwardToAlbum = false; window._showingCdView = false; window._fileMode = false
+                                                if (modelData.path === window._playingAlbumDir && player.is_file_mode) {
+                                                    window._browseDir = ""; window._browseAlbumName = modelData.name; window._view = "album"
+                                                    Qt.callLater(function() { if (player.current_track >= 0 && trackList.count > player.current_track) trackList.positionViewAtIndex(player.current_track, ListView.Center) })
+                                                } else { library.browseAlbum(modelData.path); window._browseDir = modelData.path; window._browseAlbumName = modelData.name; window._view = "album" }
+                                            }
                                         }
                                         onPressAndHold: {
                                             if (modelData.kind !== "cd") {
@@ -1148,7 +1207,13 @@ ApplicationWindow {
                                             }
                                             if(modelData.kind==="cd"){if(player.is_file_mode)player.loadDisc();window._canGoForwardToAlbum=false;window._showingCdView=true;window._browseDir="";window._browseAlbumName="";window._fileMode=false;window._view="album"}
                                             else if(modelData.kind==="folder") library.navigateTo(modelData.path)
-                                            else { window._canGoForwardToAlbum=false; window._showingCdView=false; window._fileMode=false; library.browseAlbum(modelData.path); window._browseDir = modelData.path; window._browseAlbumName = modelData.name; window._view = "album" }
+                                            else {
+                                                window._canGoForwardToAlbum=false; window._showingCdView=false; window._fileMode=false
+                                                if (modelData.path === window._playingAlbumDir && player.is_file_mode) {
+                                                    window._browseDir=""; window._browseAlbumName=modelData.name; window._view="album"
+                                                    Qt.callLater(function() { if (player.current_track >= 0 && trackList.count > player.current_track) trackList.positionViewAtIndex(player.current_track, ListView.Center) })
+                                                } else { library.browseAlbum(modelData.path); window._browseDir = modelData.path; window._browseAlbumName = modelData.name; window._view = "album" }
+                                            }
                                         }
                                     }
                                 }
@@ -1381,20 +1446,20 @@ ApplicationWindow {
 
         // ── Scan progress toast ───────────────────────────────────────────
         Rectangle {
-            anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: 12; z: 250
+            anchors.left: parent.left; anchors.bottom: parent.bottom; anchors.margins: 12; z: 250
             visible: library.is_scanning && library.scan_message.length > 0
             width: toastText.implicitWidth + 24; height: 28; radius: 4
-            color: clrSurf2; border.color: clrBorder; border.width: 1
+            color: clrSurface; border.color: clrBorder; border.width: 1
             opacity: visible ? 0.92 : 0
             Behavior on opacity { NumberAnimation { duration: 200 } }
             Row { anchors.centerIn:parent; spacing:8
                 Shape {
                     width:14;height:14;anchors.verticalCenter:parent.verticalCenter
                     RotationAnimator on rotation{from:0;to:360;duration:900;loops:Animation.Infinite;running:library.is_scanning}
-                    ShapePath{strokeColor:clrText2;strokeWidth:1.5;fillColor:"transparent";capStyle:ShapePath.RoundCap
+                    ShapePath{strokeColor:clrAccent;strokeWidth:1.5;fillColor:"transparent";capStyle:ShapePath.RoundCap
                         PathAngleArc{centerX:7;centerY:7;radiusX:5;radiusY:5;startAngle:-90;sweepAngle:250}}
                 }
-                Text{id:toastText;text:library.scan_message;color:clrText2;font.pixelSize:11;font.family:"Segoe UI";anchors.verticalCenter:parent.verticalCenter}
+                Text{id:toastText;text:library.scan_message;color:clrAccent;font.pixelSize:11;font.family:"Segoe UI";anchors.verticalCenter:parent.verticalCenter}
             }
         }
 
@@ -1402,7 +1467,7 @@ ApplicationWindow {
     }
 
     Timer{id:smtcInitTimer;interval:500;repeat:false;running:false;onTriggered:player.initSmtc()}
-    Component.onCompleted:{player.scanDrives();player.setVolumeLevel(0.8);smtcInitTimer.start();library.init()}
+    Component.onCompleted:{player.scanDrives();player.setVolumeLevel(1.0);smtcInitTimer.start();library.init()}
 
     function formatTime(s){if(s<0)s=0;var m=Math.floor(s/60);var sec=Math.floor(s%60);return(m<10?"0":"")+m+":"+(sec<10?"0":"")+sec}
 }

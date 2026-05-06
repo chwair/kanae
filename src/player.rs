@@ -50,6 +50,7 @@ mod player_bridge {
         #[qproperty(bool, is_loading)]
         #[qproperty(QStringList, lyric_lines)]
         #[qproperty(QStringList, lyric_times)]
+        #[qproperty(bool, lyrics_loading)]
         #[qproperty(bool, is_file_mode)]
         #[qproperty(bool, is_single_file)]
         type PlayerController = super::PlayerControllerRust;
@@ -181,7 +182,7 @@ impl Default for PlayerState {
             playback_start_offset: 0.0,
             playback_ended: Arc::new(AtomicBool::new(false)),
             playback_disc_error: Arc::new(AtomicBool::new(false)),
-            volume: Arc::new(AtomicU64::new((0.8_f64).to_bits())),
+            volume: Arc::new(AtomicU64::new((1.0_f64).to_bits())),
             heard_position: Arc::new(AtomicU64::new(0)),
             disc_load_result: Arc::new(Mutex::new(None)),
             disc_load_thread: None,
@@ -222,6 +223,7 @@ pub struct PlayerControllerRust {
     is_loading: bool,
     lyric_lines: QStringList,
     lyric_times: QStringList,
+    lyrics_loading: bool,
     is_file_mode: bool,
     is_single_file: bool,
 
@@ -249,6 +251,7 @@ impl Default for PlayerControllerRust {
             is_loading: false,
             lyric_lines: QStringList::default(),
             lyric_times: QStringList::default(),
+            lyrics_loading: false,
             is_file_mode: false,
             is_single_file: false,
             state: Arc::new(Mutex::new(PlayerState::default())),
@@ -1177,7 +1180,7 @@ impl player_bridge::PlayerController {
     pub fn init_smtc(self: Pin<&mut Self>) {
         println!("[smtc] init_smtc() called from QML");
         eprintln!("[smtc] initialising...");
-        match crate::smtc::init() {
+        match crate::smtc::init_for_gui() {
             Some(handle) => {
                 let mut state = self.state.lock().unwrap();
                 state.smtc_handle = Some(handle);
@@ -1205,11 +1208,13 @@ impl player_bridge::PlayerController {
     ) {
         self.as_mut().set_lyric_lines(QStringList::default());
         self.as_mut().set_lyric_times(QStringList::default());
+        self.as_mut().set_lyrics_loading(true);
 
         let track_name = track_name.to_string();
         let artist_name = artist_name.to_string();
 
         if track_name.is_empty() {
+            self.as_mut().set_lyrics_loading(false);
             return;
         }
 
@@ -1272,6 +1277,7 @@ impl player_bridge::PlayerController {
             x
         };
         let Some(maybe_lines) = result else { return };
+        self.as_mut().set_lyrics_loading(false);
         if let Some(t) = self.state.lock().unwrap().lyric_fetch_thread.take() {
             drop(t);
         }
@@ -1570,7 +1576,7 @@ impl player_bridge::PlayerController {
 
 /// Decode and play back a local audio file on a background thread.
 /// Progress is reported via `heard_position_arc` and `current_position`.
-fn play_local_file(
+pub(crate) fn play_local_file(
     file_path: std::path::PathBuf,
     start_offset: f64,
     stop_flag: Arc<AtomicBool>,
@@ -1727,7 +1733,7 @@ fn play_local_file(
     playback_ended_arc.store(true, Ordering::Relaxed);
 }
 
-fn eject_drive(drive_path: &str) {
+pub(crate) fn eject_drive(drive_path: &str) {
     #[cfg(target_os = "windows")]
     eject_drive_windows(drive_path);
 

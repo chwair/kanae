@@ -12,10 +12,24 @@ mod player;
 mod library;
 mod library_cache;
 mod library_controller;
+mod tui;
 
+use std::io::IsTerminal;
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let force_gui = args.iter().any(|a| a == "--gui" || a == "-g");
+
+    // If stdout is a terminal and we haven't been asked to force the GUI, use TUI.
+    if !force_gui && std::io::stdout().is_terminal() {
+        if let Err(e) = tui::run_tui() {
+            eprintln!("TUI error: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
     let mut app = QGuiApplication::new();
     let mut engine = QQmlApplicationEngine::new();
 
