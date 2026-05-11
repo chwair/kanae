@@ -1188,6 +1188,13 @@ impl TuiApp {
         }
 
         // Convert file:/// URL to a plain filesystem path.
+        #[cfg(windows)]
+        let path: String = if let Some(p) = url.strip_prefix("file:///") {
+            p.replace('/', "\\")
+        } else {
+            url.clone()
+        };
+        #[cfg(not(windows))]
         let path: String = if let Some(p) = url.strip_prefix("file:///") {
             format!("/{}", p)
         } else {
@@ -2968,11 +2975,65 @@ unsafe fn restore_stderr(saved: i32) {
     if saved >= 0 { dup2(saved, 2); close(saved); }
 }
 
+#[cfg(windows)]
+unsafe fn suppress_stderr() -> *mut std::ffi::c_void {
+    extern "system" {
+        fn GetStdHandle(nStdHandle: u32) -> *mut std::ffi::c_void;
+        fn SetStdHandle(nStdHandle: u32, hHandle: *mut std::ffi::c_void) -> i32;
+        fn CreateFileA(
+            lpFileName: *const u8,
+            dwDesiredAccess: u32,
+            dwShareMode: u32,
+            lpSecurityAttributes: *const std::ffi::c_void,
+            dwCreationDisposition: u32,
+            dwFlagsAndAttributes: u32,
+            hTemplateFile: *mut std::ffi::c_void,
+        ) -> *mut std::ffi::c_void;
+    }
+    const STD_ERROR_HANDLE: u32 = 0xFFFFFFF4; // (DWORD)(-12)
+    const GENERIC_WRITE: u32 = 0x40000000;
+    const FILE_SHARE_WRITE: u32 = 2;
+    const OPEN_EXISTING: u32 = 3;
+    const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
+    const INVALID_HANDLE_VALUE: usize = usize::MAX;
+
+    let saved = GetStdHandle(STD_ERROR_HANDLE);
+    let nul = CreateFileA(
+        b"NUL\0".as_ptr(),
+        GENERIC_WRITE,
+        FILE_SHARE_WRITE,
+        std::ptr::null(),
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        std::ptr::null_mut(),
+    );
+    if nul as usize != INVALID_HANDLE_VALUE {
+        SetStdHandle(STD_ERROR_HANDLE, nul);
+    }
+    saved
+}
+
+#[cfg(windows)]
+unsafe fn restore_stderr(saved: *mut std::ffi::c_void) {
+    extern "system" {
+        fn GetStdHandle(nStdHandle: u32) -> *mut std::ffi::c_void;
+        fn SetStdHandle(nStdHandle: u32, hHandle: *mut std::ffi::c_void) -> i32;
+        fn CloseHandle(hObject: *mut std::ffi::c_void) -> i32;
+    }
+    const STD_ERROR_HANDLE: u32 = 0xFFFFFFF4;
+
+    let current = GetStdHandle(STD_ERROR_HANDLE);
+    SetStdHandle(STD_ERROR_HANDLE, saved);
+    if !current.is_null() {
+        CloseHandle(current);
+    }
+}
+
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 pub fn run_tui() -> io::Result<()> {
     // Suppress stderr so stray debug prints don't corrupt the TUI display.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     let saved_stderr = unsafe { suppress_stderr() };
 
     // Set up terminal
@@ -3037,7 +3098,7 @@ pub fn run_tui() -> io::Result<()> {
     term.show_cursor()?;
 
     // Restore stderr now that the TUI is gone.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     unsafe { restore_stderr(saved_stderr); }
 
     Ok(())
