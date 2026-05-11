@@ -23,7 +23,8 @@ use ratatui::{
 };
 
 use unicode_width::UnicodeWidthChar;
-use ratatui_image::{picker::Picker, StatefulImage, protocol::StatefulProtocol};
+use ratatui_image::{picker::{Picker, ProtocolType}, StatefulImage, protocol::StatefulProtocol};
+use crate::library_cache::{TuiImageMethod, TuiSettings};
 use crate::cd_reader::{DriveInfo, TrackInfo};
 use crate::file_player::LocalTrack;
 use crate::library::{LibraryAlbum, LibraryNode, LibraryScanResult, LibrarySettings};
@@ -68,16 +69,119 @@ impl TuiLibraryNode {
             _                               => "",
         }
     }
-    fn icon(&self) -> &'static str {
+    fn icon(&self, ic: &Icons) -> &'static str {
         match self {
-            TuiLibraryNode::Folder { .. } => "▶",
-            TuiLibraryNode::Album  { .. } => "♪",
-            TuiLibraryNode::Cd            => "⊙",
+            TuiLibraryNode::Folder { .. } => ic.folder,
+            TuiLibraryNode::Album  { .. } => ic.album,
+            TuiLibraryNode::Cd            => ic.cd,
         }
     }
 }
 
-// ─── Player state ─────────────────────────────────────────────────────────────
+// ─── Icon sets ────────────────────────────────────────────────────────────────
+
+#[derive(Copy, Clone)]
+struct Icons {
+    spinner:      &'static [&'static str],
+    folder:       &'static str,
+    album:        &'static str,
+    cd:           &'static str,
+    album_ph:     &'static str,
+    nav_back:     &'static str,
+    nav_fwd:      &'static str,
+    play:         &'static str,
+    pause:        &'static str,
+    skip_prev:    &'static str,
+    skip_next:    &'static str,
+    checked:      &'static str,
+    unchecked:    &'static str,
+    sel_marker:   &'static str,
+    trash:        &'static str,
+    rescan:       &'static str,
+    add:          &'static str,
+    cycle_left:   &'static str,
+    cycle_right:  &'static str,
+    now_playing:  &'static str,
+    track_cur:    &'static str,
+}
+
+impl Icons {
+    fn from_set(set: crate::library_cache::TuiIconSet) -> Self {
+        use crate::library_cache::TuiIconSet;
+        match set {
+            TuiIconSet::NerdFonts => Icons {
+                // EE06–EE0B: nf-cod progress spinner frames
+                spinner:     &["\u{EE06}", "\u{EE07}", "\u{EE08}", "\u{EE09}", "\u{EE0A}", "\u{EE0B}"],
+                folder:      "\u{E5FF}",    // nf-cod-folder
+                album:       "\u{F0025}",   // nf-md-album
+                cd:          "\u{F0025}",
+                album_ph:    "\u{F0025}",
+                nav_back:    "\u{EA9B}",    // nf-cod-arrow_left
+                nav_fwd:     "\u{EA9C}",    // nf-cod-arrow_right
+                play:        "\u{F040A}",    // nf-cod-play
+                pause:       "\u{F03E4}",    // nf-cod-debug_pause
+                skip_prev:   "\u{F04AD}",   // nf-md-skip_previous
+                skip_next:   "\u{F04AE}",   // nf-md-skip_next
+                checked:     "\u{F0856}",   // nf-md-checkbox_marked
+                unchecked:   "\u{E640}",    // nf-pl-toggle_off
+                sel_marker:  "\u{F44A}",    // nf-cod-triangle_right
+                trash:       "\u{F0A79}",   // nf-md-trash_can
+                rescan:      "\u{F099B}",   // nf-md-reload
+                add:         "\u{F0415}",   // nf-md-plus
+                cycle_left:  "\u{F035E}",   // nf-md-chevron_left
+                cycle_right: "\u{F035F}",   // nf-md-chevron_right
+                now_playing: "\u{F040A}",
+                track_cur:   "\u{F040A} ",
+            },
+            TuiIconSet::Unicode => Icons {
+                spinner:     &["\u{25D0}", "\u{25D3}", "\u{25D1}", "\u{25D2}"],
+                folder:      "\u{25B6}",
+                album:       "\u{266A}",
+                cd:          "\u{2299}",
+                album_ph:    "\u{2299}",
+                nav_back:    "\u{2190}",
+                nav_fwd:     "\u{2192}",
+                play:        "\u{25B6}",
+                pause:       "\u{23F8}",
+                skip_prev:   "|\u{25C0}",
+                skip_next:   "\u{25B6}|",
+                checked:     "[\u{25A0}]",
+                unchecked:   "[\u{25A1}]",
+                sel_marker:  "\u{25B8}",
+                trash:       "\u{1F5D1}",
+                rescan:      "\u{21BA}",
+                add:         "+",
+                cycle_left:  "\u{25C0}",
+                cycle_right: "\u{25B6}",
+                now_playing: "\u{25B6}",
+                track_cur:   "\u{25B6} ",
+            },
+            TuiIconSet::PlainText => Icons {
+                spinner:     &["|", "/", "-", "\\\\"],
+                folder:      ">",
+                album:       "*",
+                cd:          "~",
+                album_ph:    "( )",
+                nav_back:    "<",
+                nav_fwd:     ">",
+                play:        ">",
+                pause:       "||",
+                skip_prev:   "|<",
+                skip_next:   ">|",
+                checked:     "[x]",
+                unchecked:   "[ ]",
+                sel_marker:  ">",
+                trash:       "[X]",
+                rescan:      "[R]",
+                add:         "[+]",
+                cycle_left:  "<",
+                cycle_right: ">",
+                now_playing: ">",
+                track_cur:   ">  ",
+            },
+        }
+    }
+}
 
 struct TuiPlayerState {
     // Drive / CD
@@ -572,13 +676,19 @@ impl TuiPlayerState {
     }
 
     fn fetch_lyrics_for_current(&mut self) {
-        let idx = self.current_track as usize;
+        let idx    = self.current_track as usize;
         let title  = self.track_titles.get(idx).cloned().unwrap_or_default();
         let raw_ar = self.track_artists.get(idx).cloned().unwrap_or_default();
         let artist = if raw_ar.is_empty() { self.album_artist.clone() } else { raw_ar };
         let dur    = self.total_time;
-        let disc_id     = self.current_disc_id.clone();
-        let track_idx   = self.current_track;
+        let disc_id   = self.current_disc_id.clone();
+        let track_idx = self.current_track;
+        let file_path: String = if self.is_file_mode && track_idx >= 0 {
+            self.file_tracks.get(track_idx as usize)
+                .map(|t| t.path.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        } else { String::new() };
+        let lrc_limit_disabled = crate::library_cache::load_settings().lrc_limit_disabled;
 
         if title.is_empty() { return; }
 
@@ -587,25 +697,52 @@ impl TuiPlayerState {
         self.lyrics_fetch_done = false;
 
         let gen = self.lyric_fetch_gen.fetch_add(1, Ordering::SeqCst) + 1;
-        let gen_arc      = self.lyric_fetch_gen.clone();
-        let result_slot  = { *self.lyric_result.lock().unwrap() = None; self.lyric_result.clone() };
+        let gen_arc     = self.lyric_fetch_gen.clone();
+        let result_slot = { *self.lyric_result.lock().unwrap() = None; self.lyric_result.clone() };
         if let Some(old) = self.lyric_fetch_thread.take() { drop(old); }
 
         let handle = thread::spawn(move || {
-            let mut cache = crate::lyric_cache::LyricCache::load();
-            let cached_id = if !disc_id.is_empty() && track_idx >= 0 {
-                cache.lookup(&disc_id, track_idx as u8)
-            } else { None };
-            let result = if let Some(id) = cached_id {
-                crate::lrclib::fetch_by_id(id)
+            use crate::lyric_cache::{LyricContentCache, cd_key, file_key};
+
+            let cache_key = if !disc_id.is_empty() && track_idx >= 0 {
+                cd_key(&disc_id, track_idx)
             } else {
-                crate::lrclib::fetch_synced_lyrics(&title, &artist, dur).map(|(id, lines)| {
-                    if !disc_id.is_empty() && track_idx >= 0 {
-                        cache.insert(&disc_id, track_idx as u8, id);
-                    }
-                    lines
-                })
+                file_key(&file_path, &title, &artist)
             };
+
+            let mut content_cache = LyricContentCache::load();
+
+            if content_cache.has_no_lyrics(&cache_key) {
+                eprintln!("[lrclib] no-lyrics cache hit for key {}", cache_key);
+                if gen_arc.load(Ordering::SeqCst) == gen {
+                    *result_slot.lock().unwrap() = Some(None);
+                }
+                return;
+            }
+
+            if let Some(raw_lrc) = content_cache.get_lrc(&cache_key) {
+                eprintln!("[lrclib] lrc content cache hit for key {}", cache_key);
+                content_cache.save();
+                let lines = crate::lrclib::parse_lrc(&raw_lrc);
+                if gen_arc.load(Ordering::SeqCst) == gen {
+                    *result_slot.lock().unwrap() = Some(if lines.is_empty() { None } else { Some(lines) });
+                }
+                return;
+            }
+
+            let result = match crate::lrclib::fetch_synced_lyrics(&title, &artist, dur) {
+                Some((_id, raw_lrc, lines)) => {
+                    content_cache.insert_lrc(&cache_key, &raw_lrc, lrc_limit_disabled);
+                    content_cache.save();
+                    Some(lines)
+                }
+                None => {
+                    content_cache.insert_no_lyrics(&cache_key, lrc_limit_disabled);
+                    content_cache.save();
+                    None
+                }
+            };
+
             if gen_arc.load(Ordering::SeqCst) == gen {
                 *result_slot.lock().unwrap() = Some(result);
             }
@@ -711,7 +848,7 @@ impl TuiLibraryState {
                     self.scan_message = format!("Scanning\u{2026} {} files, {} folders", p.files_found, p.dirs_visited);
                 }
                 if !p.new_albums.is_empty() {
-                    let result = self.scan_result.get_or_insert_with(|| crate::library::LibraryScanResult { albums: vec![], dirs: vec![] });
+                    let result = self.scan_result.get_or_insert_with(|| crate::library::LibraryScanResult { albums: vec![], dirs: vec![], dir_mtimes: Default::default() });
                     result.albums.extend(p.new_albums);
                     has_new = true;
                 }
@@ -958,6 +1095,12 @@ struct TuiApp {
     settings_selected:   usize,
     settings_input_mode: bool,
     settings_input_text: String,
+    // TUI-specific settings (image method, etc.)
+    tui_settings:        TuiSettings,
+    // Auto-detected image protocol (saved at startup so "Auto" can be restored)
+    auto_detected_proto: Option<ProtocolType>,
+    // Active icon set for TUI rendering
+    icons: Icons,
 }
 
 impl TuiApp {
@@ -970,6 +1113,8 @@ impl TuiApp {
             player.current_drive_idx = Some(0);
             player.load_disc();
         }
+        let tui_settings = crate::library_cache::load_tui_settings();
+        let icons        = Icons::from_set(tui_settings.icon_set);
         Self {
             player,
             library,
@@ -1025,6 +1170,9 @@ impl TuiApp {
             settings_selected:   0,
             settings_input_mode: false,
             settings_input_text: String::new(),
+            tui_settings,
+            auto_detected_proto: None,
+            icons,
         }
     }
 
@@ -1062,6 +1210,36 @@ impl TuiApp {
                 self.cover_protocol = None;
             }
         }
+    }
+
+    /// Apply a (potentially changed) image method setting to the picker.
+    fn apply_image_method(&mut self) {
+        let proto = match self.tui_settings.image_method {
+            TuiImageMethod::None => {
+                self.picker = None;
+                self.cover_protocol = None;
+                self.cover_loaded_url.clear();
+                return;
+            }
+            TuiImageMethod::Auto => {
+                self.auto_detected_proto.unwrap_or(ProtocolType::Halfblocks)
+            }
+            TuiImageMethod::Halfblocks => ProtocolType::Halfblocks,
+            TuiImageMethod::Sixel      => ProtocolType::Sixel,
+            TuiImageMethod::Kitty      => ProtocolType::Kitty,
+            TuiImageMethod::Iterm2     => ProtocolType::Iterm2,
+        };
+        match self.picker.as_mut() {
+            Some(p) => p.set_protocol_type(proto),
+            None    => {
+                let mut p = Picker::halfblocks();
+                p.set_protocol_type(proto);
+                self.picker = Some(p);
+            }
+        }
+        // Force cover reload with the new protocol.
+        self.cover_protocol = None;
+        self.cover_loaded_url.clear();
     }
 
     fn tick(&mut self) {
@@ -1454,10 +1632,11 @@ fn render_title_bar(app: &TuiApp, frame: &mut Frame, area: Rect) {
             let a = app.player.track_artists.get(i).map(|s| s.as_str()).unwrap_or("");
             if a.is_empty() { app.player.album_artist.as_str() } else { a }
         };
+        let np = app.icons.now_playing;
         if artist.is_empty() {
-            format!("▶  {}  ·  {}", num, title)
+            format!("{}  {}  ·  {}", np, num, title)
         } else {
-            format!("▶  {}  ·  {}  —  {}", num, artist, title)
+            format!("{}  {}  ·  {}  —  {}", np, num, artist, title)
         }
     } else { String::new() };
 
@@ -1534,7 +1713,7 @@ fn render_sidebar(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         let mid_x = inner.x + inner.width / 2 - 1;
         let icon_area = Rect { x: mid_x.saturating_sub(1), y: mid_y, width: 4, height: 1 };
         frame.render_widget(
-            Paragraph::new(" ⊙ ").style(Style::default().fg(CLR_MUTED)),
+            Paragraph::new(format!(" {} ", app.icons.album_ph)).style(Style::default().fg(CLR_MUTED)),
             icon_area,
         );
     }
@@ -1678,9 +1857,14 @@ fn render_path_bar(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     let back_style = if can_back { Style::default().fg(CLR_ACCENT) } else { Style::default().fg(CLR_MUTED) };
     let fwd_style  = if can_fwd  { Style::default().fg(CLR_ACCENT) } else { Style::default().fg(CLR_MUTED) };
 
+    // Compute nav button texts + widths (depend on icon set)
+    let back_txt = format!(" {} ", app.icons.nav_back);
+    let fwd_txt  = format!("{} ", app.icons.nav_fwd);
+    let back_dw  = display_width(&back_txt) as u16;
+    let fwd_dw   = display_width(&fwd_txt) as u16;
     // Save button rects
-    app.btn_back = Rect { x: area.x,     y: area.y, width: 3, height: 1 };
-    app.btn_fwd  = Rect { x: area.x + 3, y: area.y, width: 2, height: 1 };
+    app.btn_back = Rect { x: area.x,           y: area.y, width: back_dw, height: 1 };
+    app.btn_fwd  = Rect { x: area.x + back_dw, y: area.y, width: fwd_dw,  height: 1 };
 
     // Build breadcrumb spans + track click rects
     app.breadcrumb_rects.clear();
@@ -1691,12 +1875,12 @@ fn render_path_bar(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     let current_style = Style::default().fg(CLR_TEXT2);
 
     let mut spans: Vec<Span> = vec![
-        Span::styled(" ← ", back_style),
-        Span::styled("→ ", fwd_style),
+        Span::styled(back_txt, back_style),
+        Span::styled(fwd_txt,  fwd_style),
     ];
 
-    // Running X position (buttons consume 5 display cols: 3 + 2)
-    let mut cur_x = area.x + 5u16;
+    // Running X position (computed from actual nav button widths)
+    let mut cur_x = area.x + back_dw + fwd_dw;
 
     // "Library" root segment — always shown, always clickable
     let lib_text = "Library";
@@ -1757,8 +1941,9 @@ fn render_library(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     app.content_item_rects.clear();
 
     if app.library.is_scanning && app.library.nodes.is_empty() {
+        let spin = app.icons.spinner[app.lyric_shimmer_phase % app.icons.spinner.len()];
         frame.render_widget(
-            Paragraph::new(format!(" ⟳ {}", app.library.scan_message))
+            Paragraph::new(format!(" {} {}", spin, app.library.scan_message))
                 .style(Style::default().fg(CLR_TEXT2)),
             area,
         );
@@ -1796,7 +1981,7 @@ fn render_library(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
 
         let is_selected = row == sel;
         let w = area.width as usize;
-        let icon   = node.icon();
+        let icon   = node.icon(&app.icons);
         let name   = node.name();
         let sub    = node.sub();
         let yr     = node.year();
@@ -1849,8 +2034,9 @@ fn render_track_list(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
 
     // Loading indicator
     if app.player.is_loading && app.browse_dir.is_none() {
+        let spin = app.icons.spinner[app.lyric_shimmer_phase % app.icons.spinner.len()];
         frame.render_widget(
-            Paragraph::new(" ⟳ Reading disc…").style(Style::default().fg(CLR_TEXT2)),
+            Paragraph::new(format!(" {} Reading disc…", spin)).style(Style::default().fg(CLR_TEXT2)),
             area,
         );
         return;
@@ -1898,7 +2084,7 @@ fn render_track_list(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         let title_w  = if artist.is_empty() { avail } else { avail * 6 / 10 };
         let artist_w = avail.saturating_sub(title_w);
 
-        let indicator = if is_current { "\u{25b6} " } else { "  " };
+        let indicator = if is_current { app.icons.track_cur } else { "  " };
         let num_str   = format!("{:>2} ", row + 1);
         let title_display  = marquee(title,  title_w,  app.marquee_phase);
         let artist_display = if artist.is_empty() { String::new() } else { marquee(artist, artist_w, app.marquee_phase) };
@@ -2010,13 +2196,16 @@ fn render_controls(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     let has_tracks  = app.player.total_tracks > 0 && app.player.current_track >= 0;
     let prev_style  = if app.player.current_track > 0 || app.player.current_time() > 4.0 {
         Style::default().fg(CLR_TEXT) } else { Style::default().fg(CLR_MUTED) };
-    let pp_char     = if app.player.is_playing { "⏸" } else { "▶" };
+    let pp_char     = if app.player.is_playing { app.icons.pause } else { app.icons.play };
     let next_style  = if app.player.current_track < app.player.total_tracks - 1 {
         Style::default().fg(CLR_TEXT) } else { Style::default().fg(CLR_MUTED) };
     let pp_style    = if has_tracks { Style::default().fg(CLR_ACCENT) } else { Style::default().fg(CLR_MUTED) };
 
-    // transport_w: "|◀"(2) + " "(1) + pp(1) + " "(1) + "▶|"(2) + " "(1) = 8
-    let transport_w = 8usize;
+    // Compute button widths from the active icon set
+    let prev_dw = display_width(app.icons.skip_prev) as u16;
+    let pp_dw   = display_width(pp_char) as u16;
+    let next_dw = display_width(app.icons.skip_next) as u16;
+    let transport_w = (prev_dw + 1 + pp_dw + 1 + next_dw + 1) as usize;
     // Track label fills space between transport and volume (right-aligned)
     let centre_w = (area.width as usize).saturating_sub(transport_w + vol_total_w);
     let centre_label = if has_tracks {
@@ -2033,20 +2222,20 @@ fn render_controls(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     let label = marquee(&centre_label, centre_w, app.marquee_phase);
 
     // Button rects
-    app.btn_prev = Rect { x: area.x,     y: area.y, width: 2, height: 1 };
-    app.btn_play = Rect { x: area.x + 3, y: area.y, width: 1, height: 1 };
-    app.btn_next = Rect { x: area.x + 5, y: area.y, width: 2, height: 1 };
+    app.btn_prev = Rect { x: area.x,                             y: area.y, width: prev_dw, height: 1 };
+    app.btn_play = Rect { x: area.x + prev_dw + 1,               y: area.y, width: pp_dw,   height: 1 };
+    app.btn_next = Rect { x: area.x + prev_dw + 1 + pp_dw + 1,   y: area.y, width: next_dw, height: 1 };
 
     // Volume bar rect at the far right
     let vol_bar_x = area.x + area.width.saturating_sub(vol_total_w as u16);
     app.vol_bar_rect = Rect { x: vol_bar_x, y: area.y, width: vol_bar_w as u16, height: 1 };
 
     let line = Line::from(vec![
-        Span::styled("|◀", prev_style),
+        Span::styled(app.icons.skip_prev, prev_style),
         Span::styled(" ", Style::default()),
         Span::styled(pp_char, pp_style),
         Span::styled(" ", Style::default()),
-        Span::styled("▶|", next_style),
+        Span::styled(app.icons.skip_next, next_style),
         Span::styled(" ", Style::default()),
         Span::styled(label, Style::default().fg(CLR_TEXT2)),
         Span::styled(vol_bar, Style::default().fg(CLR_TEXT2)),
@@ -2067,7 +2256,8 @@ fn render_controls(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
 
 fn render_scan_toast(app: &TuiApp, frame: &mut Frame, body_area: Rect) {
     if !app.library.is_scanning || app.library.scan_message.is_empty() { return; }
-    let msg = format!(" ● {} ", &app.library.scan_message);
+    let spin = app.icons.spinner[app.lyric_shimmer_phase % app.icons.spinner.len()];
+    let msg  = format!(" {} {} ", spin, &app.library.scan_message);
     let w = (msg.len() as u16).min(body_area.width.saturating_sub(2)).max(1);
     let toast_rect = Rect {
         x: body_area.x + 1,
@@ -2084,13 +2274,25 @@ fn render_scan_toast(app: &TuiApp, frame: &mut Frame, body_area: Rect) {
 fn render_settings(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     let paths     = app.library.settings.search_paths.clone();
     let merge_all = app.library.settings.merge_all_folders;
-    let n_paths   = paths.len();
-    let idx_add    = n_paths;
-    let idx_merge  = n_paths + 1;
-    let idx_rescan = n_paths + 2;
-    let total      = n_paths + 3;
+    let lrc_limit_disabled = app.library.settings.lrc_limit_disabled;
+    let n_paths          = paths.len();
+    let idx_add          = n_paths;
+    let idx_merge        = n_paths + 1;
+    let idx_image        = n_paths + 2;
+    let idx_iconset      = n_paths + 3;
+    let idx_lrc_lim      = n_paths + 4;
+    let idx_purge_lrc    = n_paths + 5;
+    let idx_purge_nolyrics = n_paths + 6;
+    let idx_rescan       = n_paths + 7;
+    let total            = n_paths + 8;
     if app.settings_selected >= total { app.settings_selected = total.saturating_sub(1); }
     let sel = app.settings_selected;
+
+    // Live cache counts
+    let (lrc_count, no_lyrics_count) = {
+        let c = crate::lyric_cache::LyricContentCache::load();
+        (c.lrc_count(), c.no_lyrics_count())
+    };
 
     let [header_area, list_area, hint_area] = Layout::vertical([
         Constraint::Length(2),
@@ -2099,53 +2301,205 @@ fn render_settings(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     ]).areas(area);
 
     frame.render_widget(
-        Paragraph::new(" Settings").style(Style::default().fg(CLR_TEXT).bold()),
+        Paragraph::new(Line::from(vec![
+            Span::styled(" Settings", Style::default().fg(CLR_TEXT).add_modifier(Modifier::BOLD)),
+        ])),
         header_area,
     );
 
+    // Width available for drawing dashes in section headers
+    let w = area.width.saturating_sub(2) as usize;
+
     let mut items: Vec<Line> = Vec::new();
+
+    // ── Library section ───────────────────────────────────────────────────
+    let hdr_lib = format!(" ─ Library {}", "─".repeat(w.saturating_sub(11)));
+    items.push(Line::from(vec![
+        Span::styled(hdr_lib, Style::default().fg(CLR_BORDER)),
+    ]));
+    items.push(Line::from(vec![
+        Span::styled("   Search Paths", Style::default().fg(CLR_TEXT).add_modifier(Modifier::BOLD)),
+    ]));
+    items.push(Line::from(vec![
+        Span::styled("   Folders that Kanae will scan for music", Style::default().fg(CLR_TEXT2)),
+    ]));
+
+    // Path rows
     for (i, p) in paths.iter().enumerate() {
-        let name = p.to_string_lossy();
-        let (marker, style) = if sel == i {
-            ("▸", Style::default().fg(CLR_ACCENT))
+        let name   = p.to_string_lossy();
+        let is_sel = sel == i;
+        let (marker, style) = if is_sel {
+            (app.icons.sel_marker, Style::default().fg(CLR_ACCENT))
         } else {
             (" ", Style::default().fg(CLR_TEXT2))
         };
-        items.push(Line::styled(format!("{} {}", marker, name), style));
+        items.push(Line::from(vec![
+            Span::styled(format!("  {} ", marker), style),
+            Span::styled(name.into_owned(), style),
+            Span::styled("  ×", Style::default().fg(CLR_MUTED)),
+        ]));
     }
-    // Add folder row
+
+    // "+ Add folder" row
     if app.settings_input_mode && sel == idx_add {
-        items.push(Line::styled(
-            format!("▸ Path: {}_", app.settings_input_text),
-            Style::default().fg(CLR_ACCENT),
-        ));
+        items.push(Line::from(vec![
+            Span::styled(format!("  {} Path: ", app.icons.sel_marker), Style::default().fg(CLR_ACCENT)),
+            Span::styled(format!("{}_", app.settings_input_text), Style::default().fg(CLR_TEXT)),
+        ]));
     } else {
         let (marker, style) = if sel == idx_add {
-            ("▸", Style::default().fg(CLR_ACCENT))
+            (app.icons.sel_marker, Style::default().fg(CLR_ACCENT))
         } else {
             (" ", Style::default().fg(CLR_TEXT2))
         };
-        items.push(Line::styled(format!("{} [+] Add folder...", marker), style));
+        items.push(Line::from(vec![
+            Span::styled(format!("  {} {} Add folder…", marker, app.icons.add), style),
+        ]));
     }
-    // Merge all toggle
-    let check = if merge_all { "■" } else { "□" };
-    let (marker, style) = if sel == idx_merge {
-        ("▸", Style::default().fg(CLR_ACCENT))
-    } else {
-        (" ", Style::default().fg(CLR_TEXT2))
-    };
-    items.push(Line::styled(format!("{} {} Merge all folders", marker, check), style));
-    // Rescan
-    let (marker, style) = if sel == idx_rescan {
-        ("▸", Style::default().fg(CLR_ACCENT))
-    } else {
-        (" ", Style::default().fg(CLR_TEXT2))
-    };
-    items.push(Line::styled(format!("{} [↺] Rescan library", marker), style));
+
+    // Blank spacer
+    items.push(Line::raw(""));
+
+    // Merge-all toggle
+    {
+        let check    = if merge_all { app.icons.checked } else { app.icons.unchecked };
+        let is_sel   = sel == idx_merge;
+        let (marker, row_style) = if is_sel {
+            (app.icons.sel_marker, Style::default().fg(CLR_ACCENT))
+        } else {
+            (" ", Style::default().fg(CLR_TEXT2))
+        };
+        let label_style = if is_sel { Style::default().fg(CLR_TEXT) } else { Style::default().fg(CLR_TEXT2) };
+        items.push(Line::from(vec![
+            Span::styled(format!("  {} {} ", marker, check), row_style),
+            Span::styled("Merge all folders", label_style),
+        ]));
+        items.push(Line::from(vec![
+            Span::styled("         Show only albums, hide folder tiles", Style::default().fg(CLR_MUTED)),
+        ]));
+    }
+
+    // ── TUI section ───────────────────────────────────────────────────────
+    items.push(Line::raw(""));
+    let hdr_tui = format!(" ─ TUI {}", "─".repeat(w.saturating_sub(7)));
+    items.push(Line::from(vec![
+        Span::styled(hdr_tui, Style::default().fg(CLR_BORDER)),
+    ]));
+
+    // Image method selector
+    {
+        let method_label = app.tui_settings.image_method.label();
+        let is_sel = sel == idx_image;
+        let (marker, row_style) = if is_sel {
+            (app.icons.sel_marker, Style::default().fg(CLR_ACCENT))
+        } else {
+            (" ", Style::default().fg(CLR_TEXT2))
+        };
+        let val_style = if is_sel { Style::default().fg(CLR_TEXT) } else { Style::default().fg(CLR_MUTED) };
+        items.push(Line::from(vec![
+            Span::styled(format!("  {} Image method", marker), row_style),
+            Span::styled(format!("  {} {} {}", app.icons.cycle_left, method_label, app.icons.cycle_right), val_style),
+        ]));
+        items.push(Line::from(vec![
+            Span::styled("      Cover art rendering method", Style::default().fg(CLR_MUTED)),
+        ]));
+    }
+
+    // Icon set selector
+    {
+        let iconset_label = app.tui_settings.icon_set.label();
+        let is_sel = sel == idx_iconset;
+        let (marker, row_style) = if is_sel {
+            (app.icons.sel_marker, Style::default().fg(CLR_ACCENT))
+        } else {
+            (" ", Style::default().fg(CLR_TEXT2))
+        };
+        let val_style = if is_sel { Style::default().fg(CLR_TEXT) } else { Style::default().fg(CLR_MUTED) };
+        items.push(Line::from(vec![
+            Span::styled(format!("  {} Icon set", marker), row_style),
+            Span::styled(format!("  {} {} {}", app.icons.cycle_left, iconset_label, app.icons.cycle_right), val_style),
+        ]));
+        items.push(Line::from(vec![
+            Span::styled("      Nerd Fonts requires a patched terminal font", Style::default().fg(CLR_MUTED)),
+        ]));
+    }
+
+    // ── Lyric Cache section ───────────────────────────────────────────────
+    items.push(Line::raw(""));
+    let hdr_lyr = format!(" ─ Lyric Cache {}", "─".repeat(w.saturating_sub(15)));
+    items.push(Line::from(vec![
+        Span::styled(hdr_lyr, Style::default().fg(CLR_BORDER)),
+    ]));
+
+    // Disable limit toggle
+    {
+        let check    = if lrc_limit_disabled { app.icons.checked } else { app.icons.unchecked };
+        let is_sel   = sel == idx_lrc_lim;
+        let (marker, row_style) = if is_sel {
+            (app.icons.sel_marker, Style::default().fg(CLR_ACCENT))
+        } else {
+            (" ", Style::default().fg(CLR_TEXT2))
+        };
+        let label_style = if is_sel { Style::default().fg(CLR_TEXT) } else { Style::default().fg(CLR_TEXT2) };
+        items.push(Line::from(vec![
+            Span::styled(format!("  {} {} ", marker, check), row_style),
+            Span::styled("Disable 100-entry limit", label_style),
+        ]));
+        items.push(Line::from(vec![
+            Span::styled("         Keep all cached lyrics indefinitely", Style::default().fg(CLR_MUTED)),
+        ]));
+    }
+
+    // Purge LRC
+    {
+        let is_sel = sel == idx_purge_lrc;
+        let (marker, style) = if is_sel {
+            (app.icons.sel_marker, Style::default().fg(CLR_ACCENT))
+        } else {
+            (" ", Style::default().fg(CLR_TEXT2))
+        };
+        items.push(Line::from(vec![
+            Span::styled(format!("  {} {} Purge LRC cache", marker, app.icons.trash), style),
+            Span::styled(format!("  ({})", lrc_count), Style::default().fg(CLR_MUTED)),
+        ]));
+    }
+
+    // Purge no-lyrics
+    {
+        let is_sel = sel == idx_purge_nolyrics;
+        let (marker, style) = if is_sel {
+            (app.icons.sel_marker, Style::default().fg(CLR_ACCENT))
+        } else {
+            (" ", Style::default().fg(CLR_TEXT2))
+        };
+        items.push(Line::from(vec![
+            Span::styled(format!("  {} {} Purge no-lyrics cache", marker, app.icons.trash), style),
+            Span::styled(format!("  ({})", no_lyrics_count), Style::default().fg(CLR_MUTED)),
+        ]));
+    }
+
+    // ── Actions section ───────────────────────────────────────────────────
+    items.push(Line::raw(""));
+    let hdr_act = format!(" ─ Actions {}", "─".repeat(w.saturating_sub(11)));
+    items.push(Line::from(vec![
+        Span::styled(hdr_act, Style::default().fg(CLR_BORDER)),
+    ]));
+
+    {
+        let is_sel = sel == idx_rescan;
+        let (marker, style) = if is_sel {
+            (app.icons.sel_marker, Style::default().fg(CLR_ACCENT))
+        } else {
+            (" ", Style::default().fg(CLR_TEXT2))
+        };
+        items.push(Line::from(vec![
+            Span::styled(format!("  {} {} Rescan library", marker, app.icons.rescan), style),
+        ]));
+    }
 
     frame.render_widget(Paragraph::new(items), list_area);
     frame.render_widget(
-        Paragraph::new(" ↑↓:navigate  Enter:activate  Del:remove path  s/Esc:close")
+        Paragraph::new(" ↑↓:nav  Enter/◀▶:activate  Del:remove path  s/Esc:close")
             .style(Style::default().fg(CLR_MUTED)),
         hint_area,
     );
@@ -2215,9 +2569,41 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
 
         // Seek with Left/Right
         KeyCode::Left if modifiers.is_empty() => {
+            if app.view == View::Settings && !app.settings_input_mode {
+                let paths_len = app.library.settings.search_paths.len();
+                let idx_image   = paths_len + 2;
+                let idx_iconset = paths_len + 3;
+                if app.settings_selected == idx_image {
+                    app.tui_settings.image_method = app.tui_settings.image_method.prev();
+                    crate::library_cache::save_tui_settings(&app.tui_settings);
+                    app.apply_image_method();
+                    return;
+                } else if app.settings_selected == idx_iconset {
+                    app.tui_settings.icon_set = app.tui_settings.icon_set.prev();
+                    crate::library_cache::save_tui_settings(&app.tui_settings);
+                    app.icons = Icons::from_set(app.tui_settings.icon_set);
+                    return;
+                }
+            }
             app.player.seek((app.player.current_time() - 5.0).max(0.0));
         }
         KeyCode::Right if modifiers.is_empty() => {
+            if app.view == View::Settings && !app.settings_input_mode {
+                let paths_len = app.library.settings.search_paths.len();
+                let idx_image   = paths_len + 2;
+                let idx_iconset = paths_len + 3;
+                if app.settings_selected == idx_image {
+                    app.tui_settings.image_method = app.tui_settings.image_method.next();
+                    crate::library_cache::save_tui_settings(&app.tui_settings);
+                    app.apply_image_method();
+                    return;
+                } else if app.settings_selected == idx_iconset {
+                    app.tui_settings.icon_set = app.tui_settings.icon_set.next();
+                    crate::library_cache::save_tui_settings(&app.tui_settings);
+                    app.icons = Icons::from_set(app.tui_settings.icon_set);
+                    return;
+                }
+            }
             app.player.seek((app.player.current_time() + 5.0).min(app.player.total_time));
         }
         // Path/history navigation with Shift+Left/Right
@@ -2290,10 +2676,15 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Enter => {
             match app.view {
                 View::Settings => {
-                    let paths_len  = app.library.settings.search_paths.len();
-                    let idx_add    = paths_len;
-                    let idx_merge  = paths_len + 1;
-                    let idx_rescan = paths_len + 2;
+                    let paths_len         = app.library.settings.search_paths.len();
+                    let idx_add           = paths_len;
+                    let idx_merge         = paths_len + 1;
+                    let idx_image         = paths_len + 2;
+                    let idx_iconset       = paths_len + 3;
+                    let idx_lrc_lim       = paths_len + 4;
+                    let idx_purge_lrc     = paths_len + 5;
+                    let idx_purge_nolyrics = paths_len + 6;
+                    let idx_rescan        = paths_len + 7;
                     let sel = app.settings_selected;
                     if app.settings_input_mode {
                         // Confirm typed path
@@ -2321,8 +2712,29 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
                         app.library.settings.merge_all_folders = !app.library.settings.merge_all_folders;
                         crate::library_cache::save_settings(&app.library.settings);
                         app.library.refresh_nodes(None);
+                    } else if sel == idx_image {
+                        app.tui_settings.image_method = app.tui_settings.image_method.next();
+                        crate::library_cache::save_tui_settings(&app.tui_settings);
+                        app.apply_image_method();
+                    } else if sel == idx_iconset {
+                        app.tui_settings.icon_set = app.tui_settings.icon_set.next();
+                        crate::library_cache::save_tui_settings(&app.tui_settings);
+                        app.icons = Icons::from_set(app.tui_settings.icon_set);
                     } else if sel == idx_rescan {
                         app.library.start_scan();
+                    } else if sel == idx_lrc_lim {
+                        app.library.settings.lrc_limit_disabled = !app.library.settings.lrc_limit_disabled;
+                        crate::library_cache::save_settings(&app.library.settings);
+                    } else if sel == idx_purge_lrc {
+                        let mut c = crate::lyric_cache::LyricContentCache::load();
+                        c.purge_lrc();
+                        c.save();
+                        app.toast_msg = Some(("LRC cache cleared".to_string(), std::time::Instant::now()));
+                    } else if sel == idx_purge_nolyrics {
+                        let mut c = crate::lyric_cache::LyricContentCache::load();
+                        c.purge_no_lyrics();
+                        c.save();
+                        app.toast_msg = Some(("No-lyrics cache cleared".to_string(), std::time::Instant::now()));
                     }
                 }
                 _ => {
@@ -2353,7 +2765,7 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Down => {
             match app.view {
                 View::Settings => {
-                    let max = app.library.settings.search_paths.len() + 2;
+                    let max = app.library.settings.search_paths.len() + 7;
                     if app.settings_selected < max { app.settings_selected += 1; }
                 }
                 _ => {
@@ -2574,11 +2986,31 @@ pub fn run_tui() -> io::Result<()> {
 
     // Query terminal for image protocol support (must be after entering alt screen,
     // before reading terminal events).
-    let picker = Picker::from_query_stdio()
-        .unwrap_or_else(|_| Picker::halfblocks());
+    let tui_settings = crate::library_cache::load_tui_settings();
+    let maybe_picker: Option<Picker> = match tui_settings.image_method {
+        TuiImageMethod::None => None,
+        TuiImageMethod::Auto => Some(
+            Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks())
+        ),
+        method => {
+            let proto = match method {
+                TuiImageMethod::Halfblocks => ProtocolType::Halfblocks,
+                TuiImageMethod::Sixel      => ProtocolType::Sixel,
+                TuiImageMethod::Kitty      => ProtocolType::Kitty,
+                TuiImageMethod::Iterm2     => ProtocolType::Iterm2,
+                _                          => ProtocolType::Halfblocks,
+            };
+            let mut p = Picker::halfblocks();
+            p.set_protocol_type(proto);
+            Some(p)
+        }
+    };
+    // Remember what was auto-detected so the user can switch back to Auto later.
+    let auto_detected_proto = maybe_picker.as_ref().map(|p| p.protocol_type());
 
     let mut app = TuiApp::new();
-    app.picker = Some(picker);
+    app.picker = maybe_picker;
+    app.auto_detected_proto = auto_detected_proto;
     let tick_rate = Duration::from_millis(50);
 
     loop {

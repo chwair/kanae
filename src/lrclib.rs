@@ -29,7 +29,8 @@ struct GetResult {
 
 const USER_AGENT: &str = concat!("Kanae v", env!("CARGO_PKG_VERSION"), " (https://github.com/chwair/kanae)");
 
-pub fn fetch_by_id(id: u64) -> Option<Vec<LyricLine>> {
+/// Fetch lyrics for a known lrclib ID.  Returns `(raw_lrc, parsed_lines)` on success.
+pub fn fetch_by_id(id: u64) -> Option<(String, Vec<LyricLine>)> {
     let url = format!("https://lrclib.net/api/get/{}", id);
     eprintln!("[lrclib] GET {} (by id)", url);
     let response = match ureq::get(&url)
@@ -60,15 +61,16 @@ pub fn fetch_by_id(id: u64) -> Option<Vec<LyricLine>> {
         None
     } else {
         eprintln!("[lrclib] {} lyric line(s) from id {}", lines.len(), id);
-        Some(lines)
+        Some((lrc.to_string(), lines))
     }
 }
 
+/// Search for synced lyrics.  Returns `(lrclib_id, raw_lrc, parsed_lines)` on success.
 pub fn fetch_synced_lyrics(
     track_name: &str,
     artist_name: &str,
     duration_secs: f64,
-) -> Option<(u64, Vec<LyricLine>)> {
+) -> Option<(u64, String, Vec<LyricLine>)> {
     if track_name.is_empty() {
         eprintln!("[lrclib] skipping fetch: track name is empty");
         return None;
@@ -168,7 +170,7 @@ pub fn fetch_synced_lyrics(
         None
     } else {
         eprintln!("[lrclib] {} lyric line(s) parsed (id {})", lines.len(), best.id);
-        Some((best.id, lines))
+        Some((best.id, lrc.to_string(), lines))
     }
 }
 

@@ -1220,6 +1220,16 @@ impl player_bridge::PlayerController {
 
         let disc_id   = self.state.lock().unwrap().current_disc_id.clone();
         let track_idx = *self.as_ref().current_track();
+        // For file tracks, grab the path for a better cache key.
+        let file_path: String = {
+            let st = self.state.lock().unwrap();
+            if st.is_file_mode && track_idx >= 0 {
+                st.file_tracks.get(track_idx as usize)
+                    .map(|t| t.path.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            } else { String::new() }
+        };
+        let lrc_limit_disabled = crate::library_cache::load_settings().lrc_limit_disabled;
         let generation = {
             let state = self.state.lock().unwrap();
             state.lyric_fetch_generation.fetch_add(1, Ordering::SeqCst) + 1
@@ -1236,29 +1246,51 @@ impl player_bridge::PlayerController {
         }
 
         let handle = thread::spawn(move || {
-            let mut cache = crate::lyric_cache::LyricCache::load();
-            let cached_id = if !disc_id.is_empty() && track_idx >= 0 {
-                cache.lookup(&disc_id, track_idx as u8)
+            use crate::lyric_cache::{LyricContentCache, cd_key, file_key};
+
+            // Build the cache key for this track.
+            let cache_key = if !disc_id.is_empty() && track_idx >= 0 {
+                cd_key(&disc_id, track_idx)
             } else {
-                None
+                file_key(&file_path, &track_name, &artist_name)
             };
 
-            let result: Option<Vec<crate::lrclib::LyricLine>> = if let Some(id) = cached_id {
-                eprintln!("[lrclib] cache hit for disc {} track {} → lrclib id {}", disc_id, track_idx, id);
-                crate::lrclib::fetch_by_id(id)
-            } else {
+            let mut content_cache = LyricContentCache::load();
+
+            // Fast-reject: track previously had no lyrics.
+            if content_cache.has_no_lyrics(&cache_key) {
+                eprintln!("[lrclib] no-lyrics cache hit for key {}", cache_key);
+                if gen_arc.load(Ordering::SeqCst) == generation {
+                    *result_slot.lock().unwrap() = Some(None);
+                }
+                return;
+            }
+
+            // Content cache hit: re-parse the cached raw LRC.
+            if let Some(raw_lrc) = content_cache.get_lrc(&cache_key) {
+                eprintln!("[lrclib] lrc content cache hit for key {}", cache_key);
+                content_cache.save();
+                let lines = crate::lrclib::parse_lrc(&raw_lrc);
+                if gen_arc.load(Ordering::SeqCst) == generation {
+                    *result_slot.lock().unwrap() = Some(if lines.is_empty() { None } else { Some(lines) });
+                }
+                return;
+            }
+
+            // Cache miss → call the API.
+            let result: Option<Vec<crate::lrclib::LyricLine>> =
                 match crate::lrclib::fetch_synced_lyrics(&track_name, &artist_name, duration_secs) {
-                    Some((id, lines)) => {
-                        if !disc_id.is_empty() && track_idx >= 0 {
-                            cache.insert(&disc_id, track_idx as u8, id);
-                            eprintln!("[lrclib] cached lrclib id {} for disc {} track {}", id, disc_id, track_idx);
-                        }
+                    Some((_id, raw_lrc, lines)) => {
+                        content_cache.insert_lrc(&cache_key, &raw_lrc, lrc_limit_disabled);
+                        content_cache.save();
                         Some(lines)
                     }
-                    None => None,
-                }
-            };
-            // ------------------------------------------------------------------
+                    None => {
+                        content_cache.insert_no_lyrics(&cache_key, lrc_limit_disabled);
+                        content_cache.save();
+                        None
+                    }
+                };
 
             // Only publish the result if this fetch is still the current one.
             if gen_arc.load(Ordering::SeqCst) == generation {

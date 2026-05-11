@@ -60,6 +60,9 @@ pub mod library_bridge {
         #[qinvokable] #[cxx_name = "browseAlbum"]      fn browse_album(self: Pin<&mut Self>, dir: QString);
         #[qinvokable] #[cxx_name = "navigateToRoot"]   fn navigate_to_root(self: Pin<&mut Self>);
         #[qinvokable]                                   fn init(self: Pin<&mut Self>);
+        #[qinvokable] #[cxx_name = "purgeLrcCache"]        fn purge_lrc_cache(self: Pin<&mut Self>);
+        #[qinvokable] #[cxx_name = "purgeNoLyricsCache"]   fn purge_no_lyrics_cache(self: Pin<&mut Self>);
+        #[qinvokable] #[cxx_name = "setLrcLimitDisabled"]  fn set_lrc_limit_disabled(self: Pin<&mut Self>, value: bool);
     }
 }
 
@@ -208,7 +211,7 @@ impl library_bridge::LibraryController {
         if !new_albums.is_empty() {
             {
                 let mut st = self.state.lock().unwrap();
-                let result = st.scan_result.get_or_insert_with(|| LibraryScanResult { albums: vec![], dirs: vec![] });
+                let result = st.scan_result.get_or_insert_with(|| LibraryScanResult { albums: vec![], dirs: vec![], dir_mtimes: Default::default() });
                 result.albums.extend(new_albums);
             }
             self.as_mut().refresh_nodes();
@@ -398,6 +401,28 @@ impl library_bridge::LibraryController {
         };
         self.as_mut().set_settings_json(QString::from(json.as_str()));
         self.as_mut().refresh_nodes();
+    }
+
+    pub fn purge_lrc_cache(self: Pin<&mut Self>) {
+        let mut c = crate::lyric_cache::LyricContentCache::load();
+        c.purge_lrc();
+        c.save();
+    }
+
+    pub fn purge_no_lyrics_cache(self: Pin<&mut Self>) {
+        let mut c = crate::lyric_cache::LyricContentCache::load();
+        c.purge_no_lyrics();
+        c.save();
+    }
+
+    pub fn set_lrc_limit_disabled(mut self: Pin<&mut Self>, value: bool) {
+        let json = {
+            let mut st = self.state.lock().unwrap();
+            st.settings.lrc_limit_disabled = value;
+            library_cache::save_settings(&st.settings);
+            serde_json::to_string(&st.settings).unwrap_or_default()
+        };
+        self.as_mut().set_settings_json(QString::from(json.as_str()));
     }
 
     fn refresh_nav(mut self: Pin<&mut Self>) {

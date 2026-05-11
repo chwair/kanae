@@ -42,6 +42,9 @@ pub struct LibrarySettings {
     pub pinned_paths:  Vec<PathBuf>,
     /// When true, only albums are shown – sub-folders are traversed silently.
     pub merge_all_folders: bool,
+    /// When true the lyric content cache has no entry limit.
+    #[serde(default)]
+    pub lrc_limit_disabled: bool,
 }
 
 /// Progress snapshot delivered during a scan.
@@ -60,6 +63,11 @@ pub struct LibraryScanResult {
     pub albums: Vec<LibraryAlbum>,
     /// All directories that were visited (including leaf dirs with no tracks).
     pub dirs:   Vec<PathBuf>,
+    /// Mtime (Unix seconds) of each scanned directory, captured at scan time.
+    /// Used by `library_cache::needs_rescan` to detect filesystem changes without
+    /// re-walking the tree on every startup.
+    #[serde(default)]
+    pub dir_mtimes: std::collections::HashMap<PathBuf, u64>,
 }
 
 // ─── Scanner ─────────────────────────────────────────────────────────────────
@@ -98,6 +106,21 @@ pub fn scan(
     });
     result.dirs.sort();
     result.dirs.dedup();
+
+    // Snapshot directory mtimes so needs_rescan() can detect changes in O(n_dirs)
+    // without re-walking the filesystem tree on the next startup.
+    result.dir_mtimes.clear();
+    for dir in &result.dirs {
+        if let Ok(meta) = std::fs::metadata(dir) {
+            if let Ok(mtime) = meta.modified() {
+                let secs = mtime
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                result.dir_mtimes.insert(dir.clone(), secs);
+            }
+        }
+    }
 
     result
 }

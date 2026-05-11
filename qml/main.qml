@@ -452,6 +452,50 @@ ApplicationWindow {
 
                     Rectangle { Layout.fillWidth:true; height:1; color:"#282828" }
 
+                    // Lyric Cache section
+                    ColumnLayout {
+                        Layout.fillWidth: true; spacing: 8
+                        Text { text:"Lyric Cache"; color:"#dfdfdf"; font.pixelSize:12; font.family:"Segoe UI"; font.bold:true }
+
+                        // Disable limit toggle
+                        RowLayout {
+                            Layout.fillWidth: true; spacing: 12
+                            Rectangle {
+                                width:18;height:18;radius:4;color:"#161616";border.color:"#282828";border.width:1
+                                Rectangle{anchors.fill:parent;anchors.margins:4;radius:2;color:"#bfbfbf";visible:settingsWindow.settingsObj.lrc_limit_disabled===true}
+                                MouseArea{anchors.fill:parent;cursorShape:Qt.PointingHandCursor;onClicked:library.setLrcLimitDisabled(!(settingsWindow.settingsObj.lrc_limit_disabled===true))}
+                            }
+                            Column {
+                                Layout.fillWidth: true; spacing: 3
+                                Text{text:"Disable 100-entry limit";color:"#dfdfdf";font.pixelSize:12;font.family:"Segoe UI"}
+                                Text{text:"Keep all cached lyrics indefinitely";color:"#686868";font.pixelSize:10;font.family:"Segoe UI"}
+                            }
+                        }
+
+                        // Purge buttons row
+                        RowLayout {
+                            Layout.fillWidth: true; spacing: 8
+                            Rectangle {
+                                width:swPurgeLrcLbl.implicitWidth+20;height:28;radius:4
+                                color:swPurgeLrcHov.containsMouse?"#1e1e1e":"transparent";border.color:"#282828";border.width:1
+                                Behavior on color{ColorAnimation{duration:100}}
+                                Text{id:swPurgeLrcLbl;anchors.centerIn:parent;text:"↺ Purge LRC cache";color:"#686868";font.pixelSize:11;font.family:"Segoe UI"}
+                                MouseArea{id:swPurgeLrcHov;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor;onClicked:library.purgeLrcCache()}
+                            }
+                            Rectangle {
+                                width:swPurgeNoLyrLbl.implicitWidth+20;height:28;radius:4
+                                color:swPurgeNoLyrHov.containsMouse?"#1e1e1e":"transparent";border.color:"#282828";border.width:1
+                                Behavior on color{ColorAnimation{duration:100}}
+                                Text{id:swPurgeNoLyrLbl;anchors.centerIn:parent;text:"↺ Purge no-lyrics cache";color:"#686868";font.pixelSize:11;font.family:"Segoe UI"}
+                                MouseArea{id:swPurgeNoLyrHov;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor;onClicked:library.purgeNoLyricsCache()}
+                            }
+                        }
+                    }
+
+                    Item { height: 12 }
+
+                    Rectangle { Layout.fillWidth:true; height:1; color:"#282828" }
+
                     // Rescan library
                     Rectangle {
                         width:swRescanLbl.implicitWidth+20;height:28;radius:4

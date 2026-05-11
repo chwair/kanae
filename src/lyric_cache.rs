@@ -1,92 +1,219 @@
+/// Lyric content cache — stores fetched LRC text and "no lyrics" markers so
+/// lrclib.net is only queried once per unique track.
+///
+/// Cache keys:
+///   "cd:{disc_id}:{track_num}"          – CD tracks
+///   "file:{absolute_path}"              – local file tracks (by path)
+///   "track:{title_lower}:{artist_lower}" – fallback when path is unavailable
+///
+/// Entries are evicted by LRU when `limit_disabled` is false and the combined
+/// count of LRC + no-lyrics entries exceeds `MAX_ENTRIES`.
+
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Default maximum combined entries (LRC + no-lyrics) kept in the cache.
+pub const MAX_ENTRIES: usize = 100;
+
+// ─── Entry types ─────────────────────────────────────────────────────────────
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CacheEntry {
-    pub disc_id:      String,
-    pub track_number: u8,
-    pub lrclib_id:    u64,
+pub struct LrcEntry {
+    pub key:         String,
+    /// Raw LRC text (the `[mm:ss.xx] line` format returned by lrclib).
+    pub lrc_text:    String,
+    /// Unix milliseconds of last access, used for LRU eviction.
+    pub accessed_ms: u64,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoLyricsEntry {
+    pub key:         String,
+    pub accessed_ms: u64,
+}
+
+// ─── Serialised store ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct CacheFile {
-    entries: Vec<CacheEntry>,
+    #[serde(default)]
+    lrc_entries:       Vec<LrcEntry>,
+    #[serde(default)]
+    no_lyrics_entries: Vec<NoLyricsEntry>,
 }
 
-pub struct LyricCache {
-    path:    PathBuf,
-    entries: Vec<CacheEntry>,
+// ─── Public API ───────────────────────────────────────────────────────────────
+
+pub struct LyricContentCache {
+    path:              PathBuf,
+    lrc_entries:       Vec<LrcEntry>,
+    no_lyrics_entries: Vec<NoLyricsEntry>,
 }
 
-impl LyricCache {
+impl LyricContentCache {
     pub fn load() -> Self {
         let path = cache_path();
-        let entries = if path.exists() {
-            match std::fs::read_to_string(&path) {
-                Ok(s) => serde_json::from_str::<CacheFile>(&s)
-                    .map(|f| f.entries)
-                    .unwrap_or_default(),
-                Err(e) => {
-                    eprintln!("[lyric_cache] failed to read cache: {}", e);
-                    Vec::new()
-                }
-            }
+        let file: CacheFile = if path.exists() {
+            std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default()
         } else {
-            Vec::new()
+            CacheFile::default()
         };
-        eprintln!(
-            "[lyric_cache] loaded {} entry/entries from {}",
-            entries.len(),
-            path.display()
-        );
-        Self { path, entries }
+        Self {
+            path,
+            lrc_entries:       file.lrc_entries,
+            no_lyrics_entries: file.no_lyrics_entries,
+        }
     }
 
-    pub fn lookup(&self, disc_id: &str, track_number: u8) -> Option<u64> {
-        self.entries
-            .iter()
-            .find(|e| e.disc_id == disc_id && e.track_number == track_number)
-            .map(|e| e.lrclib_id)
-    }
+    // ── Counts ────────────────────────────────────────────────────────────
 
-    pub fn insert(&mut self, disc_id: &str, track_number: u8, lrclib_id: u64) {
-        if let Some(e) = self
-            .entries
-            .iter_mut()
-            .find(|e| e.disc_id == disc_id && e.track_number == track_number)
-        {
-            e.lrclib_id = lrclib_id;
+    pub fn lrc_count(&self) -> usize       { self.lrc_entries.len() }
+    pub fn no_lyrics_count(&self) -> usize { self.no_lyrics_entries.len() }
+
+    // ── Lookup ────────────────────────────────────────────────────────────
+
+    /// Returns the raw LRC text if a previous successful fetch is cached.
+    pub fn get_lrc(&mut self, key: &str) -> Option<String> {
+        let now = unix_ms();
+        if let Some(e) = self.lrc_entries.iter_mut().find(|e| e.key == key) {
+            e.accessed_ms = now;
+            Some(e.lrc_text.clone())
         } else {
-            self.entries.push(CacheEntry {
-                disc_id:      disc_id.to_string(),
-                track_number,
-                lrclib_id,
-            });
+            None
         }
-        self.save();
     }
 
-    fn save(&self) {
+    /// Returns `true` if we previously determined this track has no lyrics.
+    pub fn has_no_lyrics(&mut self, key: &str) -> bool {
+        let now = unix_ms();
+        if let Some(e) = self.no_lyrics_entries.iter_mut().find(|e| e.key == key) {
+            e.accessed_ms = now;
+            true
+        } else {
+            false
+        }
+    }
+
+    // ── Insert ────────────────────────────────────────────────────────────
+
+    /// Cache a successful LRC fetch.  `limit_disabled` comes from `LibrarySettings`.
+    pub fn insert_lrc(&mut self, key: &str, lrc_text: &str, limit_disabled: bool) {
+        // Update existing entry if present.
+        if let Some(e) = self.lrc_entries.iter_mut().find(|e| e.key == key) {
+            e.lrc_text    = lrc_text.to_string();
+            e.accessed_ms = unix_ms();
+            return;
+        }
+        self.lrc_entries.push(LrcEntry {
+            key:         key.to_string(),
+            lrc_text:    lrc_text.to_string(),
+            accessed_ms: unix_ms(),
+        });
+        if !limit_disabled {
+            self.evict_to_limit();
+        }
+    }
+
+    /// Cache a "no lyrics" determination for this track.
+    pub fn insert_no_lyrics(&mut self, key: &str, limit_disabled: bool) {
+        if self.no_lyrics_entries.iter().any(|e| e.key == key) {
+            return;
+        }
+        self.no_lyrics_entries.push(NoLyricsEntry {
+            key:         key.to_string(),
+            accessed_ms: unix_ms(),
+        });
+        if !limit_disabled {
+            self.evict_to_limit();
+        }
+    }
+
+    // ── Purge ─────────────────────────────────────────────────────────────
+
+    /// Remove all cached LRC entries.
+    pub fn purge_lrc(&mut self) {
+        self.lrc_entries.clear();
+    }
+
+    /// Remove all "no lyrics" entries.
+    pub fn purge_no_lyrics(&mut self) {
+        self.no_lyrics_entries.clear();
+    }
+
+    // ── Persist ───────────────────────────────────────────────────────────
+
+    pub fn save(&self) {
         if let Some(parent) = self.path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                eprintln!("[lyric_cache] could not create cache dir: {}", e);
-                return;
-            }
+            let _ = std::fs::create_dir_all(parent);
         }
-        let f = CacheFile { entries: self.entries.clone() };
-        match serde_json::to_string_pretty(&f) {
-            Ok(s) => {
-                if let Err(e) = std::fs::write(&self.path, s) {
-                    eprintln!("[lyric_cache] failed to write cache: {}", e);
+        let file = CacheFile {
+            lrc_entries:       self.lrc_entries.clone(),
+            no_lyrics_entries: self.no_lyrics_entries.clone(),
+        };
+        if let Ok(json) = serde_json::to_string_pretty(&file) {
+            let _ = std::fs::write(&self.path, json);
+        }
+    }
+
+    // ── LRU eviction ──────────────────────────────────────────────────────
+
+    fn evict_to_limit(&mut self) {
+        let total = self.lrc_entries.len() + self.no_lyrics_entries.len();
+        if total <= MAX_ENTRIES { return; }
+
+        // Evict oldest entries across both lists until we are at the limit.
+        let overflow = total - MAX_ENTRIES;
+        for _ in 0..overflow {
+            let oldest_lrc = self.lrc_entries.iter()
+                .enumerate()
+                .min_by_key(|(_, e)| e.accessed_ms)
+                .map(|(i, e)| (i, e.accessed_ms));
+            let oldest_no = self.no_lyrics_entries.iter()
+                .enumerate()
+                .min_by_key(|(_, e)| e.accessed_ms)
+                .map(|(i, e)| (i, e.accessed_ms));
+
+            match (oldest_lrc, oldest_no) {
+                (Some((li, lt)), Some((ni, nt))) => {
+                    if lt <= nt { self.lrc_entries.remove(li); }
+                    else        { self.no_lyrics_entries.remove(ni); }
                 }
+                (Some((li, _)), None) => { self.lrc_entries.remove(li); }
+                (None, Some((ni, _))) => { self.no_lyrics_entries.remove(ni); }
+                (None, None)          => break,
             }
-            Err(e) => eprintln!("[lyric_cache] failed to serialise cache: {}", e),
         }
+    }
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+/// Build the lookup key for a CD track.
+pub fn cd_key(disc_id: &str, track_num: i32) -> String {
+    format!("cd:{}:{}", disc_id, track_num)
+}
+
+/// Build the lookup key for a file track (prefer path; fall back to title+artist).
+pub fn file_key(path: &str, title: &str, artist: &str) -> String {
+    if !path.is_empty() {
+        format!("file:{}", path)
+    } else {
+        format!("track:{}:{}", title.trim().to_lowercase(), artist.trim().to_lowercase())
     }
 }
 
 fn cache_path() -> PathBuf {
-    config_dir().join("kanae").join("lyric_cache.json")
+    config_dir().join("kanae").join("lyric_content_cache.json")
 }
 
 fn config_dir() -> PathBuf {
@@ -111,3 +238,4 @@ fn config_dir() -> PathBuf {
 
     PathBuf::from(".")
 }
+
