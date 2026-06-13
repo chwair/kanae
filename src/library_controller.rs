@@ -12,7 +12,13 @@ use crate::library_cache;
 #[derive(serde::Serialize, Clone)]
 struct LibraryNodeDto {
     kind:         String,
+    /// Real filesystem path. For folders this is the directory to navigate into;
+    /// for albums it is the containing directory (used by the context menu for
+    /// pin/merge/ignore, which operate on directories).
     path:         String,
+    /// Stable album identity used for browsing. Distinguishes multiple albums or
+    /// singles that share a directory. Empty for folders/CD nodes.
+    id:           String,
     name:         String,
     album_artist: String,
     year:         String,
@@ -76,6 +82,10 @@ struct LibraryState {
     nav_stack:   Vec<std::path::PathBuf>,
     nav_idx:     usize,
     picker_result: Arc<Mutex<Option<Option<std::path::PathBuf>>>>,
+    /// Set by the background watcher thread when the filesystem changed.
+    fs_dirty:    Arc<AtomicBool>,
+    /// Whether the live-change watcher thread has been started.
+    watcher_started: bool,
 }
 
 impl Default for LibraryState {
@@ -90,6 +100,8 @@ impl Default for LibraryState {
             nav_stack:   vec![],
             nav_idx:     0,
             picker_result: Arc::new(Mutex::new(None)),
+            fs_dirty:    Arc::new(AtomicBool::new(false)),
+            watcher_started: false,
         }
     }
 }
@@ -148,10 +160,18 @@ impl library_bridge::LibraryController {
             return;
         }
         if let Some(result) = cached {
-            let rescan = library_cache::needs_rescan(&settings, &result);
-            { self.state.lock().unwrap().scan_result = Some(result); }
-            self.as_mut().refresh_nodes();
-            if rescan { self.as_mut().start_scan(); }
+            if library_cache::is_legacy_cache(&result) {
+                // Old cache (pre-id): discard it and full-rescan so albums get
+                // stable ids, singles split, and covers re-extract to the
+                // persistent cache dir. Leaving scan_result unset → prev = None.
+                self.as_mut().start_scan();
+            } else {
+                let rescan = library_cache::needs_rescan(&settings, &result);
+                { self.state.lock().unwrap().scan_result = Some(result); }
+                self.as_mut().refresh_nodes();
+                if rescan { self.as_mut().start_scan(); }
+                else { self.as_mut().ensure_watcher(); }
+            }
         } else {
             self.as_mut().start_scan();
         }
@@ -168,12 +188,16 @@ impl library_bridge::LibraryController {
         let (prog_tx, prog_rx) = std::sync::mpsc::sync_channel(64);
         let done_result: Arc<Mutex<Option<LibraryScanResult>>> = Arc::new(Mutex::new(None));
         let stop_flag = Arc::new(AtomicBool::new(false));
-        let settings_clone = self.state.lock().unwrap().settings.clone();
+        let (settings_clone, prev) = {
+            let st = self.state.lock().unwrap();
+            (st.settings.clone(), st.scan_result.clone())
+        };
         let stop_clone = stop_flag.clone();
         let done_clone = done_result.clone();
 
         let handle = thread::spawn(move || {
-            let r = crate::library::scan(&settings_clone, stop_clone, prog_tx);
+            // Reuse the previous result so unchanged directories skip re-reading.
+            let r = crate::library::scan(&settings_clone, stop_clone, prog_tx, prev.as_ref());
             *done_clone.lock().unwrap() = Some(r);
         });
 
@@ -183,9 +207,39 @@ impl library_bridge::LibraryController {
             st.scan_thread = Some(handle);
             st.progress_rx = Some(prog_rx);
             st.done_result = done_result;
+            st.fs_dirty.store(false, Ordering::Relaxed);
         }
         self.as_mut().set_is_scanning(true);
         self.as_mut().set_scan_message(QString::from("Scanning\u{2026}"));
+        self.as_mut().ensure_watcher();
+    }
+
+    /// Spawn the live-change watcher thread (idempotent). It periodically checks
+    /// the filesystem for added/removed/changed files and flags `fs_dirty`, which
+    /// `poll_scan` consumes to kick off an incremental rescan.
+    fn ensure_watcher(self: Pin<&mut Self>) {
+        let (state, dirty) = {
+            let mut st = self.state.lock().unwrap();
+            if st.watcher_started { return; }
+            st.watcher_started = true;
+            (self.state.clone(), st.fs_dirty.clone())
+        };
+        thread::spawn(move || loop {
+            thread::sleep(std::time::Duration::from_secs(3));
+            // Snapshot only the dir list + mtimes (not the albums) under the lock.
+            let snapshot = {
+                let st = state.lock().unwrap();
+                // Skip while a scan is in flight or nothing scanned yet.
+                if st.progress_rx.is_some() { None }
+                else { st.scan_result.as_ref().map(|r|
+                    (st.settings.search_paths.clone(), r.dirs.clone(), r.dir_mtimes.clone())) }
+            };
+            if let Some((paths, dirs, mtimes)) = snapshot {
+                if library_cache::dirs_changed(&paths, &dirs, &mtimes) {
+                    dirty.store(true, Ordering::Relaxed);
+                }
+            }
+        });
     }
 
     pub fn poll_scan(mut self: Pin<&mut Self>) {
@@ -208,13 +262,29 @@ impl library_bridge::LibraryController {
             self.as_mut().set_scan_message(QString::from(msg.as_str()));
         }
         // Merge partial albums into the scan result and refresh nodes incrementally.
+        // Upsert by album id so incremental rescans (which re-stream unchanged
+        // directories) don't create duplicate tiles.
         if !new_albums.is_empty() {
             {
                 let mut st = self.state.lock().unwrap();
                 let result = st.scan_result.get_or_insert_with(|| LibraryScanResult { albums: vec![], dirs: vec![], dir_mtimes: Default::default() });
+                let incoming: std::collections::HashSet<String> =
+                    new_albums.iter().map(|a| a.id.clone()).collect();
+                result.albums.retain(|a| !incoming.contains(&a.id));
                 result.albums.extend(new_albums);
             }
             self.as_mut().refresh_nodes();
+        }
+
+        // Live rescan: the watcher flagged a filesystem change and no scan is
+        // currently running — kick off an incremental rescan.
+        let should_rescan = {
+            let st = self.state.lock().unwrap();
+            st.progress_rx.is_none() && st.fs_dirty.swap(false, Ordering::Relaxed)
+        };
+        if should_rescan {
+            self.as_mut().start_scan();
+            return;
         }
 
         let picker = {
@@ -287,15 +357,17 @@ impl library_bridge::LibraryController {
         self.as_mut().refresh_nodes();
     }
 
-    pub fn browse_album(mut self: Pin<&mut Self>, dir: QString) {
+    pub fn browse_album(mut self: Pin<&mut Self>, id: QString) {
         use crate::file_player::read_file_metadata;
-        let dir_path = std::path::PathBuf::from(dir.to_string());
+        let album_id = id.to_string();
         // Collect track paths from the scan result while holding the lock briefly.
+        // Match on the stable album id so multiple albums/singles sharing a
+        // directory each resolve to their own track list.
         let track_paths: Vec<std::path::PathBuf> = {
             let state = self.state.lock().unwrap();
             match &state.scan_result {
                 Some(result) => result.albums.iter()
-                    .find(|a| a.dir == dir_path)
+                    .find(|a| a.id == album_id)
                     .map(|album| album.track_paths.clone())
                     .unwrap_or_default(),
                 None => vec![],
@@ -464,6 +536,7 @@ fn build_nodes_json(cd: Option<&std::path::Path>, result: &LibraryScanResult, se
         dtos.push(LibraryNodeDto {
             kind: "album".into(),
             path: album.dir.to_string_lossy().to_string(),
+            id: album.id.clone(),
             name,
             album_artist: album.album_artist.clone(),
             year: album.year.clone(),
@@ -488,6 +561,7 @@ fn build_nodes_json(cd: Option<&std::path::Path>, result: &LibraryScanResult, se
             dtos.push(LibraryNodeDto {
                 kind: "folder".into(),
                 path: dir.to_string_lossy().to_string(),
+                id: String::new(),
                 name, album_artist: String::new(), year: String::new(),
                 cover_url: String::new(), pinned: settings.pinned_paths.contains(&dir.to_path_buf()),
             });

@@ -1,6 +1,8 @@
 use cd_da_reader::{CdReader, Toc, CdReaderError};
 use std::io;
 
+use crate::musicbrainz::AlbumMetadata;
+
 #[derive(Debug, Clone)]
 pub struct DriveInfo {
     pub path: String,
@@ -12,6 +14,16 @@ pub struct DriveInfo {
 pub struct TrackInfo {
     pub track_number: u8,
     pub duration_seconds: f64,
+}
+
+/// Result produced by the background disc-load thread and consumed by poll_load.
+pub enum PendingDiscResult {
+    /// TOC read successfully; tracks, durations and optional metadata are ready.
+    Loaded { tracks: Vec<TrackInfo>, durations: Vec<String>, metadata: Option<AlbumMetadata>, disc_id: String },
+    /// Drive opened but disc absent or unreadable.
+    Empty { status: String },
+    /// Could not open the drive at all.
+    Unavailable { status: String },
 }
 
 pub fn scan_drives() -> Vec<DriveInfo> {

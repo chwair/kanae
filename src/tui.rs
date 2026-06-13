@@ -25,10 +25,9 @@ use ratatui::{
 use unicode_width::UnicodeWidthChar;
 use ratatui_image::{picker::{Picker, ProtocolType}, StatefulImage, protocol::StatefulProtocol};
 use crate::library_cache::{TuiImageMethod, TuiSettings};
-use crate::cd_reader::{DriveInfo, TrackInfo};
+use crate::cd_reader::{DriveInfo, TrackInfo, PendingDiscResult};
 use crate::file_player::LocalTrack;
 use crate::library::{LibraryAlbum, LibraryNode, LibraryScanResult, LibrarySettings};
-use crate::player::PendingDiscResult;
 
 // ─── Colour palette (mirrors the QML palette) ────────────────────────────────
 const CLR_SURF2: Color = Color::Rgb(30, 30, 30);
@@ -495,7 +494,7 @@ impl TuiPlayerState {
             let pos         = self.current_position.clone();
             let ended       = self.playback_ended.clone();
             let handle = thread::spawn(move || {
-                crate::player::play_local_file(file_path, offset, stop_flag, vol, heard, pos, ended);
+                crate::file_player::play_local_file(file_path, offset, stop_flag, vol, heard, pos, ended);
             });
             self.playback_thread = Some(handle);
             self.is_playing = true;
@@ -680,6 +679,7 @@ impl TuiPlayerState {
         let title  = self.track_titles.get(idx).cloned().unwrap_or_default();
         let raw_ar = self.track_artists.get(idx).cloned().unwrap_or_default();
         let artist = if raw_ar.is_empty() { self.album_artist.clone() } else { raw_ar };
+        let album  = self.album_title.clone();
         let dur    = self.total_time;
         let disc_id   = self.current_disc_id.clone();
         let track_idx = self.current_track;
@@ -730,7 +730,7 @@ impl TuiPlayerState {
                 return;
             }
 
-            let result = match crate::lrclib::fetch_synced_lyrics(&title, &artist, dur) {
+            let result = match crate::lrclib::fetch_synced_lyrics(&title, &artist, &album, dur) {
                 Some((_id, raw_lrc, lines)) => {
                     content_cache.insert_lrc(&cache_key, &raw_lrc, lrc_limit_disabled);
                     content_cache.save();
@@ -787,8 +787,9 @@ struct TuiLibraryState {
     nav_stack:     Vec<PathBuf>,
     nav_idx:       usize,
     nodes:         Vec<TuiLibraryNode>,
-    // Album browse (previewing an album before loading it)
-    browse_album_path: Option<PathBuf>,
+    // Album browse (previewing an album before loading it). Identified by the
+    // album's stable id, so multiple albums/singles in one directory differ.
+    browse_album_path: Option<String>,
     browse_tracks:     Vec<BrowseTrack>,
 }
 
@@ -830,9 +831,11 @@ impl TuiLibraryState {
         let done     = Arc::new(Mutex::new(None));
         let stop     = Arc::new(AtomicBool::new(false));
         let settings = self.settings.clone();
+        let prev     = self.scan_result.clone();
         let stop2 = stop.clone(); let done2 = done.clone();
         let handle = thread::spawn(move || {
-            let r = crate::library::scan(&settings, stop2, tx);
+            // Reuse the previous result so unchanged directories skip re-reading.
+            let r = crate::library::scan(&settings, stop2, tx, prev.as_ref());
             *done2.lock().unwrap() = Some(r);
         });
         self.stop_scan = stop; self.scan_thread = Some(handle);
@@ -849,6 +852,10 @@ impl TuiLibraryState {
                 }
                 if !p.new_albums.is_empty() {
                     let result = self.scan_result.get_or_insert_with(|| crate::library::LibraryScanResult { albums: vec![], dirs: vec![], dir_mtimes: Default::default() });
+                    // Upsert by album id so re-streamed unchanged dirs don't duplicate.
+                    let incoming: std::collections::HashSet<String> =
+                        p.new_albums.iter().map(|a| a.id.clone()).collect();
+                    result.albums.retain(|a| !incoming.contains(&a.id));
                     result.albums.extend(p.new_albums);
                     has_new = true;
                 }
@@ -870,10 +877,16 @@ impl TuiLibraryState {
 
     fn init(&mut self) {
         if let Some(result) = crate::library_cache::load_cache() {
-            let rescan = crate::library_cache::needs_rescan(&self.settings, &result);
-            self.scan_result = Some(result);
-            self.refresh_nodes(None);
-            if rescan { self.start_scan(); }
+            if crate::library_cache::is_legacy_cache(&result) {
+                // Old cache (pre-id): discard and full-rescan (prev = None) so
+                // albums get ids, singles split, and covers re-extract.
+                self.start_scan();
+            } else {
+                let rescan = crate::library_cache::needs_rescan(&self.settings, &result);
+                self.scan_result = Some(result);
+                self.refresh_nodes(None);
+                if rescan { self.start_scan(); }
+            }
         } else if !self.settings.search_paths.is_empty() {
             self.start_scan();
         }
@@ -913,9 +926,10 @@ impl TuiLibraryState {
                                 }
                             }
                         }
-                        // Also albums directly in root
-                        for album in scan.albums.iter().filter(|a| a.dir.parent() == Some(root.as_path())) {
-                            if !nodes.iter().any(|n| matches!(n, TuiLibraryNode::Album { album: a } if a.dir == album.dir)) {
+                        // Albums in immediate sub-folders of root, plus loose
+                        // tracks/singles sitting directly in the root folder.
+                        for album in scan.albums.iter().filter(|a| a.dir.parent() == Some(root.as_path()) || a.dir == *root) {
+                            if !nodes.iter().any(|n| matches!(n, TuiLibraryNode::Album { album: a } if a.id == album.id)) {
                                 nodes.push(TuiLibraryNode::Album { album: album.clone() });
                             }
                         }
@@ -981,10 +995,10 @@ impl TuiLibraryState {
         self.nav_idx = 0;
     }
 
-    fn browse_album(&mut self, path: &PathBuf) {
-        self.browse_album_path = Some(path.clone());
+    fn browse_album(&mut self, id: &str) {
+        self.browse_album_path = Some(id.to_string());
         let tracks = self.scan_result.as_ref()
-            .and_then(|r| r.albums.iter().find(|a| &a.dir == path))
+            .and_then(|r| r.albums.iter().find(|a| a.id == id))
             .map(|album| album.track_paths.iter().map(|p| {
                 let meta = crate::file_player::read_file_metadata(p);
                 let secs = meta.duration_secs as u64;
@@ -1026,7 +1040,7 @@ struct TuiApp {
     focus:   Focus,
 
     // For album view when previewing (not yet loaded into player)
-    browse_dir:        Option<PathBuf>,
+    browse_dir:        Option<String>,   // album id currently being previewed
     browse_album_name: String,
     file_mode_active:  bool,
     cd_view_active:    bool,
@@ -1059,6 +1073,7 @@ struct TuiApp {
     last_drive_scan:    Instant,
     last_disc_check:    Instant,
     last_lyrics_poll:   Instant,
+    last_lib_change_check: Instant,
     // Toast messages
     toast_msg: Option<(String, Instant)>,
     // Whether needs_rescan was triggered during init
@@ -1090,7 +1105,7 @@ struct TuiApp {
     // True only when tracks were loaded externally (drag-drop), not from library
     is_external_file: bool,
     // Dir of the album currently loaded in the player (from library browse)
-    playing_album_dir: Option<PathBuf>,
+    playing_album_dir: Option<String>,   // album id loaded in the player
     // Settings view state
     settings_selected:   usize,
     settings_input_mode: bool,
@@ -1101,6 +1116,8 @@ struct TuiApp {
     auto_detected_proto: Option<ProtocolType>,
     // Active icon set for TUI rendering
     icons: Icons,
+    // Discord Rich Presence
+    discord: Option<crate::discord::DiscordPresence>,
 }
 
 impl TuiApp {
@@ -1145,6 +1162,7 @@ impl TuiApp {
             last_drive_scan:    Instant::now(),
             last_disc_check:    Instant::now(),
             last_lyrics_poll:   Instant::now(),
+            last_lib_change_check: Instant::now(),
             toast_msg: None,
             quitting:  false,
             sidebar_w: 28,
@@ -1173,6 +1191,7 @@ impl TuiApp {
             tui_settings,
             auto_detected_proto: None,
             icons,
+            discord: crate::discord::DiscordPresence::new(),
         }
     }
 
@@ -1269,6 +1288,23 @@ impl TuiApp {
 
         // Poll library scan
         self.library.poll_scan();
+
+        // Live library scan: every few seconds, cheaply check whether the
+        // filesystem changed and kick off an incremental rescan if so.
+        if !self.library.is_scanning
+            && now.duration_since(self.last_lib_change_check) > Duration::from_secs(3)
+        {
+            self.last_lib_change_check = now;
+            if let Some(ref result) = self.library.scan_result {
+                if crate::library_cache::dirs_changed(
+                    &self.library.settings.search_paths,
+                    &result.dirs,
+                    &result.dir_mtimes,
+                ) {
+                    self.library.start_scan();
+                }
+            }
+        }
 
         // Refresh library nodes (in case CD state changed)
         let cd_info = if !self.player.is_file_mode && self.player.total_tracks > 0 {
@@ -1368,6 +1404,32 @@ impl TuiApp {
             self.smtc_send_position();
             self.last_smtc_update = now;
         }
+
+        // ── Discord Rich Presence: update every tick (internal dedup avoids IPC spam) ──
+        if let Some(ref mut discord) = self.discord {
+            let info = if self.player.current_track >= 0 {
+                let i = self.player.current_track as usize;
+                let title      = self.player.track_titles.get(i).cloned().unwrap_or_default();
+                let raw_artist = self.player.track_artists.get(i).cloned().unwrap_or_default();
+                let artist     = if raw_artist.is_empty() { self.player.album_artist.clone() } else { raw_artist };
+                let album      = self.player.album_title.clone();
+                let cover_url  = self.player.current_cover_url.clone();
+                let pos        = self.player.current_time();
+                let duration   = self.player.total_time;
+                Some(crate::discord::TrackInfo {
+                    title,
+                    artist,
+                    album,
+                    cover_url,
+                    position_secs: pos,
+                    duration_secs: duration,
+                    is_playing: self.player.is_playing,
+                })
+            } else {
+                None
+            };
+            discord.update(info);
+        }
     }
 
     fn smtc_update_metadata(&mut self) {
@@ -1437,7 +1499,7 @@ impl TuiApp {
             }
             Some(TuiLibraryNode::Album { album }) => {
                 // If this album is already loaded in the player, show it without re-browsing.
-                if self.player.is_file_mode && self.playing_album_dir.as_ref() == Some(&album.dir) {
+                if self.player.is_file_mode && self.playing_album_dir.as_ref() == Some(&album.id) {
                     self.browse_dir        = None;
                     self.browse_album_name = album.album.clone();
                     self.file_mode_active  = true;
@@ -1447,8 +1509,8 @@ impl TuiApp {
                     self.content_selected  = cur;
                     self.content_scroll    = cur;
                 } else {
-                    self.library.browse_album(&album.dir);
-                    self.browse_dir        = Some(album.dir.clone());
+                    self.library.browse_album(&album.id);
+                    self.browse_dir        = Some(album.id.clone());
                     self.browse_album_name = album.album.clone();
                     self.file_mode_active  = false;
                     self.cd_view_active    = false;

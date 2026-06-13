@@ -9,38 +9,68 @@ permissions:
   contents: write
 
 env:
-  VERSION: ${{ github.ref_name }}
+  # For tag pushes this is e.g. "v1.2.3"; for manual runs it falls back to "dev".
+  VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'dev' }}
+  QT_VERSION: '6.8.0'
 
+# Each platform job builds three variants:
+#   • hybrid — GUI + TUI in one binary (TUI when run in a terminal, GUI otherwise)
+#   • gui    — GUI only, packaged as an installer / .app / AppImage
+#   • tui    — TUI only, shipped as a single-file executable
 jobs:
   # ─────────────────────────────────────────────────────────────── Windows ──
-  build-windows:
+  windows:
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: hybrid
+            cargo_flags: ""
+            needs_qt: true
+          - variant: gui
+            cargo_flags: "--no-default-features --features gui"
+            needs_qt: true
+          - variant: tui
+            cargo_flags: "--no-default-features --features tui"
+            needs_qt: false
+
     steps:
       - uses: actions/checkout@v4
-
-      - uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.8.0'
-          arch: win64_msvc2022_64
-          modules: qtshadertools
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable-x86_64-pc-windows-msvc
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.variant }}
+
+      - uses: jurplel/install-qt-action@v4
+        if: matrix.needs_qt
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2022_64
+          modules: qtshadertools
+          cache: true
+
       - name: Set QMAKE
+        if: matrix.needs_qt
         shell: pwsh
         run: |
           $q = (where.exe qmake 2>$null | Select-Object -First 1).Trim()
-          echo "QMAKE=$q" >> $env:GITHUB_ENV
+          "QMAKE=$q" >> $env:GITHUB_ENV
 
       - name: Build
-        run: cargo build --release
+        shell: pwsh
+        run: cargo build --release ${{ matrix.cargo_flags }}
 
-      - name: Package
+      # ── GUI / Hybrid: windeployqt6 → NSIS installer ────────────────────────
+      - name: Package installer (gui/hybrid)
+        if: matrix.needs_qt
         shell: pwsh
         run: |
-          New-Item -ItemType Directory dist | Out-Null
+          New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target\release\kanae.exe dist\
           windeployqt6 `
             --release `
@@ -49,112 +79,199 @@ jobs:
             --no-compiler-runtime `
             --qmldir qml `
             dist\kanae.exe
-          Compress-Archive -Path dist\* -DestinationPath "kanae-windows-x64-$env:VERSION.zip"
+          makensis /DVERSION=$env:VERSION /DVARIANT=${{ matrix.variant }} scripts\installer.nsi
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      # ── TUI: single-file executable ────────────────────────────────────────
+      - name: Package executable (tui)
+        if: matrix.variant == 'tui'
+        shell: pwsh
+        run: Copy-Item target\release\kanae.exe "kanae-tui-windows-x64-$env:VERSION.exe"
+
+      - uses: actions/upload-artifact@v4
         with:
-          name: kanae-windows
-          path: kanae-windows-x64-${{ env.VERSION }}.zip
+          name: kanae-windows-${{ matrix.variant }}
+          if-no-files-found: error
+          path: |
+            kanae-${{ matrix.variant }}-windows-x64-${{ env.VERSION }}.exe
 
   # ──────────────────────────────────────────────────────────────── macOS ──
-  build-macos:
+  macos:
     runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: hybrid
+            cargo_flags: ""
+            needs_qt: true
+          - variant: gui
+            cargo_flags: "--no-default-features --features gui"
+            needs_qt: true
+          - variant: tui
+            cargo_flags: "--no-default-features --features tui"
+            needs_qt: false
+
     steps:
       - uses: actions/checkout@v4
-
-      - uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.8.0'
-          modules: qtshadertools
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.variant }}
+
+      - uses: jurplel/install-qt-action@v4
+        if: matrix.needs_qt
+        with:
+          version: ${{ env.QT_VERSION }}
+          modules: qtshadertools
+          cache: true
+
       - name: Set QMAKE
-        run: echo "QMAKE=$(which qmake)" >> $GITHUB_ENV
+        if: matrix.needs_qt
+        run: echo "QMAKE=$(which qmake)" >> "$GITHUB_ENV"
 
       - name: Build
-        run: cargo build --release
+        run: cargo build --release ${{ matrix.cargo_flags }}
 
-      - name: Package
+      # ── GUI / Hybrid: .app bundle (macdeployqt + ad-hoc codesign) ──────────
+      # Ad-hoc signing is mandatory on Apple Silicon: macdeployqt rewrites the
+      # binary's load commands which invalidates any prior signature, and an
+      # unsigned arm64 binary is killed by the OS on launch ("is damaged").
+      - name: Package .app (gui/hybrid)
+        if: matrix.needs_qt
         run: |
-          # Minimal .app bundle structure
-          mkdir -p dist/Kanae.app/Contents/MacOS
-          cp target/release/kanae dist/Kanae.app/Contents/MacOS/kanae
+          ARCH=$(uname -m)
+          SHORT_VERSION=${VERSION#v}
+          APP=dist/Kanae.app
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp target/release/kanae "$APP/Contents/MacOS/kanae"
+          chmod +x "$APP/Contents/MacOS/kanae"
+          printf 'APPL????' > "$APP/Contents/PkgInfo"
 
-          cat > dist/Kanae.app/Contents/Info.plist << EOF
+          # Info.plist — written flush-left so the XML declaration has no leading
+          # whitespace (a leading space before <?xml makes the plist malformed).
+          cat > "$APP/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-              "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0"><dict>
-            <key>CFBundleExecutable</key>      <string>kanae</string>
-            <key>CFBundleIdentifier</key>      <string>com.kanae.player</string>
-            <key>CFBundleName</key>             <string>Kanae</string>
-            <key>CFBundlePackageType</key>      <string>APPL</string>
-            <key>CFBundleShortVersionString</key><string>$VERSION</string>
-            <key>NSHighResolutionCapable</key>  <true/>
-            <key>LSMinimumSystemVersion</key>   <string>12.0</string>
-          </dict></plist>
-          EOF
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key><string>kanae</string>
+            <key>CFBundleIdentifier</key><string>com.kanae.player</string>
+            <key>CFBundleName</key><string>Kanae</string>
+            <key>CFBundleDisplayName</key><string>Kanae</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleVersion</key><string>${SHORT_VERSION}</string>
+            <key>CFBundleShortVersionString</key><string>${SHORT_VERSION}</string>
+            <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+            <key>LSMinimumSystemVersion</key><string>12.0</string>
+          </dict>
+          </plist>
+          PLIST
 
-          macdeployqt dist/Kanae.app -qmldir=qml
-          cd dist && zip -r --symlinks "../kanae-macos-${VERSION}.zip" Kanae.app
+          # Validate the plist before we go any further.
+          plutil -lint "$APP/Contents/Info.plist"
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+          macdeployqt "$APP" -qmldir=qml
+
+          # Re-sign everything ad-hoc, inside-out, after macdeployqt's edits.
+          codesign --force --deep --sign - --timestamp=none "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$APP" "kanae-${{ matrix.variant }}-macos-${ARCH}-${VERSION}.zip"
+
+      # ── TUI: single-file executable (ad-hoc signed so it runs on arm64) ────
+      - name: Package executable (tui)
+        if: matrix.variant == 'tui'
+        run: |
+          ARCH=$(uname -m)
+          cp target/release/kanae "kanae-tui-macos-${ARCH}-${VERSION}"
+          codesign --force --sign - "kanae-tui-macos-${ARCH}-${VERSION}"
+
+      - uses: actions/upload-artifact@v4
         with:
-          name: kanae-macos
-          path: kanae-macos-${{ env.VERSION }}.zip
+          name: kanae-macos-${{ matrix.variant }}
+          if-no-files-found: error
+          path: |
+            kanae-${{ matrix.variant }}-macos-*-${{ env.VERSION }}.zip
+            kanae-tui-macos-*-${{ env.VERSION }}
 
   # ──────────────────────────────────────────────────────────────── Linux ──
-  build-linux:
+  linux:
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: hybrid
+            cargo_flags: ""
+            needs_qt: true
+          - variant: gui
+            cargo_flags: "--no-default-features --features gui"
+            needs_qt: true
+          - variant: tui
+            cargo_flags: "--no-default-features --features tui"
+            needs_qt: false
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      # ALSA is needed by rodio for every variant.
+      - name: Install system dependencies (common)
         run: |
           sudo apt-get update
+          sudo apt-get install -y libasound2-dev
+
+      # D-Bus (MPRIS), GLib/Wayland (Qt), fuse2 + patchelf (AppImage tooling).
+      - name: Install system dependencies (gui/hybrid)
+        if: matrix.needs_qt
+        run: |
           sudo apt-get install -y \
-            libasound2-dev \
             libdbus-1-dev \
             libglib2.0-dev \
             libwayland-dev \
+            libxkbcommon-dev \
             libfuse2 \
             patchelf
 
-      - uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.8.0'
-          modules: qtshadertools
-
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.variant }}
+
+      - uses: jurplel/install-qt-action@v4
+        if: matrix.needs_qt
+        with:
+          version: ${{ env.QT_VERSION }}
+          modules: qtshadertools
+          cache: true
+
       - name: Set QMAKE
-        run: echo "QMAKE=$(which qmake)" >> $GITHUB_ENV
+        if: matrix.needs_qt
+        run: echo "QMAKE=$(which qmake)" >> "$GITHUB_ENV"
 
       - name: Build
-        run: cargo build --release
+        run: cargo build --release ${{ matrix.cargo_flags }}
 
-      - name: Package (AppImage)
-        env:
-          QMAKE: ${{ env.QMAKE }}
+      # ── GUI / Hybrid: self-contained AppImage (bundles Qt + all .so deps) ──
+      - name: Package AppImage (gui/hybrid)
+        if: matrix.needs_qt
         run: |
-          # Download linuxdeploy + Qt plugin
-          curl -Lo linuxdeploy \
+          curl -fsSL -o linuxdeploy \
             https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-          curl -Lo linuxdeploy-plugin-qt \
+          curl -fsSL -o linuxdeploy-plugin-qt \
             https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
           chmod +x linuxdeploy linuxdeploy-plugin-qt
 
-          # AppDir skeleton
           mkdir -p AppDir/usr/bin
           mkdir -p AppDir/usr/share/applications
           mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
-
           cp target/release/kanae AppDir/usr/bin/
 
-          cat > AppDir/usr/share/applications/kanae.desktop << 'EOF'
+          cat > AppDir/usr/share/applications/kanae.desktop <<'EOF'
           [Desktop Entry]
           Name=Kanae
           Exec=kanae
@@ -163,10 +280,9 @@ jobs:
           Categories=AudioVideo;Player;
           EOF
 
-          # Generate a minimal placeholder icon (Python is always available)
-          python3 - << 'PYEOF'
+          # Minimal placeholder icon (no external assets needed).
+          python3 - <<'PYEOF'
           import struct, zlib
-
           def make_png(w, h, r, g, b):
               def chunk(tag, data):
                   c = tag + data
@@ -176,41 +292,57 @@ jobs:
                   + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0))
                   + chunk(b'IDAT', zlib.compress(raw))
                   + chunk(b'IEND', b''))
-
           with open('AppDir/usr/share/icons/hicolor/256x256/apps/kanae.png', 'wb') as f:
               f.write(make_png(256, 256, 30, 30, 60))
           PYEOF
 
-          # Build AppImage
-          EXTRA_QT_MODULES="qml;quick;quickcontrols2;quicktemplates2;quicklayouts;quickshapes;network" \
-          QMAKE_EXECUTABLE="$QMAKE" \
+          # The QML is compiled into the binary (qrc), so point the Qt plugin at
+          # the sources and force-include the modules it can't infer statically.
+          export QML_SOURCES_PATHS="$PWD/qml"
+          export EXTRA_QT_MODULES="qml;quick;quickcontrols2;quicktemplates2;quicklayouts;quickshapes;network"
+          export QMAKE_EXECUTABLE="$QMAKE"
           ./linuxdeploy \
             --appdir AppDir \
             --plugin qt \
             --output appimage
 
-          mv Kanae*.AppImage "kanae-linux-x86_64-${VERSION}.AppImage"
+          mv Kanae*.AppImage "kanae-${{ matrix.variant }}-linux-x86_64-${VERSION}.AppImage"
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      # ── TUI: single-file executable ───────────────────────────────────────
+      - name: Package executable (tui)
+        if: matrix.variant == 'tui'
+        run: cp target/release/kanae "kanae-tui-linux-x86_64-${VERSION}"
+
+      - uses: actions/upload-artifact@v4
         with:
-          name: kanae-linux
-          path: kanae-linux-x86_64-${{ env.VERSION }}.AppImage
+          name: kanae-linux-${{ matrix.variant }}
+          if-no-files-found: error
+          path: |
+            kanae-${{ matrix.variant }}-linux-x86_64-${{ env.VERSION }}.AppImage
+            kanae-tui-linux-x86_64-${{ env.VERSION }}
 
   # ─────────────────────────────────────────────────────────────── Release ──
   release:
-    needs: [build-windows, build-macos, build-linux]
+    needs: [windows, macos, linux]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/download-artifact@v4
         with:
+          path: artifacts
           merge-multiple: true
 
       - uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
-            kanae-windows-x64-${{ env.VERSION }}.zip
-            kanae-macos-${{ env.VERSION }}.zip
-            kanae-linux-x86_64-${{ env.VERSION }}.AppImage
+            artifacts/kanae-gui-windows-x64-${{ env.VERSION }}.exe
+            artifacts/kanae-hybrid-windows-x64-${{ env.VERSION }}.exe
+            artifacts/kanae-tui-windows-x64-${{ env.VERSION }}.exe
+            artifacts/kanae-gui-macos-*-${{ env.VERSION }}.zip
+            artifacts/kanae-hybrid-macos-*-${{ env.VERSION }}.zip
+            artifacts/kanae-tui-macos-*-${{ env.VERSION }}
+            artifacts/kanae-gui-linux-x86_64-${{ env.VERSION }}.AppImage
+            artifacts/kanae-hybrid-linux-x86_64-${{ env.VERSION }}.AppImage
+            artifacts/kanae-tui-linux-x86_64-${{ env.VERSION }}

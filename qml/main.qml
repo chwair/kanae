@@ -231,7 +231,7 @@ ApplicationWindow {
             var rawArt = (player.track_artists[player.current_track] || "").trim()
             var artist = rawArt.length > 0 ? rawArt : (player.album_artist || "").trim()
             if (title.length > 0 && player.album_title !== "Unknown Album")
-                player.fetchLyrics(title, artist, player.total_time)
+                player.fetchLyrics(title, artist, player.album_title, player.total_time)
         })
     }
 
@@ -1091,7 +1091,7 @@ ApplicationWindow {
                                     if (atRoot && player.drive_list.length > 0) {
                                         var cdLoaded = player.total_tracks > 0 && !player.is_file_mode
                                         var cdNode = {
-                                            kind: "cd", path: "__cd__",
+                                            kind: "cd", path: "__cd__", id: "__cd__",
                                             name: cdLoaded ? (player.album_title || "Audio CD") : "Audio CD",
                                             album_artist: cdLoaded ? (player.album_artist || "") : "",
                                             year: cdLoaded ? (player.album_year || "") : "",
@@ -1191,10 +1191,10 @@ ApplicationWindow {
                                             else if (modelData.kind === "folder") library.navigateTo(modelData.path)
                                             else {
                                                 window._canGoForwardToAlbum = false; window._showingCdView = false; window._fileMode = false
-                                                if (modelData.path === window._playingAlbumDir && player.is_file_mode) {
+                                                if (modelData.id === window._playingAlbumDir && player.is_file_mode) {
                                                     window._browseDir = ""; window._browseAlbumName = modelData.name; window._view = "album"
                                                     Qt.callLater(function() { if (player.current_track >= 0 && trackList.count > player.current_track) trackList.positionViewAtIndex(player.current_track, ListView.Center) })
-                                                } else { library.browseAlbum(modelData.path); window._browseDir = modelData.path; window._browseAlbumName = modelData.name; window._view = "album" }
+                                                } else { library.browseAlbum(modelData.id); window._browseDir = modelData.id; window._browseAlbumName = modelData.name; window._view = "album" }
                                             }
                                         }
                                         onPressAndHold: {
@@ -1253,10 +1253,10 @@ ApplicationWindow {
                                             else if(modelData.kind==="folder") library.navigateTo(modelData.path)
                                             else {
                                                 window._canGoForwardToAlbum=false; window._showingCdView=false; window._fileMode=false
-                                                if (modelData.path === window._playingAlbumDir && player.is_file_mode) {
+                                                if (modelData.id === window._playingAlbumDir && player.is_file_mode) {
                                                     window._browseDir=""; window._browseAlbumName=modelData.name; window._view="album"
                                                     Qt.callLater(function() { if (player.current_track >= 0 && trackList.count > player.current_track) trackList.positionViewAtIndex(player.current_track, ListView.Center) })
-                                                } else { library.browseAlbum(modelData.path); window._browseDir = modelData.path; window._browseAlbumName = modelData.name; window._view = "album" }
+                                                } else { library.browseAlbum(modelData.id); window._browseDir = modelData.id; window._browseAlbumName = modelData.name; window._view = "album" }
                                             }
                                         }
                                     }

@@ -3,7 +3,7 @@
 /// Stored as JSON in the OS app-data directory so they survive restarts
 /// without a full rescan.  On the next boot we use the cache and only do an
 /// incremental check for new / removed files.
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use crate::library::{LibraryScanResult, LibrarySettings};
 
 // ─── TUI-specific settings ────────────────────────────────────────────────────
@@ -146,6 +146,25 @@ fn ensure_dir() -> PathBuf {
     dir
 }
 
+/// Persistent directory for extracted album-art images.
+///
+/// Cover art embedded in audio files is written here (keyed by a hash of the
+/// source path) so the `cover_url` stored in the scan cache survives restarts.
+/// Using the temp dir instead would leave reused/cached albums pointing at files
+/// the OS has since cleared, showing missing covers.
+pub fn cover_cache_dir() -> PathBuf {
+    let dir = cache_dir().join("covers");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+/// True if the cached result predates the album `id` field (every album has an
+/// empty id). Such a cache must be fully re-scanned — not incrementally reused —
+/// so albums get stable ids and untagged singles split apart correctly.
+pub fn is_legacy_cache(result: &LibraryScanResult) -> bool {
+    !result.albums.is_empty() && result.albums.iter().all(|a| a.id.is_empty())
+}
+
 pub fn load_settings() -> LibrarySettings {
     let path = ensure_dir().join("library_settings.json");
     std::fs::read_to_string(&path)
@@ -180,14 +199,27 @@ pub fn save_cache(r: &LibraryScanResult) {
 /// files were added or removed from that directory.  If the stored mtime map is
 /// absent (old cache format) the check falls back to verifying directories exist.
 pub fn needs_rescan(settings: &LibrarySettings, result: &LibraryScanResult) -> bool {
-    // Any search path that produced no dirs in the cache needs scanning.
-    for root in &settings.search_paths {
-        let covered = result.dirs.iter().any(|d| d.starts_with(root));
-        if !covered { return true; }
+    dirs_changed(&settings.search_paths, &result.dirs, &result.dir_mtimes)
+}
+
+/// Lightweight filesystem-change check used by both `needs_rescan` and the live
+/// library watcher. Operates on plain slices/maps so callers can clone just the
+/// directory list and mtimes (not the whole album set) for off-thread polling.
+///
+/// Returns true if: a search root is uncovered, a known dir was removed, or any
+/// known dir's mtime changed (files added/removed/renamed inside it).
+pub fn dirs_changed(
+    search_paths: &[PathBuf],
+    dirs: &[PathBuf],
+    dir_mtimes: &std::collections::HashMap<PathBuf, u64>,
+) -> bool {
+    for root in search_paths {
+        if root.exists() && !dirs.iter().any(|d| d.starts_with(root)) {
+            return true;
+        }
     }
 
-    // Check every cached directory: still exists, and mtime is unchanged.
-    for dir in &result.dirs {
+    for dir in dirs {
         match std::fs::metadata(dir) {
             Err(_) => return true, // directory was removed
             Ok(meta) => {
@@ -196,7 +228,7 @@ pub fn needs_rescan(settings: &LibrarySettings, result: &LibraryScanResult) -> b
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_secs())
                         .unwrap_or(0);
-                    if let Some(&stored_secs) = result.dir_mtimes.get(dir) {
+                    if let Some(&stored_secs) = dir_mtimes.get(dir) {
                         if now_secs != stored_secs { return true; }
                     }
                     // If dir_mtimes is absent (old cache), just confirm the dir exists.

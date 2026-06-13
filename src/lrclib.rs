@@ -69,6 +69,7 @@ pub fn fetch_by_id(id: u64) -> Option<(String, Vec<LyricLine>)> {
 pub fn fetch_synced_lyrics(
     track_name: &str,
     artist_name: &str,
+    album_name: &str,
     duration_secs: f64,
 ) -> Option<(u64, String, Vec<LyricLine>)> {
     if track_name.is_empty() {
@@ -107,22 +108,40 @@ pub fn fetch_synced_lyrics(
 
     let mut results = results;
 
-    // Fallback: if the structured search returned nothing, retry with a free-text query.
-    if results.is_empty() && !artist_name.is_empty() {
-        let q = format!("{} {}", track_name, artist_name);
-        let fallback_url = format!(
-            "https://lrclib.net/api/search?q={}",
-            url_encode(&q),
-        );
-        eprintln!("[lrclib] no results — retrying with fallback query: GET {}", fallback_url);
-        results = match ureq::get(&fallback_url)
-            .header("User-Agent", USER_AGENT)
-            .call()
-        {
-            Ok(r) => r.into_body().read_json().unwrap_or_default(),
-            Err(e) => { eprintln!("[lrclib] fallback request failed: {}", e); vec![] }
-        };
-        eprintln!("[lrclib] fallback: {} result(s) returned", results.len());
+    // Fallback: if the structured search returned nothing, retry with a more precise query.
+    if results.is_empty() {
+        if !album_name.is_empty() {
+            let fallback_url = format!(
+                "https://lrclib.net/api/search?track_name={}&album_name={}",
+                url_encode(track_name),
+                url_encode(album_name),
+            );
+            eprintln!("[lrclib] no results — retrying with album search: GET {}", fallback_url);
+            results = match ureq::get(&fallback_url)
+                .header("User-Agent", USER_AGENT)
+                .call()
+            {
+                Ok(r) => r.into_body().read_json().unwrap_or_default(),
+                Err(e) => { eprintln!("[lrclib] album search fallback request failed: {}", e); vec![] }
+            };
+            eprintln!("[lrclib] album search fallback: {} result(s) returned", results.len());
+        } else if !artist_name.is_empty() {
+            // No album name available — fall back to a free-text query.
+            let q = format!("{} {}", track_name, artist_name);
+            let fallback_url = format!(
+                "https://lrclib.net/api/search?q={}",
+                url_encode(&q),
+            );
+            eprintln!("[lrclib] no results — retrying with fallback query: GET {}", fallback_url);
+            results = match ureq::get(&fallback_url)
+                .header("User-Agent", USER_AGENT)
+                .call()
+            {
+                Ok(r) => r.into_body().read_json().unwrap_or_default(),
+                Err(e) => { eprintln!("[lrclib] fallback request failed: {}", e); vec![] }
+            };
+            eprintln!("[lrclib] fallback: {} result(s) returned", results.len());
+        }
     }
 
     let candidates: Vec<&SearchResult> = results
