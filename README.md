@@ -3,7 +3,7 @@
 
 <div align=center>
 <h1>Kanae</h1>
-<p>A music and player with a TUI and GUI, written in Rust.<p>
+<p>A music and CD player with a TUI and GUI, written in Rust.<p>
 <div><img width="40%" height="auto" alt="Player view (TUI)" src="https://github.com/user-attachments/assets/7c59f080-f8f9-4cbb-97f9-1f885e4d5aed" />
 <img width="40%" height="auto" alt="Player view (GUI)" src="https://github.com/user-attachments/assets/c1962b96-c281-42b5-b8b0-3f0814449fe4" /></div>
 </div>
