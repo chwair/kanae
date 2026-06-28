@@ -269,6 +269,79 @@ ApplicationWindow {
         }
     }
 
+    // ── Settings building blocks ──────────────────────────────────────────
+    // Grouped "card" container with an optional heading + caption.
+    component SettingsCard: Rectangle {
+        default property alias content: cardCol.data
+        property string heading: ""
+        property string caption: ""
+        Layout.fillWidth: true
+        color: clrSurface; radius: 8
+        border.color: clrBorder; border.width: 1
+        implicitHeight: cardCol.implicitHeight + 32
+        ColumnLayout {
+            id: cardCol
+            anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+            anchors.margins: 16; spacing: 12
+            ColumnLayout {
+                Layout.fillWidth: true; spacing: 3
+                visible: heading.length > 0
+                Text { text: heading; color: clrText; font.pixelSize: 13; font.family: "Segoe UI"; font.bold: true }
+                Text { visible: caption.length > 0; text: caption; color: clrText2; font.pixelSize: 11
+                    font.family: "Segoe UI"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+            }
+        }
+    }
+
+    // Sliding pill switch.
+    component PillToggle: Item {
+        id: tg
+        property bool checked: false
+        signal toggled()
+        implicitWidth: 34; implicitHeight: 20
+        Rectangle {
+            anchors.fill: parent; radius: height / 2
+            color: tg.checked ? clrAccent : clrSurf2
+            border.color: tg.checked ? clrAccent : clrBorder; border.width: 1
+            Behavior on color { ColorAnimation { duration: 140 } }
+            Rectangle {
+                width: 14; height: 14; radius: 7; y: 3
+                x: tg.checked ? parent.width - 17 : 3
+                color: tg.checked ? clrBg : clrText2
+                Behavior on x { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
+                Behavior on color { ColorAnimation { duration: 140 } }
+            }
+        }
+        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: tg.toggled() }
+    }
+
+    // Bordered icon + label button.
+    component TextButton: Rectangle {
+        id: btn
+        property string label: ""
+        property string icon: ""
+        property bool danger: false
+        signal clicked()
+        implicitWidth: btnRow.implicitWidth + 24; implicitHeight: 30; radius: 6
+        color: btnMa.containsMouse ? (danger ? "#3c1a1a" : clrSurf2) : "transparent"
+        border.color: clrBorder; border.width: 1
+        Behavior on color { ColorAnimation { duration: 100 } }
+        Row {
+            id: btnRow; anchors.centerIn: parent; spacing: 7
+            MatIcon {
+                anchors.verticalCenter: parent.verticalCenter; visible: btn.icon.length > 0
+                name: btn.icon; size: 13
+                color: btn.danger && btnMa.containsMouse ? "#d07070" : clrText2
+            }
+            Text {
+                anchors.verticalCenter: parent.verticalCenter; text: btn.label
+                color: btn.danger && btnMa.containsMouse ? "#d07070" : clrText2
+                font.pixelSize: 11; font.family: "Segoe UI"
+            }
+        }
+        MouseArea { id: btnMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: btn.clicked() }
+    }
+
     // ── Resize handles ────────────────────────────────────────────────────
     readonly property bool _resizable: Qt.platform.os !== "osx" && window.visibility !== Window.Maximized
     Item {
@@ -287,8 +360,8 @@ ApplicationWindow {
     Window {
         id: settingsWindow
         title: "Settings – Kanae"
-        width: 500; height: 560
-        minimumWidth: 400; minimumHeight: 400
+        width: 520; height: 600
+        minimumWidth: 440; minimumHeight: 420
         color: "transparent"
         flags: Qt.FramelessWindowHint | Qt.Dialog | Qt.Window
 
@@ -330,17 +403,9 @@ ApplicationWindow {
                     Rectangle { anchors.left:parent.left;anchors.top:parent.top;anchors.bottom:parent.bottom;width:parent.radius;color:parent.color }
                     Rectangle { anchors.left:parent.left;anchors.right:parent.right;anchors.bottom:parent.bottom;height:parent.radius;color:parent.color }
                     Behavior on color { ColorAnimation { duration: 100 } }
-                    Canvas {
-                        anchors.centerIn: parent; width: 8; height: 8
-                        property color ic: swClsHov.containsMouse ? "#d07070" : "#686868"
-                        onIcChanged: requestPaint()
-                        Component.onCompleted: requestPaint()
-                        onPaint: {
-                            var c = getContext("2d"); c.clearRect(0,0,8,8)
-                            c.strokeStyle = ic; c.lineWidth = 1.5; c.lineCap = "round"
-                            c.beginPath(); c.moveTo(0,0); c.lineTo(8,8); c.stroke()
-                            c.beginPath(); c.moveTo(8,0); c.lineTo(0,8); c.stroke()
-                        }
+                    MatIcon {
+                        anchors.centerIn: parent; name: "close"; size: 11
+                        color: swClsHov.containsMouse ? "#d07070" : "#686868"
                     }
                     MouseArea { id: swClsHov; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: settingsWindow.close() }
                 }
@@ -360,152 +425,133 @@ ApplicationWindow {
                 ColumnLayout {
                     id: swCol
                     anchors.left: parent.left; anchors.right: parent.right
-                    anchors.margins: 28; spacing: 24
+                    anchors.margins: 20; spacing: 16
 
-                    Item { height: 8 }
+                    Item { height: 4 }
 
-                    // Search paths
-                    ColumnLayout {
-                        Layout.fillWidth: true; spacing: 8
-                        Text { text:"Search Paths"; color:"#dfdfdf"; font.pixelSize:12; font.family:"Segoe UI"; font.bold:true }
-                        Text { text:"Folders that Kanae will scan for music"; color:"#686868"; font.pixelSize:10; font.family:"Segoe UI" }
+                    // ── Search paths ──────────────────────────────────────
+                    SettingsCard {
+                        heading: "Search Paths"
+                        caption: "Folders that Kanae scans for music"
 
                         Repeater {
                             model: settingsWindow.settingsObj.search_paths || []
                             RowLayout {
                                 Layout.fillWidth: true; spacing: 6
                                 Rectangle {
-                                    Layout.fillWidth:true;height:30;radius:4;color:"#161616";border.color:"#282828";border.width:1;clip:true
-                                    Text{anchors.verticalCenter:parent.verticalCenter;anchors.left:parent.left;anchors.right:parent.right;anchors.leftMargin:10;anchors.rightMargin:10;text:modelData;color:"#686868";font.pixelSize:11;font.family:"Segoe UI";elide:Text.ElideRight}
+                                    Layout.fillWidth: true; height: 30; radius: 5; color: clrBg
+                                    border.color: clrBorder; border.width: 1; clip: true
+                                    MatIcon { anchors.left: parent.left; anchors.leftMargin: 9; anchors.verticalCenter: parent.verticalCenter
+                                        name: "folder"; size: 13; color: clrMuted }
+                                    Text { anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.right: parent.right
+                                        anchors.leftMargin: 30; anchors.rightMargin: 10; text: modelData; color: clrText2
+                                        font.pixelSize: 11; font.family: "Segoe UI"; elide: Text.ElideRight }
                                 }
                                 Rectangle {
-                                    width:30;height:30;radius:4;color:swRmHov.containsMouse?"#3c1a1a":"#161616";border.color:"#282828";border.width:1
-                                    Behavior on color{ColorAnimation{duration:100}}
-                                    Canvas{anchors.centerIn:parent;width:8;height:8;onPaint:{var c=getContext("2d");c.clearRect(0,0,8,8);c.strokeStyle=swRmHov.containsMouse?"#d07070":"#686868";c.lineWidth=1.5;c.lineCap="round";c.beginPath();c.moveTo(0,0);c.lineTo(8,8);c.stroke();c.beginPath();c.moveTo(8,0);c.lineTo(0,8);c.stroke()}
-                                        property bool d: swRmHov.containsMouse; onDChanged: requestPaint()}
-                                    MouseArea{id:swRmHov;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor;property string pv:modelData;onClicked:library.removeSearchPath(pv)}
+                                    width: 30; height: 30; radius: 5
+                                    color: swRmHov.containsMouse ? "#3c1a1a" : clrBg
+                                    border.color: clrBorder; border.width: 1
+                                    Behavior on color { ColorAnimation { duration: 100 } }
+                                    MatIcon { anchors.centerIn: parent; name: "trash"; size: 14
+                                        color: swRmHov.containsMouse ? "#d07070" : clrText2 }
+                                    MouseArea { id: swRmHov; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                        property string pv: modelData; onClicked: library.removeSearchPath(pv) }
                                 }
                             }
                         }
 
-                        Rectangle {
-                            width:swAddLbl.implicitWidth+20;height:28;radius:4
-                            color:swAddHov.containsMouse?"#1e1e1e":"transparent";border.color:"#282828";border.width:1
-                            Behavior on color{ColorAnimation{duration:100}}
-                            Text{id:swAddLbl;anchors.centerIn:parent;text:"+ Add Folder";color:"#686868";font.pixelSize:11;font.family:"Segoe UI"}
-                            MouseArea{id:swAddHov;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor;onClicked:library.openFolderPicker()}
-                        }
+                        TextButton { label: "Add Folder"; icon: "folder-plus"; onClicked: library.openFolderPicker() }
                     }
 
-                    Rectangle { Layout.fillWidth:true; height:1; color:"#282828" }
-
-                    // Merge all toggle
-                    RowLayout {
-                        Layout.fillWidth: true; spacing: 12
-                        Rectangle {
-                            width:18;height:18;radius:4;color:"#161616";border.color:"#282828";border.width:1
-                            Rectangle{anchors.fill:parent;anchors.margins:4;radius:2;color:"#bfbfbf";visible:settingsWindow.settingsObj.merge_all_folders===true}
-                            MouseArea{anchors.fill:parent;cursorShape:Qt.PointingHandCursor;onClicked:library.setMergeAll(!(settingsWindow.settingsObj.merge_all_folders===true))}
-                        }
-                        Column {
-                            Layout.fillWidth: true; spacing: 3
-                            Text{text:"Merge all folders";color:"#dfdfdf";font.pixelSize:12;font.family:"Segoe UI"}
-                            Text{text:"Show only albums, hide folder tiles";color:"#686868";font.pixelSize:10;font.family:"Segoe UI"}
-                        }
-                    }
-
-                    Rectangle { Layout.fillWidth:true; height:1; color:"#282828" }
-
-                    // Merged folders
-                    ColumnLayout {
-                        Layout.fillWidth: true; spacing: 8
-                        visible: (settingsWindow.settingsObj.merged_folders || []).length > 0
-                        Text{text:"Merged Folders";color:"#dfdfdf";font.pixelSize:12;font.family:"Segoe UI";font.bold:true}
-                        Repeater {
-                            model: settingsWindow.settingsObj.merged_folders || []
-                            RowLayout { Layout.fillWidth:true;spacing:6
-                                Text{Layout.fillWidth:true;text:modelData;color:"#686868";font.pixelSize:11;font.family:"Segoe UI";elide:Text.ElideRight}
-                                Rectangle{width:70;height:26;radius:4;color:swUnmergeHov.containsMouse?"#1e1e1e":"transparent";border.color:"#282828";border.width:1;Behavior on color{ColorAnimation{duration:100}}
-                                    Text{anchors.centerIn:parent;text:"Unmerge";color:"#686868";font.pixelSize:10;font.family:"Segoe UI"}
-                                    MouseArea{id:swUnmergeHov;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor;property string pv:modelData;onClicked:library.setFolderOption(pv,"merge_remove")}}
-                            }
-                        }
-                    }
-
-                    // Ignored folders
-                    ColumnLayout {
-                        Layout.fillWidth: true; spacing: 8
-                        visible: (settingsWindow.settingsObj.ignored_folders || []).length > 0
-                        Text{text:"Ignored Folders";color:"#dfdfdf";font.pixelSize:12;font.family:"Segoe UI";font.bold:true}
-                        Repeater {
-                            model: settingsWindow.settingsObj.ignored_folders || []
-                            RowLayout { Layout.fillWidth:true;spacing:6
-                                Text{Layout.fillWidth:true;text:modelData;color:"#686868";font.pixelSize:11;font.family:"Segoe UI";elide:Text.ElideRight}
-                                Rectangle{width:70;height:26;radius:4;color:swUnignoreHov.containsMouse?"#1e1e1e":"transparent";border.color:"#282828";border.width:1;Behavior on color{ColorAnimation{duration:100}}
-                                    Text{anchors.centerIn:parent;text:"Show";color:"#686868";font.pixelSize:10;font.family:"Segoe UI"}
-                                    MouseArea{id:swUnignoreHov;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor;property string pv:modelData;onClicked:library.setFolderOption(pv,"ignore_remove")}}
-                            }
-                        }
-                    }
-
-                    Item { height: 12 }
-
-                    Rectangle { Layout.fillWidth:true; height:1; color:"#282828" }
-
-                    // Lyric Cache section
-                    ColumnLayout {
-                        Layout.fillWidth: true; spacing: 8
-                        Text { text:"Lyric Cache"; color:"#dfdfdf"; font.pixelSize:12; font.family:"Segoe UI"; font.bold:true }
-
-                        // Disable limit toggle
+                    // ── Display ───────────────────────────────────────────
+                    SettingsCard {
+                        heading: "Display"
                         RowLayout {
                             Layout.fillWidth: true; spacing: 12
-                            Rectangle {
-                                width:18;height:18;radius:4;color:"#161616";border.color:"#282828";border.width:1
-                                Rectangle{anchors.fill:parent;anchors.margins:4;radius:2;color:"#bfbfbf";visible:settingsWindow.settingsObj.lrc_limit_disabled===true}
-                                MouseArea{anchors.fill:parent;cursorShape:Qt.PointingHandCursor;onClicked:library.setLrcLimitDisabled(!(settingsWindow.settingsObj.lrc_limit_disabled===true))}
-                            }
                             Column {
                                 Layout.fillWidth: true; spacing: 3
-                                Text{text:"Disable 100-entry limit";color:"#dfdfdf";font.pixelSize:12;font.family:"Segoe UI"}
-                                Text{text:"Keep all cached lyrics indefinitely";color:"#686868";font.pixelSize:10;font.family:"Segoe UI"}
+                                Text { text: "Merge all folders"; color: clrText; font.pixelSize: 12; font.family: "Segoe UI" }
+                                Text { text: "Show only albums, hide folder tiles"; color: clrText2; font.pixelSize: 10; font.family: "Segoe UI" }
+                            }
+                            PillToggle {
+                                checked: settingsWindow.settingsObj.merge_all_folders === true
+                                onToggled: library.setMergeAll(!(settingsWindow.settingsObj.merge_all_folders === true))
                             }
                         }
+                    }
 
-                        // Purge buttons row
+                    // ── Merged / ignored folders ──────────────────────────
+                    SettingsCard {
+                        heading: "Merged Folders"
+                        visible: (settingsWindow.settingsObj.merged_folders || []).length > 0
+                        Repeater {
+                            model: settingsWindow.settingsObj.merged_folders || []
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: 6
+                                Text { Layout.fillWidth: true; text: modelData; color: clrText2; font.pixelSize: 11; font.family: "Segoe UI"; elide: Text.ElideRight }
+                                TextButton { label: "Unmerge"; property string pv: modelData; onClicked: library.setFolderOption(pv, "merge_remove") }
+                            }
+                        }
+                    }
+
+                    SettingsCard {
+                        heading: "Ignored Folders"
+                        visible: (settingsWindow.settingsObj.ignored_folders || []).length > 0
+                        Repeater {
+                            model: settingsWindow.settingsObj.ignored_folders || []
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: 6
+                                Text { Layout.fillWidth: true; text: modelData; color: clrText2; font.pixelSize: 11; font.family: "Segoe UI"; elide: Text.ElideRight }
+                                TextButton { label: "Show"; property string pv: modelData; onClicked: library.setFolderOption(pv, "ignore_remove") }
+                            }
+                        }
+                    }
+
+                    // ── Lyrics ────────────────────────────────────────────
+                    SettingsCard {
+                        heading: "Lyrics"
+                        RowLayout {
+                            Layout.fillWidth: true; spacing: 12
+                            Column {
+                                Layout.fillWidth: true; spacing: 3
+                                Text { text: "Romanize Japanese lyrics"; color: clrText; font.pixelSize: 12; font.family: "Segoe UI" }
+                                Text { text: "Convert kana and kanji to romaji"; color: clrText2; font.pixelSize: 10; font.family: "Segoe UI" }
+                            }
+                            PillToggle {
+                                checked: settingsWindow.settingsObj.romanize_lyrics === true
+                                onToggled: {
+                                    library.setRomanizeLyrics(!(settingsWindow.settingsObj.romanize_lyrics === true))
+                                    player.reapplyLyrics()
+                                }
+                            }
+                        }
+                        Rectangle { Layout.fillWidth: true; height: 1; color: clrBorder }
+                        RowLayout {
+                            Layout.fillWidth: true; spacing: 12
+                            Column {
+                                Layout.fillWidth: true; spacing: 3
+                                Text { text: "Disable 100-entry limit"; color: clrText; font.pixelSize: 12; font.family: "Segoe UI" }
+                                Text { text: "Keep all cached lyrics indefinitely"; color: clrText2; font.pixelSize: 10; font.family: "Segoe UI" }
+                            }
+                            PillToggle {
+                                checked: settingsWindow.settingsObj.lrc_limit_disabled === true
+                                onToggled: library.setLrcLimitDisabled(!(settingsWindow.settingsObj.lrc_limit_disabled === true))
+                            }
+                        }
                         RowLayout {
                             Layout.fillWidth: true; spacing: 8
-                            Rectangle {
-                                width:swPurgeLrcLbl.implicitWidth+20;height:28;radius:4
-                                color:swPurgeLrcHov.containsMouse?"#1e1e1e":"transparent";border.color:"#282828";border.width:1
-                                Behavior on color{ColorAnimation{duration:100}}
-                                Text{id:swPurgeLrcLbl;anchors.centerIn:parent;text:"↺ Purge LRC cache";color:"#686868";font.pixelSize:11;font.family:"Segoe UI"}
-                                MouseArea{id:swPurgeLrcHov;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor;onClicked:library.purgeLrcCache()}
-                            }
-                            Rectangle {
-                                width:swPurgeNoLyrLbl.implicitWidth+20;height:28;radius:4
-                                color:swPurgeNoLyrHov.containsMouse?"#1e1e1e":"transparent";border.color:"#282828";border.width:1
-                                Behavior on color{ColorAnimation{duration:100}}
-                                Text{id:swPurgeNoLyrLbl;anchors.centerIn:parent;text:"↺ Purge no-lyrics cache";color:"#686868";font.pixelSize:11;font.family:"Segoe UI"}
-                                MouseArea{id:swPurgeNoLyrHov;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor;onClicked:library.purgeNoLyricsCache()}
-                            }
+                            TextButton { label: "Purge LRC cache"; icon: "refresh"; onClicked: library.purgeLrcCache() }
+                            TextButton { label: "Purge no-lyrics cache"; icon: "refresh"; onClicked: library.purgeNoLyricsCache() }
                         }
                     }
 
-                    Item { height: 12 }
-
-                    Rectangle { Layout.fillWidth:true; height:1; color:"#282828" }
-
-                    // Rescan library
-                    Rectangle {
-                        width:swRescanLbl.implicitWidth+20;height:28;radius:4
-                        color:swRescanHov.containsMouse?"#1e1e1e":"transparent";border.color:"#282828";border.width:1
-                        Behavior on color{ColorAnimation{duration:100}}
-                        Text{id:swRescanLbl;anchors.centerIn:parent;text:"↺ Rescan Library";color:"#686868";font.pixelSize:11;font.family:"Segoe UI"}
-                        MouseArea{id:swRescanHov;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor;onClicked:library.startScan()}
+                    // ── Library maintenance ───────────────────────────────
+                    SettingsCard {
+                        heading: "Library"
+                        TextButton { label: "Rescan Library"; icon: "refresh"; onClicked: library.startScan() }
                     }
 
-                    Item { height: 8 }
+                    Item { height: 4 }
                 }
             }
         }
@@ -562,27 +608,9 @@ ApplicationWindow {
                     border.width: 1
                     Behavior on color { ColorAnimation { duration: 100 } }
                 }
-                Canvas {
-                    anchors.centerIn: parent; width: 12; height: 12
-                    property color ic: macSettingsHov.containsMouse ? clrText : clrText2
-                    onIcChanged: requestPaint()
-                    Component.onCompleted: requestPaint()
-                    onPaint: {
-                        var c = getContext("2d"); c.clearRect(0,0,12,12)
-                        c.fillStyle = ic
-                        var cx=6,cy=6,ri=2.6,ro=5.4,n=6
-                        c.beginPath()
-                        for(var i=0;i<n*2;i++){
-                            var a=(i*Math.PI/n)-Math.PI/2
-                            var r=i%2===0?ro:ri
-                            if(i===0)c.moveTo(cx+r*Math.cos(a),cy+r*Math.sin(a))
-                            else c.lineTo(cx+r*Math.cos(a),cy+r*Math.sin(a))
-                        }
-                        c.closePath(); c.fill()
-                        c.globalCompositeOperation="destination-out"
-                        c.beginPath(); c.arc(cx,cy,1.8,0,2*Math.PI); c.fill()
-                        c.globalCompositeOperation="source-over"
-                    }
+                MatIcon {
+                    anchors.centerIn: parent; name: "settings"; size: 13
+                    color: macSettingsHov.containsMouse ? clrText : clrText2
                 }
                 MouseArea { id: macSettingsHov; anchors.fill: parent; hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor; onClicked: settingsWindow.show() }
@@ -615,27 +643,9 @@ ApplicationWindow {
                 Rectangle {
                     width: 32; height: parent.height; color: "transparent"
                     Rectangle { anchors.fill:parent; color:settingsHov.containsMouse?clrSurf2:"transparent"; Behavior on color{ColorAnimation{duration:100}} }
-                    Canvas {
-                        anchors.centerIn: parent; width: 12; height: 12
-                        property color ic: settingsHov.containsMouse ? clrText : clrText2
-                        onIcChanged: requestPaint()
-                        Component.onCompleted: requestPaint()
-                        onPaint: {
-                            var c = getContext("2d"); c.clearRect(0,0,12,12)
-                            c.fillStyle = ic
-                            var cx=6,cy=6,ri=2.6,ro=5.4,n=6
-                            c.beginPath()
-                            for(var i=0;i<n*2;i++){
-                                var a=(i*Math.PI/n)-Math.PI/2
-                                var r=i%2===0?ro:ri
-                                if(i===0)c.moveTo(cx+r*Math.cos(a),cy+r*Math.sin(a))
-                                else c.lineTo(cx+r*Math.cos(a),cy+r*Math.sin(a))
-                            }
-                            c.closePath(); c.fill()
-                            c.globalCompositeOperation="destination-out"
-                            c.beginPath(); c.arc(cx,cy,1.8,0,2*Math.PI); c.fill()
-                            c.globalCompositeOperation="source-over"
-                        }
+                    MatIcon {
+                        anchors.centerIn: parent; name: "settings"; size: 13
+                        color: settingsHov.containsMouse ? clrText : clrText2
                     }
                     MouseArea { id:settingsHov; anchors.fill:parent; hoverEnabled:true
                         cursorShape:Qt.PointingHandCursor
@@ -645,27 +655,21 @@ ApplicationWindow {
                 Rectangle {
                     width:32;height:parent.height;color:"transparent"
                     Rectangle{anchors.fill:parent;color:minHov.containsMouse?clrSurf2:"transparent";Behavior on color{ColorAnimation{duration:100}}}
-                    Canvas{anchors.centerIn:parent;width:8;height:1;onPaint:{var c=getContext("2d");c.clearRect(0,0,8,1);c.fillStyle=clrText2;c.fillRect(0,0,8,1)}}
+                    MatIcon{anchors.centerIn:parent;name:"minimize";size:11;color:minHov.containsMouse?clrText:clrText2}
                     MouseArea{id:minHov;anchors.fill:parent;hoverEnabled:true;onClicked:window.showMinimized()}
                 }
                 Rectangle {
                     width:32;height:parent.height;color:"transparent"
                     Rectangle{anchors.fill:parent;color:maxHov.containsMouse?clrSurf2:"transparent";Behavior on color{ColorAnimation{duration:100}}}
-                    Canvas{id:maxCanvas;anchors.centerIn:parent;width:8;height:8
-                        property bool isMax:window.visibility===Window.Maximized
-                        property color ic:maxHov.containsMouse?clrText:clrText2
-                        onIsMaxChanged:requestPaint();onIcChanged:requestPaint();Component.onCompleted:requestPaint()
-                        onPaint:{var c=getContext("2d");c.clearRect(0,0,8,8);c.strokeStyle=ic;c.lineWidth=1.2;c.lineCap="square"
-                            if(isMax){c.beginPath();c.moveTo(2.5,0.5);c.lineTo(7.5,0.5);c.lineTo(7.5,5.5);c.stroke();c.strokeRect(0.5,2.5,5,5)}
-                            else{c.strokeRect(0.5,0.5,7,7)}}}
+                    MatIcon{anchors.centerIn:parent;size:11
+                        name:window.visibility===Window.Maximized?"restore":"maximize"
+                        color:maxHov.containsMouse?clrText:clrText2}
                     MouseArea{id:maxHov;anchors.fill:parent;hoverEnabled:true;onClicked:window.visibility===Window.Maximized?window.showNormal():window.showMaximized()}
                 }
                 Rectangle {
                     width:32;height:parent.height;color:"transparent"
                     Rectangle{anchors.fill:parent;color:clsHov.containsMouse?"#3c1a1a":"transparent";Behavior on color{ColorAnimation{duration:100}}}
-                    Canvas{anchors.centerIn:parent;width:8;height:8;property color ic:clsHov.containsMouse?"#d07070":clrText2
-                        onIcChanged:requestPaint();onPaint:{var c=getContext("2d");c.clearRect(0,0,8,8);c.strokeStyle=ic;c.lineWidth=1.5;c.lineCap="round"
-                            c.beginPath();c.moveTo(0,0);c.lineTo(8,8);c.stroke();c.beginPath();c.moveTo(8,0);c.lineTo(0,8);c.stroke()}}
+                    MatIcon{anchors.centerIn:parent;name:"close";size:11;color:clsHov.containsMouse?"#d07070":clrText2}
                     MouseArea{id:clsHov;anchors.fill:parent;hoverEnabled:true;onClicked:Qt.quit()}
                 }
             }
@@ -878,11 +882,7 @@ ApplicationWindow {
                                 color: backPathHov.containsMouse && (library.can_go_back || _view === "album") ? clrSurf2 : "transparent"
                                 opacity: library.can_go_back || _view === "album" ? 1 : 0.3
                                 Behavior on color { ColorAnimation { duration: 80 } }
-                                Canvas {
-                                    anchors.centerIn:parent;width:7;height:7
-                                    onPaint:{ var c=getContext("2d");c.clearRect(0,0,7,7);c.strokeStyle=clrText2;c.lineWidth=1.5;c.lineCap="round";c.lineJoin="round"
-                                        c.beginPath();c.moveTo(5,1);c.lineTo(2,3.5);c.lineTo(5,6);c.stroke() }
-                                }
+                                MatIcon { anchors.centerIn:parent; name:"chevron-left"; size:11; color:clrText2 }
                                 MouseArea { id:backPathHov;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor
                                     onClicked: if(library.can_go_back || window._view === "album") window.goBack() }
                             }
@@ -893,11 +893,7 @@ ApplicationWindow {
                                 color: fwdPathHov.containsMouse && (library.can_go_forward || (_view === "library" && _canGoForwardToAlbum)) ? clrSurf2 : "transparent"
                                 opacity: library.can_go_forward || (_view === "library" && _canGoForwardToAlbum) ? 1 : 0.3
                                 Behavior on color { ColorAnimation { duration: 80 } }
-                                Canvas {
-                                    anchors.centerIn:parent;width:7;height:7
-                                    onPaint:{ var c=getContext("2d");c.clearRect(0,0,7,7);c.strokeStyle=clrText2;c.lineWidth=1.5;c.lineCap="round";c.lineJoin="round"
-                                        c.beginPath();c.moveTo(2,1);c.lineTo(5,3.5);c.lineTo(2,6);c.stroke() }
-                                }
+                                MatIcon { anchors.centerIn:parent; name:"chevron-right"; size:11; color:clrText2 }
                                 MouseArea { id:fwdPathHov;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor
                                     onClicked: if(library.can_go_forward || (window._view === "library" && window._canGoForwardToAlbum)) window.goForward() }
                             }
@@ -972,22 +968,14 @@ ApplicationWindow {
                                     width:22;height:22;radius:3
                                     color: gridToggleHov.containsMouse || window._libUseGrid ? clrSurf2 : "transparent"
                                     Behavior on color { ColorAnimation { duration: 80 } }
-                                    Canvas { anchors.centerIn:parent;width:9;height:9
-                                        property bool dep: window._libUseGrid; onDepChanged: requestPaint()
-                                        onPaint:{ var c=getContext("2d");c.clearRect(0,0,9,9)
-                                            c.fillStyle=window._libUseGrid?clrText:clrText2
-                                            c.fillRect(0,0,4,4);c.fillRect(5,0,4,4);c.fillRect(0,5,4,4);c.fillRect(5,5,4,4) } }
+                                    MatIcon { anchors.centerIn:parent; name:"grid"; size:11; color:window._libUseGrid?clrText:clrText2 }
                                     MouseArea{id:gridToggleHov;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor;onClicked:window._libUseGrid=true}
                                 }
                                 Rectangle {
                                     width:22;height:22;radius:3
                                     color: listToggleHov.containsMouse || !window._libUseGrid ? clrSurf2 : "transparent"
                                     Behavior on color { ColorAnimation { duration: 80 } }
-                                    Canvas { anchors.centerIn:parent;width:9;height:9
-                                        property bool dep: window._libUseGrid; onDepChanged: requestPaint()
-                                        onPaint:{ var c=getContext("2d");c.clearRect(0,0,9,9)
-                                            c.fillStyle=!window._libUseGrid?clrText:clrText2
-                                            c.fillRect(0,0,9,2);c.fillRect(0,3.5,9,2);c.fillRect(0,7,9,2) } }
+                                    MatIcon { anchors.centerIn:parent; name:"list"; size:11; color:!window._libUseGrid?clrText:clrText2 }
                                     MouseArea{id:listToggleHov;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor;onClicked:window._libUseGrid=false}
                                 }
                             }
@@ -1355,24 +1343,22 @@ ApplicationWindow {
             Rectangle{Layout.fillWidth:true;height:1;color:clrBorder}
             RowLayout{Layout.fillWidth:true;Layout.leftMargin:14;Layout.rightMargin:14;Layout.topMargin:10;Layout.bottomMargin:12;spacing:2
                 Item{width:30;height:30;opacity:(player.current_track>0||player.current_time>4)?1.0:0.26;Behavior on opacity{NumberAnimation{duration:160}}
-                    Canvas{anchors.centerIn:parent;width:13;height:13;onPaint:{var c=getContext("2d");c.clearRect(0,0,13,13);c.fillStyle=clrText;c.fillRect(0,0,2,13);c.beginPath();c.moveTo(12,0);c.lineTo(2,6.5);c.lineTo(12,13);c.closePath();c.fill()}}
+                    MatIcon{anchors.centerIn:parent;name:"prev";size:14;color:clrText}
                     MouseArea{anchors.fill:parent;enabled:player.current_track>0||player.current_time>4;cursorShape:enabled?Qt.PointingHandCursor:Qt.ArrowCursor
                         onClicked:{if(player.current_time>4){player.seek(0)}else{var wp=player.is_playing;player.previousTrack();if(wp)player.playPause()}}}}
                 Rectangle{id:ppBtn;width:38;height:38;radius:4;color:ppMs.pressed?clrSurf2:ppMs.containsMouse?"#1c1c1c":clrSurface
                     opacity:player.total_tracks>0&&player.current_track>=0?1.0:0.32;border.color:clrBorder;border.width:1
                     Behavior on color{ColorAnimation{duration:90}}
                     Behavior on opacity{NumberAnimation{duration:150}}
-                    Canvas{id:ppCanvas;anchors.centerIn:parent;width:13;height:13
-                        Connections{target:player;function onIs_playingChanged(){ppCanvas.requestPaint()}}
-                        onPaint:{var c=getContext("2d");c.clearRect(0,0,13,13);c.fillStyle=clrText;if(player.is_playing){c.fillRect(0,0,4,13);c.fillRect(8,0,4,13)}else{c.beginPath();c.moveTo(2,0);c.lineTo(13,6.5);c.lineTo(2,13);c.closePath();c.fill()}}}
+                    MatIcon{anchors.centerIn:parent;size:14;color:clrText;name:player.is_playing?"pause":"play"}
                     MouseArea{id:ppMs;anchors.fill:parent;hoverEnabled:true;enabled:player.total_tracks>0&&player.current_track>=0;cursorShape:enabled?Qt.PointingHandCursor:Qt.ArrowCursor;onClicked:player.playPause()}}
                 Item{width:30;height:30;opacity:player.current_track>=0&&player.current_track<player.total_tracks-1?1.0:0.26;Behavior on opacity{NumberAnimation{duration:160}}
-                    Canvas{anchors.centerIn:parent;width:13;height:13;onPaint:{var c=getContext("2d");c.clearRect(0,0,13,13);c.fillStyle=clrText;c.beginPath();c.moveTo(0,0);c.lineTo(10,6.5);c.lineTo(0,13);c.closePath();c.fill();c.fillRect(11,0,2,13)}}
+                    MatIcon{anchors.centerIn:parent;name:"next";size:14;color:clrText}
                     MouseArea{anchors.fill:parent;enabled:player.current_track>=0&&player.current_track<player.total_tracks-1;cursorShape:enabled?Qt.PointingHandCursor:Qt.ArrowCursor
                         onClicked:{var wp=player.is_playing;player.nextTrack();if(wp)player.playPause()}}}
                 Item{Layout.fillWidth:true}
-                Canvas{id:volIconCanvas;width:16;height:13;property real lvl:volSlider.value;onLvlChanged:requestPaint()
-                    onPaint:{var c=getContext("2d");c.clearRect(0,0,16,13);c.fillStyle=clrText2;c.fillRect(0,4,4,5);c.beginPath();c.moveTo(4,4);c.lineTo(8,1);c.lineTo(8,12);c.lineTo(4,9);c.closePath();c.fill();c.strokeStyle=clrText2;c.lineWidth=1.3;if(lvl>0.05){c.beginPath();c.arc(8,6.5,3.2,-0.7,0.7);c.stroke()};if(lvl>0.5){c.beginPath();c.arc(8,6.5,5.5,-0.7,0.7);c.stroke()}}}
+                MatIcon{size:16;color:clrText2
+                    name:volSlider.value<=0.001?"volume-mute":(volSlider.value<0.5?"volume-low":"volume")}
                 Slider{id:volSlider;Layout.preferredWidth:88;implicitHeight:30;padding:0;from:0;to:1;value:1.0
                     Component.onCompleted:player.setVolumeLevel(1.0);onMoved:player.setVolumeLevel(value)
                     background:Item{implicitHeight:30;Rectangle{anchors.verticalCenter:parent.verticalCenter;width:parent.width;height:3;radius:1;color:clrSurf2

@@ -59,6 +59,9 @@ pub struct LibrarySettings {
     /// When true the lyric content cache has no entry limit.
     #[serde(default)]
     pub lrc_limit_disabled: bool,
+    /// When true, Japanese lyric lines are romanized (kana + kanji → romaji).
+    #[serde(default)]
+    pub romanize_lyrics: bool,
 }
 
 /// Progress snapshot delivered during a scan.
@@ -166,7 +169,6 @@ pub fn scan(
             let (albums, was_reused) = match reused {
                 Some(cached) => (cached, true),
                 None => {
-                    // Read each track's metadata in parallel within the dir.
                     let tracks: Vec<_> = files.par_iter().map(|p| read_file_metadata(p)).collect();
                     (group_into_albums(dir, &tracks), false)
                 }
@@ -191,7 +193,6 @@ pub fn scan(
     let mut result = LibraryScanResult { albums, dirs: walk.dirs, dir_mtimes: HashMap::new() };
     let _ = dirs_visited; // counter is only used for live progress messages
 
-    // Sort albums: pinned first, then by artist/album.
     result.albums.sort_by(|a, b| {
         let a_pin = settings.pinned_paths.contains(&a.dir);
         let b_pin = settings.pinned_paths.contains(&b.dir);
@@ -343,7 +344,6 @@ pub fn default_music_dir() -> Option<PathBuf> {
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        // XDG_MUSIC_DIR
         if let Ok(xdg_music) = std::env::var("XDG_MUSIC_DIR") {
             let p = PathBuf::from(&xdg_music);
             if p.exists() { return Some(p); }

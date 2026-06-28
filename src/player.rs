@@ -101,6 +101,10 @@ mod player_bridge {
         fn poll_lyrics(self: Pin<&mut Self>);
 
         #[qinvokable]
+        #[cxx_name = "reapplyLyrics"]
+        fn reapply_lyrics(self: Pin<&mut Self>);
+
+        #[qinvokable]
         #[cxx_name = "initSmtc"]
         fn init_smtc(self: Pin<&mut Self>);
 
@@ -148,6 +152,9 @@ pub struct PlayerState {
     lyric_result: Arc<Mutex<Option<Option<Vec<crate::lrclib::LyricLine>>>>>,
     lyric_fetch_thread: Option<thread::JoinHandle<()>>,
     lyric_fetch_generation: Arc<AtomicU64>,
+    /// Original (non-romanized) lyric lines for the current track, kept so the
+    /// romanize toggle can be re-applied live without re-fetching.
+    lyrics_src: Vec<crate::lrclib::LyricLine>,
     smtc_handle: Option<crate::smtc::SmtcHandle>,
     track_titles_plain:  Vec<String>,
     track_artists_plain: Vec<String>,
@@ -183,6 +190,7 @@ impl Default for PlayerState {
             lyric_result: Arc::new(Mutex::new(None)),
             lyric_fetch_thread: None,
             lyric_fetch_generation: Arc::new(AtomicU64::new(0)),
+            lyrics_src: Vec::new(),
             smtc_handle: None,
             track_titles_plain:  Vec::new(),
             track_artists_plain: Vec::new(),
@@ -317,7 +325,6 @@ impl player_bridge::PlayerController {
             return;
         }
 
-        // Auto-select first drive with audio CD
         if auto_select_index >= 0 {
             self.as_mut().set_selected_drive_index(auto_select_index);
             self.select_drive(auto_select_index);
@@ -396,7 +403,6 @@ impl player_bridge::PlayerController {
                             .iter()
                             .map(|t| cd_reader::format_duration(t.duration_seconds))
                             .collect();
-                        // Fetch metadata from MusicBrainz on the background thread.
                         let metadata = crate::musicbrainz::lookup_metadata(&toc);
                         let disc_id = crate::musicbrainz::calculate_disc_id(&toc);
                         PendingDiscResult::Loaded { tracks, durations, metadata, disc_id }
@@ -532,7 +538,6 @@ impl player_bridge::PlayerController {
                 h.update(crate::smtc::SmtcUpdate::Stopped);
             }
         }
-        // Discord: new track loaded (not yet playing).
         self.state.lock().unwrap().sync_discord(index, false);
     }
 
@@ -839,7 +844,7 @@ impl player_bridge::PlayerController {
         if let Some(h) = handle {
             let _ = h.join();
         }
-                // Re-open the CdReader now that the thread has released its exclusive handle
+        // Re-open the CdReader now that the thread has released its exclusive handle.
         {
             let mut state = self.state.lock().unwrap();
             if !state.is_file_mode && state.cd_reader.is_none() {
@@ -882,7 +887,6 @@ impl player_bridge::PlayerController {
         if !*self.as_ref().is_playing() {
             return;
         }
-        // Check if the playback thread exited naturally (track ended or disc error).
         let ended = {
             let state = self.state.lock().unwrap();
             state.playback_ended.swap(false, Ordering::Relaxed)
@@ -935,7 +939,6 @@ impl player_bridge::PlayerController {
                 self.as_mut().load_track(current + 1);
                 self.start_playback();
             } else {
-                // Last track (or no tracks) — stop and notify SMTC.
                 let mut state = self.state.lock().unwrap();
                 if let Some(ref mut h) = state.smtc_handle {
                     h.update(crate::smtc::SmtcUpdate::Stopped);
@@ -956,7 +959,6 @@ impl player_bridge::PlayerController {
                 });
             }
         }
-        // Discord presence: poll cover upload + push if state changed.
         {
             let current_track = *self.as_ref().current_track();
             let is_playing    = *self.as_ref().is_playing();
@@ -1040,7 +1042,6 @@ impl player_bridge::PlayerController {
             x
         };
         let Some(result) = result else { return };
-        // Join the load thread and clear both loading flags.
         let t = self.state.lock().unwrap().disc_load_thread.take();
         if let Some(t) = t { let _ = t.join(); }
         self.state.lock().unwrap().disc_check_active.store(false, Ordering::Relaxed);
@@ -1286,7 +1287,6 @@ impl player_bridge::PlayerController {
         let handle = thread::spawn(move || {
             use crate::lyric_cache::{LyricContentCache, cd_key, file_key};
 
-            // Build the cache key for this track.
             let cache_key = if !disc_id.is_empty() && track_idx >= 0 {
                 cd_key(&disc_id, track_idx)
             } else {
@@ -1353,17 +1353,30 @@ impl player_bridge::PlayerController {
         }
         match maybe_lines {
             Some(lines) => {
-                let mut texts = QStringList::default();
-                let mut times = QStringList::default();
-                for line in &lines {
-                    texts.append(QString::from(line.text.as_str()));
-                    times.append(QString::from(line.time_secs.to_string().as_str()));
-                }
-                self.as_mut().set_lyric_lines(texts);
-                self.as_mut().set_lyric_times(times);
+                self.state.lock().unwrap().lyrics_src = lines;
+                self.reapply_lyrics();
             }
-            None => {}
+            None => {
+                self.state.lock().unwrap().lyrics_src.clear();
+            }
         }
+    }
+
+    /// Rebuild the displayed lyric lists from the stored originals, applying the
+    /// current romanize-lyrics setting. Invoked from QML when the user toggles
+    /// the setting, and internally after each fetch — no re-fetch required.
+    pub fn reapply_lyrics(mut self: Pin<&mut Self>) {
+        let romanize = crate::library_cache::load_settings().romanize_lyrics;
+        let mut lines = self.state.lock().unwrap().lyrics_src.clone();
+        crate::romaji::romanize_lines(&mut lines, romanize);
+        let mut texts = QStringList::default();
+        let mut times = QStringList::default();
+        for line in &lines {
+            texts.append(QString::from(line.text.as_str()));
+            times.append(QString::from(line.time_secs.to_string().as_str()));
+        }
+        self.as_mut().set_lyric_lines(texts);
+        self.as_mut().set_lyric_times(times);
     }
 
     pub fn open_files_dialog(self: Pin<&mut Self>) {
@@ -1373,7 +1386,6 @@ impl player_bridge::PlayerController {
             .pick_files();
         if let Some(paths) = paths {
             let strs: Vec<String> = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
-            // Single-file mode when exactly one file was chosen.
             let is_single = strs.len() == 1;
             self.load_local_tracks(strs, is_single);
         }
@@ -1393,7 +1405,6 @@ impl player_bridge::PlayerController {
         for i in 0..urls.len() {
             if let Some(s) = urls.get(i) { eprintln!("[dbg]   raw[{}]: {}", i, s); }
         }
-        // Convert file:// URLs to local filesystem paths.
         let paths: Vec<String> = (0..urls.len())
             .filter_map(|i| {
                 let s = urls.get(i).map(|qs| qs.to_string())?;
@@ -1420,7 +1431,6 @@ impl player_bridge::PlayerController {
 
         if paths.is_empty() { eprintln!("[dbg] open_dropped_paths: no paths after resolve, returning"); return; }
 
-        // Stop and clear whatever is currently playing (CD or file mode).
         {
             let mut state = self.state.lock().unwrap();
             state.is_file_mode = false;
@@ -1461,7 +1471,6 @@ impl player_bridge::PlayerController {
     /// Clears file-mode state, restores CD mode, and triggers a disc load
     /// so the track list is repopulated from the previously selected drive.
     pub fn load_disc(mut self: Pin<&mut Self>) {
-        // Stop file playback and clear file-mode state.
         self.as_mut().stop_playback_internal();
         {
             let mut state = self.state.lock().unwrap();
@@ -1487,13 +1496,11 @@ impl player_bridge::PlayerController {
         self.as_mut().set_track_names(QStringList::default());
         self.as_mut().set_track_titles(QStringList::default());
         self.as_mut().set_track_artists(QStringList::default());
-        // Trigger a disc read from the current drive.
         self.as_mut().refresh_disc();
     }
 
     pub fn eject_or_close(mut self: Pin<&mut Self>) {
         if *self.as_ref().is_file_mode() {
-            // File mode: stop playback and return to the disc/welcome screen.
             {
                 let mut state = self.state.lock().unwrap();
                 state.is_file_mode = false;
@@ -1529,7 +1536,6 @@ impl player_bridge::PlayerController {
             // Trigger a fresh drive scan so the CD path resumes normally.
             self.as_mut().scan_drives();
         } else {
-            // CD mode: stop playback and physically eject the disc.
             self.as_mut().stop_playback_internal();
             let drive_path = self.state.lock().unwrap().current_drive_path.clone();
             if let Some(path) = drive_path {

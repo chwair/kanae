@@ -1,14 +1,3 @@
-/// Lyric content cache — stores fetched LRC text and "no lyrics" markers so
-/// lrclib.net is only queried once per unique track.
-///
-/// Cache keys:
-///   "cd:{disc_id}:{track_num}"          – CD tracks
-///   "file:{absolute_path}"              – local file tracks (by path)
-///   "track:{title_lower}:{artist_lower}" – fallback when path is unavailable
-///
-/// Entries are evicted by LRU when `limit_disabled` is false and the combined
-/// count of LRC + no-lyrics entries exceeds `MAX_ENTRIES`.
-
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 

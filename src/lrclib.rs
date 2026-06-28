@@ -1,5 +1,6 @@
 use serde::Deserialize;
 
+#[derive(Clone)]
 pub struct LyricLine {
     pub time_secs: f64,
     pub text: String,

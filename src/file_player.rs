@@ -92,7 +92,6 @@ pub fn read_file_metadata(path: &Path) -> LocalTrack {
         if let Ok(mut probed) = symphonia::default::get_probe().format(
             &hint, mss, &FormatOptions::default(), &meta_opts,
         ) {
-            // Duration from the default track's codec params.
             if let Some(t) = probed.format.default_track() {
                 if let (Some(tb), Some(n_frames)) = (t.codec_params.time_base, t.codec_params.n_frames) {
                     let time = tb.calc_time(n_frames);
@@ -132,7 +131,6 @@ pub fn read_file_metadata(path: &Path) -> LocalTrack {
         .and_then(|p| p.read().ok())
     {
         use lofty::prelude::{Accessor, AudioFile, TaggedFileExt};
-        // Fill duration from lofty if symphonia didn't get it.
         if track.duration_secs == 0.0 {
             track.duration_secs = tagged.properties().duration().as_secs_f64();
         }

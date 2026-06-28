@@ -2043,6 +2043,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "kakasi"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9303d1b656a06c4cea50948f5b519a748ced7b216a10e800f3640df57337ee9"
+dependencies = [
+ "byteorder",
+ "phf",
+ "phf_shared",
+ "unicode-normalization",
+]
+
+[[package]]
 name = "kanae"
 version = "0.1.0"
 dependencies = [
@@ -2055,6 +2067,7 @@ dependencies = [
  "cxx-qt-lib",
  "discordipc",
  "image",
+ "kakasi",
  "lofty",
  "objc",
  "ratatui",
@@ -4360,6 +4373,15 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unicode-normalization"
+version = "0.1.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
+dependencies = [
+ "tinyvec",
+]
 
 [[package]]
 name = "unicode-segmentation"

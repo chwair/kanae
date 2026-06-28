@@ -48,6 +48,7 @@ ratatui      = { version = "0.30", optional = true }
 crossterm    = { version = "0.29", features = ["event-stream"], optional = true }
 unicode-width = { version = "0.2", optional = true }
 ratatui-image = { version = "10",  default-features = false, features = ["crossterm", "image-defaults"], optional = true }
+kakasi = "0.1.0"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "processthreadsapi", "fileapi", "winioctl", "ioapiset", "handleapi", "wincon"] }

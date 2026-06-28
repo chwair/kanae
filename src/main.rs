@@ -10,6 +10,7 @@ mod audio_player;
 mod file_player;
 mod musicbrainz;
 mod lrclib;
+mod romaji;
 mod lyric_cache;
 mod library;
 mod library_cache;

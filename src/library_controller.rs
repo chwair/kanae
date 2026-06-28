@@ -69,6 +69,7 @@ pub mod library_bridge {
         #[qinvokable] #[cxx_name = "purgeLrcCache"]        fn purge_lrc_cache(self: Pin<&mut Self>);
         #[qinvokable] #[cxx_name = "purgeNoLyricsCache"]   fn purge_no_lyrics_cache(self: Pin<&mut Self>);
         #[qinvokable] #[cxx_name = "setLrcLimitDisabled"]  fn set_lrc_limit_disabled(self: Pin<&mut Self>, value: bool);
+        #[qinvokable] #[cxx_name = "setRomanizeLyrics"]    fn set_romanize_lyrics(self: Pin<&mut Self>, value: bool);
     }
 }
 
@@ -243,7 +244,6 @@ impl library_bridge::LibraryController {
     }
 
     pub fn poll_scan(mut self: Pin<&mut Self>) {
-        // Drain all queued progress events, accumulate new albums and last message.
         let (new_albums, last_msg) = {
             let st = self.state.lock().unwrap();
             if let Some(ref rx) = st.progress_rx {
@@ -373,7 +373,6 @@ impl library_bridge::LibraryController {
                 None => vec![],
             }
         };
-        // Read per-track metadata without holding the lock.
         let tracks: Vec<serde_json::Value> = track_paths.iter()
             .map(|p| {
                 let meta = read_file_metadata(p);
@@ -497,6 +496,16 @@ impl library_bridge::LibraryController {
         self.as_mut().set_settings_json(QString::from(json.as_str()));
     }
 
+    pub fn set_romanize_lyrics(mut self: Pin<&mut Self>, value: bool) {
+        let json = {
+            let mut st = self.state.lock().unwrap();
+            st.settings.romanize_lyrics = value;
+            library_cache::save_settings(&st.settings);
+            serde_json::to_string(&st.settings).unwrap_or_default()
+        };
+        self.as_mut().set_settings_json(QString::from(json.as_str()));
+    }
+
     fn refresh_nav(mut self: Pin<&mut Self>) {
         let (back, fwd, path) = {
             let st = self.state.lock().unwrap();
@@ -528,7 +537,6 @@ fn build_nodes_json(cd: Option<&std::path::Path>, result: &LibraryScanResult, se
     let mut dtos: Vec<LibraryNodeDto> = Vec::new();
     let ignored = |p: &std::path::Path| settings.ignored_folders.iter().any(|ig| p.starts_with(ig) || p == ig);
 
-    // Helper: push an album DTO
     let push_album = |dtos: &mut Vec<LibraryNodeDto>, album: &crate::library::LibraryAlbum, settings: &LibrarySettings| {
         let name = if album.album.is_empty() {
             album.dir.file_name().and_then(|n| n.to_str()).unwrap_or("Unknown").to_string()
@@ -596,7 +604,6 @@ fn build_nodes_json(cd: Option<&std::path::Path>, result: &LibraryScanResult, se
         Some(cur) => {
             let mut used: BTreeSet<std::path::PathBuf> = BTreeSet::new();
             if settings.merge_all_folders {
-                // Show all albums in subtree
                 for album in &result.albums {
                     if !album.dir.starts_with(cur) || ignored(&album.dir) { continue; }
                     used.insert(album.dir.clone());

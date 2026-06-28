@@ -227,6 +227,8 @@ struct TuiPlayerState {
 
     // Lyrics
     lyric_lines:        Vec<String>,
+    // Original (non-romanized) lyric text, kept so the romanize toggle applies live.
+    lyric_lines_src:    Vec<String>,
     lyric_times:        Vec<f64>,
     lyrics_fetch_done:  bool,
     lyric_result:       Arc<Mutex<Option<Option<Vec<crate::lrclib::LyricLine>>>>>,
@@ -268,6 +270,7 @@ impl Default for TuiPlayerState {
             track_artists:       vec![],
             track_durations:     vec![],
             lyric_lines:         vec![],
+            lyric_lines_src:     vec![],
             lyric_times:         vec![],
             lyrics_fetch_done:   false,
             lyric_result:        Arc::new(Mutex::new(None)),
@@ -305,7 +308,6 @@ impl TuiPlayerState {
             Some(i) if i < self.drives.len() => self.drives[i].path.clone(),
             _ => return,
         };
-        // Join old thread first.
         if let Some(old) = self.disc_load_thread.take() {
             let _ = old.join();
         }
@@ -391,6 +393,7 @@ impl TuiPlayerState {
                 self.metadata_loaded = false;
                 self.current_cover_url.clear();
                 self.lyric_lines.clear();
+                self.lyric_lines_src.clear();
                 self.lyric_times.clear();
                 self.lyrics_fetch_done = false;
             }
@@ -408,7 +411,6 @@ impl TuiPlayerState {
         self.track_titles    = tracks.iter().map(|t| t.title.clone()).collect();
         self.track_artists   = tracks.iter().map(|t| t.artist.clone()).collect();
 
-        // Album-level metadata
         let first_album = tracks[0].album.clone();
         let all_same = tracks.iter().all(|t| t.album == first_album);
         self.album_title = if all_same && !first_album.is_empty() {
@@ -438,9 +440,9 @@ impl TuiPlayerState {
         self.is_playing    = false;
         self.metadata_loaded = true;
         self.lyric_lines.clear();
+        self.lyric_lines_src.clear();
         self.lyric_times.clear();
         self.lyrics_fetch_done = false;
-        // Reset atomic positions
         self.heard_position.store(0u64, Ordering::Relaxed);
         self.current_position.store(0u64, Ordering::Relaxed);
     }
@@ -501,7 +503,6 @@ impl TuiPlayerState {
             return;
         }
 
-        // CD mode
         let drive_path = match self.current_drive_idx {
             Some(i) if i < self.drives.len() => self.drives[i].path.clone(),
             _ => return,
@@ -659,12 +660,12 @@ impl TuiPlayerState {
                 self.track_durations.clear();
                 self.metadata_loaded = false;
                 self.lyric_lines.clear();
+                self.lyric_lines_src.clear();
                 self.lyric_times.clear();
                 self.lyrics_fetch_done = false;
                 return;
             }
 
-            // Auto-advance
             let next = self.current_track + 1;
             if next < self.total_tracks {
                 self.load_track(next);
@@ -693,6 +694,7 @@ impl TuiPlayerState {
         if title.is_empty() { return; }
 
         self.lyric_lines.clear();
+        self.lyric_lines_src.clear();
         self.lyric_times.clear();
         self.lyrics_fetch_done = false;
 
@@ -756,10 +758,22 @@ impl TuiPlayerState {
             if let Some(t) = self.lyric_fetch_thread.take() { drop(t); }
             self.lyrics_fetch_done = true;
             if let Some(lines) = maybe_lines {
-                self.lyric_lines = lines.iter().map(|l| l.text.clone()).collect();
+                self.lyric_lines_src = lines.iter().map(|l| l.text.clone()).collect();
                 self.lyric_times = lines.iter().map(|l| l.time_secs).collect();
+                let romanize = crate::library_cache::load_settings().romanize_lyrics;
+                self.apply_romanization(romanize);
             }
         }
+    }
+
+    /// Re-derive the displayed lyric lines from the stored originals, romanizing
+    /// Japanese lines when `romanize` is set. Cheap enough to call on toggle.
+    fn apply_romanization(&mut self, romanize: bool) {
+        self.lyric_lines = if romanize {
+            self.lyric_lines_src.iter().map(|l| crate::romaji::romanize_line(l)).collect()
+        } else {
+            self.lyric_lines_src.clone()
+        };
     }
 
     fn active_lyric_idx(&self) -> i32 {
@@ -910,7 +924,6 @@ impl TuiLibraryState {
 
         match dir {
             None => {
-                // Root: show top-level dirs/albums
                 if self.settings.merge_all_folders {
                     for album in &scan.albums {
                         nodes.push(TuiLibraryNode::Album { album: album.clone() });
@@ -934,7 +947,6 @@ impl TuiLibraryState {
                             }
                         }
                     }
-                    // Deduplicate
                     if nodes.is_empty() {
                         for album in &scan.albums {
                             nodes.push(TuiLibraryNode::Album { album: album.clone() });
@@ -943,7 +955,6 @@ impl TuiLibraryState {
                 }
             }
             Some(ref current) => {
-                // Sub-directory: show children folders + albums in this dir
                 for child_dir in scan.dirs.iter().filter(|d| d.parent() == Some(current.as_path())) {
                     let name = child_dir.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
                     if !self.settings.ignored_folders.contains(child_dir) {
@@ -954,7 +965,6 @@ impl TuiLibraryState {
                     nodes.push(TuiLibraryNode::Album { album: album.clone() });
                 }
                 if nodes.is_empty() {
-                    // Direct match on albums at this path
                     for album in scan.albums.iter().filter(|a| a.dir == *current) {
                         nodes.push(TuiLibraryNode::Album { album: album.clone() });
                     }
@@ -976,7 +986,6 @@ impl TuiLibraryState {
         if self.nav_idx > 0 {
             self.nav_idx -= 1;
         } else {
-            // Go back to library root from first subfolder
             self.nav_stack.clear();
             self.nav_idx = 0;
         }
@@ -1039,46 +1048,35 @@ struct TuiApp {
     view:    View,
     focus:   Focus,
 
-    // For album view when previewing (not yet loaded into player)
     browse_dir:        Option<String>,   // album id currently being previewed
     browse_album_name: String,
     file_mode_active:  bool,
     cd_view_active:    bool,
 
-    // List scroll state
     content_selected: usize,   // cursor / selected item index
     content_scroll:   usize,   // first visible row (auto-adjusted by render)
     sidebar_scroll:   usize,
-    // Seek bar drag
     seek_dragging:    bool,
     seek_drag_x:      u16,
     seek_bar_rect:    Rect,
-    // Volume drag
     vol_dragging:     bool,
     vol_bar_rect:     Rect,
-    // Control button rects (updated each frame)
     btn_prev:   Rect,
     btn_play:   Rect,
     btn_next:   Rect,
     btn_back:   Rect,
     btn_fwd:    Rect,
     btn_lib:    Rect,
-    // Content item rects (updated each frame for mouse hit-testing)
     content_item_rects: Vec<Rect>,
-    // Sidebar lyric rects + mapping back to lyric index
     lyric_item_rects:   Vec<Rect>,
     lyric_row_lyric_idx: Vec<usize>,
-    // Periodic timers
     last_position_poll: Instant,
     last_drive_scan:    Instant,
     last_disc_check:    Instant,
     last_lyrics_poll:   Instant,
     last_lib_change_check: Instant,
-    // Toast messages
     toast_msg: Option<(String, Instant)>,
-    // Whether needs_rescan was triggered during init
     quitting: bool,
-    // Draggable sidebar width
     sidebar_w: u16,
     divider_dragging: bool,
     divider_rect: Rect,
@@ -1110,13 +1108,10 @@ struct TuiApp {
     settings_selected:   usize,
     settings_input_mode: bool,
     settings_input_text: String,
-    // TUI-specific settings (image method, etc.)
     tui_settings:        TuiSettings,
     // Auto-detected image protocol (saved at startup so "Auto" can be restored)
     auto_detected_proto: Option<ProtocolType>,
-    // Active icon set for TUI rendering
     icons: Icons,
-    // Discord Rich Presence
     discord: Option<crate::discord::DiscordPresence>,
 }
 
@@ -1271,22 +1266,18 @@ impl TuiApp {
     fn tick(&mut self) {
         let now = Instant::now();
 
-        // Update playback position + auto-advance
         if now.duration_since(self.last_position_poll) > Duration::from_millis(100) {
             self.player.update_position();
             self.last_position_poll = now;
         }
 
-        // Poll disc load result
         self.player.poll_load();
 
-        // Poll lyrics
         if now.duration_since(self.last_lyrics_poll) > Duration::from_millis(300) {
             self.player.poll_lyrics();
             self.last_lyrics_poll = now;
         }
 
-        // Poll library scan
         self.library.poll_scan();
 
         // Live library scan: every few seconds, cheaply check whether the
@@ -1306,13 +1297,11 @@ impl TuiApp {
             }
         }
 
-        // Refresh library nodes (in case CD state changed)
         let cd_info = if !self.player.is_file_mode && self.player.total_tracks > 0 {
             Some((self.player.album_title.clone(), self.player.album_artist.clone()))
         } else { None };
         self.library.refresh_nodes(cd_info);
 
-        // Periodic drive scan (every 3s)
         let drive_interval = if self.player.total_tracks > 0 { Duration::from_secs(1) } else { Duration::from_secs(3) };
         if !self.player.is_file_mode && now.duration_since(self.last_drive_scan) > drive_interval {
             self.player.scan_drives();
@@ -1322,7 +1311,6 @@ impl TuiApp {
             self.last_drive_scan = now;
         }
 
-        // Periodic disc check (not while playing or loading)
         if !self.player.is_playing && !self.player.is_loading && !self.player.is_file_mode {
             if now.duration_since(self.last_disc_check) > Duration::from_secs(2) {
                 if self.player.current_drive_idx.is_some() {
@@ -1332,19 +1320,16 @@ impl TuiApp {
             }
         }
 
-        // Marquee animation
         if now.duration_since(self.last_marquee) > Duration::from_millis(350) {
             self.marquee_phase = self.marquee_phase.wrapping_add(1);
             self.last_marquee = now;
         }
 
-        // Lyrics shimmer animation
         if now.duration_since(self.last_lyric_shimmer) > Duration::from_millis(80) {
             self.lyric_shimmer_phase = self.lyric_shimmer_phase.wrapping_add(1);
             self.last_lyric_shimmer = now;
         }
 
-        // Auto-fetch lyrics on track change
         if self.player.is_playing && self.player.lyric_lines.is_empty()
             && !self.player.lyrics_fetch_done
             && self.player.lyric_result.lock().unwrap().is_none()
@@ -1585,7 +1570,6 @@ fn marquee(text: &str, width: usize, phase: usize) -> String {
     if width == 0 { return String::new(); }
     let dw = display_width(text);
     if dw <= width {
-        // Pad to exactly `width` display columns with spaces.
         return format!("{}{}", text, " ".repeat(width - dw));
     }
     // Build (char, col_width) pairs for the text + a 3-space gap.
@@ -1672,11 +1656,6 @@ fn hard_push_chars(text: &str, width: usize, rows: &mut Vec<String>, cur: &mut S
 fn render(app: &mut TuiApp, frame: &mut Frame) {
     let area = frame.area();
 
-    // Overall vertical split:
-    //   [title bar 1]
-    //   [main body]
-    //   [seek bar 2]
-    //   [controls 3]
     let vert = Layout::vertical([
         Constraint::Length(1), // title bar
         Constraint::Min(0),    // main body
@@ -1725,7 +1704,6 @@ fn render_main(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
 
     app.divider_rect = horiz[1];
 
-    // Render the vertical divider
     let div_lines: Vec<Line> = (0..horiz[1].height)
         .map(|_| Line::from(Span::styled("│", Style::default().fg(CLR_BORDER))))
         .collect();
@@ -1764,13 +1742,11 @@ fn render_sidebar(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         Constraint::Min(lyrics_h),
     ]).split(area);
 
-    // Cover art placeholder (empty space for image)
     let cover_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(CLR_BORDER));
     let inner = cover_block.inner(vert[0]);
     frame.render_widget(cover_block, vert[0]);
-    // Render cover art if available, otherwise show placeholder icon.
     // During a sidebar drag, skip the stateful widget to avoid re-encoding on
     // every intermediate size; ratatui-image will re-encode once drag ends.
     if let Some(ref mut proto) = app.cover_protocol {
@@ -1787,13 +1763,11 @@ fn render_sidebar(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         );
     }
 
-    // Separator
     frame.render_widget(
         Paragraph::new("─".repeat(area.width as usize)).style(Style::default().fg(CLR_BORDER)),
         vert[1],
     );
 
-    // Album metadata
     let title_style  = Style::default().fg(CLR_TEXT).add_modifier(Modifier::BOLD);
     let artist_style = Style::default().fg(CLR_TEXT2);
     let year_style   = Style::default().fg(CLR_MUTED);
@@ -1806,13 +1780,11 @@ fn render_sidebar(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     ]);
     frame.render_widget(meta_para, vert[2]);
 
-    // Separator
     frame.render_widget(
         Paragraph::new("─".repeat(area.width as usize)).style(Style::default().fg(CLR_BORDER)),
         vert[3],
     );
 
-    // Lyrics
     render_lyrics(app, frame, vert[4]);
 }
 
@@ -1899,7 +1871,6 @@ fn render_lyrics(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
 }
 
 fn render_right_panel(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
-    // Path bar at top, then content
     let vert = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1), // separator
@@ -1926,16 +1897,13 @@ fn render_path_bar(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     let back_style = if can_back { Style::default().fg(CLR_ACCENT) } else { Style::default().fg(CLR_MUTED) };
     let fwd_style  = if can_fwd  { Style::default().fg(CLR_ACCENT) } else { Style::default().fg(CLR_MUTED) };
 
-    // Compute nav button texts + widths (depend on icon set)
     let back_txt = format!(" {} ", app.icons.nav_back);
     let fwd_txt  = format!("{} ", app.icons.nav_fwd);
     let back_dw  = display_width(&back_txt) as u16;
     let fwd_dw   = display_width(&fwd_txt) as u16;
-    // Save button rects
     app.btn_back = Rect { x: area.x,           y: area.y, width: back_dw, height: 1 };
     app.btn_fwd  = Rect { x: area.x + back_dw, y: area.y, width: fwd_dw,  height: 1 };
 
-    // Build breadcrumb spans + track click rects
     app.breadcrumb_rects.clear();
     app.breadcrumb_nav_targets.clear();
 
@@ -1961,7 +1929,6 @@ fn render_path_bar(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
 
     match app.view {
         View::Library => {
-            // Show each folder in the nav stack up to nav_idx
             for i in 0..=app.library.nav_idx {
                 if i >= app.library.nav_stack.len() { break; }
                 let sep    = " ⟋ ";
@@ -2035,10 +2002,8 @@ fn render_library(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     let sel = app.content_selected;
     let visible_rows = area.height as usize;
     let nodes = &app.library.nodes;
-    // Clamp selection
     let sel = sel.min(nodes.len().saturating_sub(1));
     app.content_selected = sel;
-    // Auto-scroll to keep selection visible
     if sel < app.content_scroll { app.content_scroll = sel; }
     if sel >= app.content_scroll + visible_rows { app.content_scroll = sel + 1 - visible_rows; }
     let scroll = app.content_scroll;
@@ -2101,7 +2066,6 @@ fn render_track_list(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
 
     let tracks = app.effective_tracklist();
 
-    // Loading indicator
     if app.player.is_loading && app.browse_dir.is_none() {
         let spin = app.icons.spinner[app.lyric_shimmer_phase % app.icons.spinner.len()];
         frame.render_widget(
@@ -2111,7 +2075,6 @@ fn render_track_list(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         return;
     }
 
-    // No disc / empty
     if tracks.is_empty() {
         let msg = if app.cd_view_active {
             app.player.disc_status.clone()
@@ -2127,10 +2090,8 @@ fn render_track_list(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     let visible_rows = area.height as usize;
     let cur         = app.player.current_track;
     let has_browse  = app.browse_dir.is_some();
-    // Clamp selection
     let sel = sel.min(tracks.len().saturating_sub(1));
     app.content_selected = sel;
-    // Auto-scroll to keep selection visible
     if sel < app.content_scroll { app.content_scroll = sel; }
     if sel >= app.content_scroll + visible_rows { app.content_scroll = sel + 1 - visible_rows; }
     let scroll = app.content_scroll;
@@ -2208,7 +2169,6 @@ fn render_seek_bar(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     let bar_w  = inner_w.saturating_sub(time_w * 2 + 2);
 
     let filled = ((frac * bar_w as f64) as usize).min(bar_w);
-    // Save rect for click handling
     let bar_x = area.x + 1 + time_w as u16 + 1;
     app.seek_bar_rect = Rect { x: bar_x, y: area.y, width: bar_w as u16, height: 1 };
 
@@ -2250,7 +2210,6 @@ fn render_controls(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     let vol     = app.player.volume_f64();
     let vol_pct = (vol * 100.0) as u32;
 
-    // Volume bar (10 chars), no icon
     let vol_bar_w = 10usize;
     let vol_filled = ((vol * vol_bar_w as f64) as usize).min(vol_bar_w);
     let vol_bar: String = format!("{}{}",
@@ -2270,7 +2229,6 @@ fn render_controls(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         Style::default().fg(CLR_TEXT) } else { Style::default().fg(CLR_MUTED) };
     let pp_style    = if has_tracks { Style::default().fg(CLR_ACCENT) } else { Style::default().fg(CLR_MUTED) };
 
-    // Compute button widths from the active icon set
     let prev_dw = display_width(app.icons.skip_prev) as u16;
     let pp_dw   = display_width(pp_char) as u16;
     let next_dw = display_width(app.icons.skip_next) as u16;
@@ -2290,12 +2248,10 @@ fn render_controls(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     } else { String::new() };
     let label = marquee(&centre_label, centre_w, app.marquee_phase);
 
-    // Button rects
     app.btn_prev = Rect { x: area.x,                             y: area.y, width: prev_dw, height: 1 };
     app.btn_play = Rect { x: area.x + prev_dw + 1,               y: area.y, width: pp_dw,   height: 1 };
     app.btn_next = Rect { x: area.x + prev_dw + 1 + pp_dw + 1,   y: area.y, width: next_dw, height: 1 };
 
-    // Volume bar rect at the far right
     let vol_bar_x = area.x + area.width.saturating_sub(vol_total_w as u16);
     app.vol_bar_rect = Rect { x: vol_bar_x, y: area.y, width: vol_bar_w as u16, height: 1 };
 
@@ -2312,7 +2268,6 @@ fn render_controls(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     ]);
     frame.render_widget(Paragraph::new(line), area);
 
-    // Second line: hint text
     if area.height > 1 {
         let hints = " Space:⏯  ←→:seek  Shift←→:navigate  n/p:track  +/-:vol  s:settings  q:quit";
         let hint_area = Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 };
@@ -2344,20 +2299,21 @@ fn render_settings(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     let paths     = app.library.settings.search_paths.clone();
     let merge_all = app.library.settings.merge_all_folders;
     let lrc_limit_disabled = app.library.settings.lrc_limit_disabled;
+    let romanize_lyrics  = app.library.settings.romanize_lyrics;
     let n_paths          = paths.len();
     let idx_add          = n_paths;
     let idx_merge        = n_paths + 1;
     let idx_image        = n_paths + 2;
     let idx_iconset      = n_paths + 3;
-    let idx_lrc_lim      = n_paths + 4;
-    let idx_purge_lrc    = n_paths + 5;
-    let idx_purge_nolyrics = n_paths + 6;
-    let idx_rescan       = n_paths + 7;
-    let total            = n_paths + 8;
+    let idx_romanize     = n_paths + 4;
+    let idx_lrc_lim      = n_paths + 5;
+    let idx_purge_lrc    = n_paths + 6;
+    let idx_purge_nolyrics = n_paths + 7;
+    let idx_rescan       = n_paths + 8;
+    let total            = n_paths + 9;
     if app.settings_selected >= total { app.settings_selected = total.saturating_sub(1); }
     let sel = app.settings_selected;
 
-    // Live cache counts
     let (lrc_count, no_lyrics_count) = {
         let c = crate::lyric_cache::LyricContentCache::load();
         (c.lrc_count(), c.no_lyrics_count())
@@ -2376,7 +2332,6 @@ fn render_settings(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         header_area,
     );
 
-    // Width available for drawing dashes in section headers
     let w = area.width.saturating_sub(2) as usize;
 
     let mut items: Vec<Line> = Vec::new();
@@ -2393,7 +2348,6 @@ fn render_settings(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         Span::styled("   Folders that Kanae will scan for music", Style::default().fg(CLR_TEXT2)),
     ]));
 
-    // Path rows
     for (i, p) in paths.iter().enumerate() {
         let name   = p.to_string_lossy();
         let is_sel = sel == i;
@@ -2409,7 +2363,6 @@ fn render_settings(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         ]));
     }
 
-    // "+ Add folder" row
     if app.settings_input_mode && sel == idx_add {
         items.push(Line::from(vec![
             Span::styled(format!("  {} Path: ", app.icons.sel_marker), Style::default().fg(CLR_ACCENT)),
@@ -2426,10 +2379,8 @@ fn render_settings(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         ]));
     }
 
-    // Blank spacer
     items.push(Line::raw(""));
 
-    // Merge-all toggle
     {
         let check    = if merge_all { app.icons.checked } else { app.icons.unchecked };
         let is_sel   = sel == idx_merge;
@@ -2455,7 +2406,6 @@ fn render_settings(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         Span::styled(hdr_tui, Style::default().fg(CLR_BORDER)),
     ]));
 
-    // Image method selector
     {
         let method_label = app.tui_settings.image_method.label();
         let is_sel = sel == idx_image;
@@ -2474,7 +2424,6 @@ fn render_settings(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         ]));
     }
 
-    // Icon set selector
     {
         let iconset_label = app.tui_settings.icon_set.label();
         let is_sel = sel == idx_iconset;
@@ -2490,6 +2439,32 @@ fn render_settings(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         ]));
         items.push(Line::from(vec![
             Span::styled("      Nerd Fonts requires a patched terminal font", Style::default().fg(CLR_MUTED)),
+        ]));
+    }
+
+    // ── Lyrics section ────────────────────────────────────────────────────
+    items.push(Line::raw(""));
+    let hdr_lyrics = format!(" ─ Lyrics {}", "─".repeat(w.saturating_sub(10)));
+    items.push(Line::from(vec![
+        Span::styled(hdr_lyrics, Style::default().fg(CLR_BORDER)),
+    ]));
+
+    // Romanize Japanese lyrics toggle
+    {
+        let check    = if romanize_lyrics { app.icons.checked } else { app.icons.unchecked };
+        let is_sel   = sel == idx_romanize;
+        let (marker, row_style) = if is_sel {
+            (app.icons.sel_marker, Style::default().fg(CLR_ACCENT))
+        } else {
+            (" ", Style::default().fg(CLR_TEXT2))
+        };
+        let label_style = if is_sel { Style::default().fg(CLR_TEXT) } else { Style::default().fg(CLR_TEXT2) };
+        items.push(Line::from(vec![
+            Span::styled(format!("  {} {} ", marker, check), row_style),
+            Span::styled("Romanize Japanese lyrics", label_style),
+        ]));
+        items.push(Line::from(vec![
+            Span::styled("         Convert kana and kanji to romaji", Style::default().fg(CLR_MUTED)),
         ]));
     }
 
@@ -2519,7 +2494,6 @@ fn render_settings(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         ]));
     }
 
-    // Purge LRC
     {
         let is_sel = sel == idx_purge_lrc;
         let (marker, style) = if is_sel {
@@ -2533,7 +2507,6 @@ fn render_settings(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         ]));
     }
 
-    // Purge no-lyrics
     {
         let is_sel = sel == idx_purge_nolyrics;
         let (marker, style) = if is_sel {
@@ -2600,7 +2573,6 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('q') | KeyCode::Char('Q') => { app.quitting = true; }
         KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => { app.quitting = true; }
 
-        // Playback
         KeyCode::Char(' ') => {
             if app.player.total_tracks > 0 && app.player.current_track >= 0 {
                 app.player.play_pause();
@@ -2625,7 +2597,6 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
             app.settings_input_text.push(c);
         }
 
-        // Settings toggle
         KeyCode::Char('s') => {
             if app.view == View::Settings {
                 app.view = View::Library;
@@ -2636,7 +2607,6 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
             }
         }
 
-        // Seek with Left/Right
         KeyCode::Left if modifiers.is_empty() => {
             if app.view == View::Settings && !app.settings_input_mode {
                 let paths_len = app.library.settings.search_paths.len();
@@ -2675,7 +2645,6 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
             }
             app.player.seek((app.player.current_time() + 5.0).min(app.player.total_time));
         }
-        // Path/history navigation with Shift+Left/Right
         KeyCode::Left if modifiers.contains(KeyModifiers::SHIFT) => {
             if app.view == View::Album {
                 app.browse_dir = None; app.browse_album_name = String::new();
@@ -2699,7 +2668,6 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
             app.player.set_volume(v);
         }
 
-        // Backspace: text input removal, or navigate back
         KeyCode::Backspace => {
             if app.view == View::Settings && app.settings_input_mode {
                 app.settings_input_text.pop();
@@ -2717,7 +2685,6 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
             }
         }
 
-        // Esc: close settings / cancel input
         KeyCode::Esc => {
             if app.view == View::Settings {
                 if app.settings_input_mode {
@@ -2729,7 +2696,6 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
             }
         }
 
-        // Delete: remove selected path in settings
         KeyCode::Delete if app.view == View::Settings => {
             let paths_len = app.library.settings.search_paths.len();
             let sel = app.settings_selected;
@@ -2741,7 +2707,6 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
             }
         }
 
-        // Enter / select / activate
         KeyCode::Enter => {
             match app.view {
                 View::Settings => {
@@ -2750,13 +2715,13 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
                     let idx_merge         = paths_len + 1;
                     let idx_image         = paths_len + 2;
                     let idx_iconset       = paths_len + 3;
-                    let idx_lrc_lim       = paths_len + 4;
-                    let idx_purge_lrc     = paths_len + 5;
-                    let idx_purge_nolyrics = paths_len + 6;
-                    let idx_rescan        = paths_len + 7;
+                    let idx_romanize      = paths_len + 4;
+                    let idx_lrc_lim       = paths_len + 5;
+                    let idx_purge_lrc     = paths_len + 6;
+                    let idx_purge_nolyrics = paths_len + 7;
+                    let idx_rescan        = paths_len + 8;
                     let sel = app.settings_selected;
                     if app.settings_input_mode {
-                        // Confirm typed path
                         let path = app.settings_input_text.trim().to_string();
                         if !path.is_empty() {
                             let p = std::path::PathBuf::from(&path);
@@ -2769,7 +2734,6 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
                         app.settings_input_mode = false;
                         app.settings_input_text.clear();
                     } else if sel < paths_len {
-                        // Remove selected path
                         app.library.settings.search_paths.remove(sel);
                         crate::library_cache::save_settings(&app.library.settings);
                         if app.settings_selected > 0 { app.settings_selected -= 1; }
@@ -2791,6 +2755,10 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
                         app.icons = Icons::from_set(app.tui_settings.icon_set);
                     } else if sel == idx_rescan {
                         app.library.start_scan();
+                    } else if sel == idx_romanize {
+                        app.library.settings.romanize_lyrics = !app.library.settings.romanize_lyrics;
+                        crate::library_cache::save_settings(&app.library.settings);
+                        app.player.apply_romanization(app.library.settings.romanize_lyrics);
                     } else if sel == idx_lrc_lim {
                         app.library.settings.lrc_limit_disabled = !app.library.settings.lrc_limit_disabled;
                         crate::library_cache::save_settings(&app.library.settings);
@@ -2824,7 +2792,6 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
             }
         }
 
-        // List navigation (Up/Down)
         KeyCode::Up => {
             match app.view {
                 View::Settings => { app.settings_selected = app.settings_selected.saturating_sub(1); }
@@ -2834,7 +2801,7 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Down => {
             match app.view {
                 View::Settings => {
-                    let max = app.library.settings.search_paths.len() + 7;
+                    let max = app.library.settings.search_paths.len() + 8;
                     if app.settings_selected < max { app.settings_selected += 1; }
                 }
                 _ => {
@@ -2858,12 +2825,10 @@ fn handle_mouse(app: &mut TuiApp, event: MouseEvent) {
 
     match event.kind {
         MouseEventKind::Down(MouseButton::Left) => {
-            // Divider drag
             if rect_contains(app.divider_rect, x, y) {
                 app.divider_dragging = true;
                 return;
             }
-            // Seek bar
             if rect_contains(app.seek_bar_rect, x, y) && app.player.total_tracks > 0 {
                 let frac = (x.saturating_sub(app.seek_bar_rect.x)) as f64 / app.seek_bar_rect.width.max(1) as f64;
                 app.player.seek(frac * app.player.total_time);
@@ -2871,14 +2836,12 @@ fn handle_mouse(app: &mut TuiApp, event: MouseEvent) {
                 app.seek_drag_x   = x;
                 return;
             }
-            // Volume bar
             if rect_contains(app.vol_bar_rect, x, y) {
                 let frac = (x.saturating_sub(app.vol_bar_rect.x)) as f64 / app.vol_bar_rect.width.max(1) as f64;
                 app.player.set_volume(frac);
                 app.vol_dragging = true;
                 return;
             }
-            // Transport buttons
             if rect_contains(app.btn_prev, x, y) { app.player.prev_track(); return; }
             if rect_contains(app.btn_play, x, y) {
                 if app.player.current_track >= 0 {
@@ -2891,7 +2854,6 @@ fn handle_mouse(app: &mut TuiApp, event: MouseEvent) {
                 return;
             }
             if rect_contains(app.btn_next, x, y) { app.player.next_track(); return; }
-            // Back / fwd buttons in path bar
             if rect_contains(app.btn_back, x, y) {
                 if app.view == View::Album {
                     app.browse_dir = None; app.browse_album_name = String::new();
@@ -2907,12 +2869,10 @@ fn handle_mouse(app: &mut TuiApp, event: MouseEvent) {
                 }
                 return;
             }
-            // Breadcrumb path segments
             for (i, &rect) in app.breadcrumb_rects.iter().enumerate() {
                 if rect_contains(rect, x, y) {
                     match app.breadcrumb_nav_targets.get(i) {
                         Some(None) => {
-                            // "Library" root — go to library root
                             app.library.navigate_to_root();
                             app.library.refresh_nodes(None);
                             app.view = View::Library;
@@ -2937,10 +2897,8 @@ fn handle_mouse(app: &mut TuiApp, event: MouseEvent) {
                     return;
                 }
             }
-            // Content items
             for (i, &rect) in app.content_item_rects.iter().enumerate() {
                 if rect_contains(rect, x, y) {
-                    // Mouse click: set selection to the clicked visual row
                     let abs_idx = i + app.content_scroll;
                     app.content_selected = abs_idx;
                     match app.view {
@@ -2951,7 +2909,6 @@ fn handle_mouse(app: &mut TuiApp, event: MouseEvent) {
                     return;
                 }
             }
-            // Lyric items
             for (i, &rect) in app.lyric_item_rects.iter().enumerate() {
                 if rect_contains(rect, x, y) {
                     let li = app.lyric_row_lyric_idx.get(i).copied().unwrap_or(i);
@@ -2986,7 +2943,7 @@ fn handle_mouse(app: &mut TuiApp, event: MouseEvent) {
         }
         MouseEventKind::ScrollDown => {
             if app.view == View::Settings {
-                let max = app.library.settings.search_paths.len() + 2;
+                let max = app.library.settings.search_paths.len() + 8;
                 if app.settings_selected < max { app.settings_selected += 1; }
             } else {
                 let max = match app.view {
@@ -3098,7 +3055,6 @@ pub fn run_tui() -> io::Result<()> {
     #[cfg(any(unix, windows))]
     let saved_stderr = unsafe { suppress_stderr() };
 
-    // Set up terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -3153,7 +3109,6 @@ pub fn run_tui() -> io::Result<()> {
         }
     }
 
-    // Restore terminal
     app.player.stop_playback();
     disable_raw_mode()?;
     execute!(term.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
