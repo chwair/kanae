@@ -1,22 +1,43 @@
+> [!IMPORTANT]
+> Kanae is in beta!! While most features work, there's still a bit of polish needed to get it in a workable, reliable state. Thanks!
+
 <div align=center>
 <h1>Kanae</h1>
-<p>A QT-based CD player written in Rust.<p>
-<div><img width="40%" height="auto" alt="Player view" src="https://github.com/user-attachments/assets/df00e1ef-b8e5-4b89-8296-9ccad4a89343" />
-<img width="40%" height="auto" alt="Player view (compact album art)" src="https://github.com/user-attachments/assets/2bfaa044-819a-4791-816b-8bd88b068a05" /></div>
+<p>A music and CD player with a TUI and GUI, written in Rust.<p>
+<div><img width="40%" height="auto" alt="Player view (TUI)" src="https://github.com/user-attachments/assets/7c59f080-f8f9-4cbb-97f9-1f885e4d5aed" />
+<img width="40%" height="auto" alt="Player view (GUI)" src="https://github.com/user-attachments/assets/c1962b96-c281-42b5-b8b0-3f0814449fe4" /></div>
 </div>
 
 ## Features
-- Simple UI
+- Clean UI
 - Automatic CD metadata fetching from MusicBrainz
 - Synced lyrics from LRCLIB
 - OS Media controls and metadata
-- Windows, Linux, and soon MacOS support
+- Discord RPC support
+- Windows, Mac and Linux support
 
-## Acknowledgments
-- [cd-da-reader](https://github.com/Bloomca/rust-cd-da-reader) (amazing crate, this project would've been way harder to make without it)
-- [LRCLIB](https://lrclib.net/)
-- [MusicBrainz](https://musicbrainz.org/)
-- [Souvlaki](https://github.com/Sinono3/souvlaki)
+## Get started
+The simplest way to install Kanae is to:
+- Install Rust if you haven't already
+- Install QT6
+- Clone this repo:
+```bash
+git clone https://github.com/chwair/kanae
+cd kanae
+```
+- Install thru cargo:
+```bash
+cargo install --path .
+```
+- Run it:
+```bash
+# TUI
+kanae
+
+# GUI
+kanae -g
+```
+I'll document more specific ways on installing Kanae later.
 
 ## License
 MIT
