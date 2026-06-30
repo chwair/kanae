@@ -1391,8 +1391,9 @@ impl TuiApp {
         }
 
         // ── Discord Rich Presence: update every tick (internal dedup avoids IPC spam) ──
+        // When the setting is off, push None so any existing presence is cleared.
         if let Some(ref mut discord) = self.discord {
-            let info = if self.player.current_track >= 0 {
+            let info = if self.player.current_track >= 0 && self.library.settings.discord_rpc {
                 let i = self.player.current_track as usize;
                 let title      = self.player.track_titles.get(i).cloned().unwrap_or_default();
                 let raw_artist = self.player.track_artists.get(i).cloned().unwrap_or_default();
@@ -2300,6 +2301,7 @@ fn render_settings(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     let merge_all = app.library.settings.merge_all_folders;
     let lrc_limit_disabled = app.library.settings.lrc_limit_disabled;
     let romanize_lyrics  = app.library.settings.romanize_lyrics;
+    let discord_rpc      = app.library.settings.discord_rpc;
     let n_paths          = paths.len();
     let idx_add          = n_paths;
     let idx_merge        = n_paths + 1;
@@ -2309,8 +2311,9 @@ fn render_settings(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     let idx_lrc_lim      = n_paths + 5;
     let idx_purge_lrc    = n_paths + 6;
     let idx_purge_nolyrics = n_paths + 7;
-    let idx_rescan       = n_paths + 8;
-    let total            = n_paths + 9;
+    let idx_discord      = n_paths + 8;
+    let idx_rescan       = n_paths + 9;
+    let total            = n_paths + 10;
     if app.settings_selected >= total { app.settings_selected = total.saturating_sub(1); }
     let sel = app.settings_selected;
 
@@ -2520,6 +2523,31 @@ fn render_settings(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         ]));
     }
 
+    // ── Integrations section ──────────────────────────────────────────────
+    items.push(Line::raw(""));
+    let hdr_int = format!(" ─ Integrations {}", "─".repeat(w.saturating_sub(16)));
+    items.push(Line::from(vec![
+        Span::styled(hdr_int, Style::default().fg(CLR_BORDER)),
+    ]));
+
+    {
+        let check    = if discord_rpc { app.icons.checked } else { app.icons.unchecked };
+        let is_sel   = sel == idx_discord;
+        let (marker, row_style) = if is_sel {
+            (app.icons.sel_marker, Style::default().fg(CLR_ACCENT))
+        } else {
+            (" ", Style::default().fg(CLR_TEXT2))
+        };
+        let label_style = if is_sel { Style::default().fg(CLR_TEXT) } else { Style::default().fg(CLR_TEXT2) };
+        items.push(Line::from(vec![
+            Span::styled(format!("  {} {} ", marker, check), row_style),
+            Span::styled("Discord Rich Presence", label_style),
+        ]));
+        items.push(Line::from(vec![
+            Span::styled("         Show what you're listening to on Discord", Style::default().fg(CLR_MUTED)),
+        ]));
+    }
+
     // ── Actions section ───────────────────────────────────────────────────
     items.push(Line::raw(""));
     let hdr_act = format!(" ─ Actions {}", "─".repeat(w.saturating_sub(11)));
@@ -2719,7 +2747,8 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
                     let idx_lrc_lim       = paths_len + 5;
                     let idx_purge_lrc     = paths_len + 6;
                     let idx_purge_nolyrics = paths_len + 7;
-                    let idx_rescan        = paths_len + 8;
+                    let idx_discord       = paths_len + 8;
+                    let idx_rescan        = paths_len + 9;
                     let sel = app.settings_selected;
                     if app.settings_input_mode {
                         let path = app.settings_input_text.trim().to_string();
@@ -2772,6 +2801,9 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
                         c.purge_no_lyrics();
                         c.save();
                         app.toast_msg = Some(("No-lyrics cache cleared".to_string(), std::time::Instant::now()));
+                    } else if sel == idx_discord {
+                        app.library.settings.discord_rpc = !app.library.settings.discord_rpc;
+                        crate::library_cache::save_settings(&app.library.settings);
                     }
                 }
                 _ => {
@@ -2801,7 +2833,7 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Down => {
             match app.view {
                 View::Settings => {
-                    let max = app.library.settings.search_paths.len() + 8;
+                    let max = app.library.settings.search_paths.len() + 9;
                     if app.settings_selected < max { app.settings_selected += 1; }
                 }
                 _ => {
@@ -2943,7 +2975,7 @@ fn handle_mouse(app: &mut TuiApp, event: MouseEvent) {
         }
         MouseEventKind::ScrollDown => {
             if app.view == View::Settings {
-                let max = app.library.settings.search_paths.len() + 8;
+                let max = app.library.settings.search_paths.len() + 9;
                 if app.settings_selected < max { app.settings_selected += 1; }
             } else {
                 let max = match app.view {

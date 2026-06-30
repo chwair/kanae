@@ -105,6 +105,10 @@ mod player_bridge {
         fn reapply_lyrics(self: Pin<&mut Self>);
 
         #[qinvokable]
+        #[cxx_name = "setDiscordEnabled"]
+        fn set_discord_enabled(self: Pin<&mut Self>, value: bool);
+
+        #[qinvokable]
         #[cxx_name = "initSmtc"]
         fn init_smtc(self: Pin<&mut Self>);
 
@@ -164,6 +168,7 @@ pub struct PlayerState {
     is_file_mode: bool,
     file_tracks: Vec<crate::file_player::LocalTrack>,
     discord: Option<crate::discord::DiscordPresence>,
+    discord_enabled: bool,
 }
 
 impl Default for PlayerState {
@@ -200,12 +205,18 @@ impl Default for PlayerState {
             is_file_mode: false,
             file_tracks: Vec::new(),
             discord: crate::discord::DiscordPresence::new(),
+            discord_enabled: crate::library_cache::load_settings().discord_rpc,
         }
     }
 }
 
 impl PlayerState {
     pub fn sync_discord(&mut self, current_track: i32, is_playing: bool) {
+        // When RPC is disabled, clear any existing presence and push nothing.
+        if !self.discord_enabled {
+            if let Some(ref mut d) = self.discord { d.update(None); }
+            return;
+        }
         let info = if current_track < 0 {
             None
         } else {
@@ -1377,6 +1388,16 @@ impl player_bridge::PlayerController {
         }
         self.as_mut().set_lyric_lines(texts);
         self.as_mut().set_lyric_times(times);
+    }
+
+    /// Toggle Discord Rich Presence at runtime, applying immediately (clears the
+    /// presence when disabled, re-publishes the current track when enabled).
+    pub fn set_discord_enabled(self: Pin<&mut Self>, value: bool) {
+        let current_track = *self.as_ref().current_track();
+        let is_playing    = *self.as_ref().is_playing();
+        let mut state = self.state.lock().unwrap();
+        state.discord_enabled = value;
+        state.sync_discord(current_track, is_playing);
     }
 
     pub fn open_files_dialog(self: Pin<&mut Self>) {

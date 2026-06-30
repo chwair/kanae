@@ -43,8 +43,10 @@ pub enum LibraryNode {
     Album(LibraryAlbum),
 }
 
+fn default_true() -> bool { true }
+
 /// Settings that control scanning behaviour.
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct LibrarySettings {
     /// Root directories to scan.
     pub search_paths:  Vec<PathBuf>,
@@ -55,6 +57,7 @@ pub struct LibrarySettings {
     /// Pinned folders/albums (always shown first).
     pub pinned_paths:  Vec<PathBuf>,
     /// When true, only albums are shown – sub-folders are traversed silently.
+    #[serde(default)]
     pub merge_all_folders: bool,
     /// When true the lyric content cache has no entry limit.
     #[serde(default)]
@@ -62,6 +65,24 @@ pub struct LibrarySettings {
     /// When true, Japanese lyric lines are romanized (kana + kanji → romaji).
     #[serde(default)]
     pub romanize_lyrics: bool,
+    /// When true, publish Discord Rich Presence. On by default.
+    #[serde(default = "default_true")]
+    pub discord_rpc: bool,
+}
+
+impl Default for LibrarySettings {
+    fn default() -> Self {
+        Self {
+            search_paths:      Vec::new(),
+            merged_folders:    Vec::new(),
+            ignored_folders:   Vec::new(),
+            pinned_paths:      Vec::new(),
+            merge_all_folders: false,
+            lrc_limit_disabled: false,
+            romanize_lyrics:   false,
+            discord_rpc:       true,
+        }
+    }
 }
 
 /// Progress snapshot delivered during a scan.

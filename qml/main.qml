@@ -545,6 +545,27 @@ ApplicationWindow {
                         }
                     }
 
+                    // ── Integrations ──────────────────────────────────────
+                    SettingsCard {
+                        heading: "Integrations"
+                        RowLayout {
+                            Layout.fillWidth: true; spacing: 12
+                            Column {
+                                Layout.fillWidth: true; spacing: 3
+                                Text { text: "Discord Rich Presence"; color: clrText; font.pixelSize: 12; font.family: "Segoe UI" }
+                                Text { text: "Show what you're listening to on Discord"; color: clrText2; font.pixelSize: 10; font.family: "Segoe UI" }
+                            }
+                            PillToggle {
+                                checked: settingsWindow.settingsObj.discord_rpc !== false
+                                onToggled: {
+                                    var v = !(settingsWindow.settingsObj.discord_rpc !== false)
+                                    library.setDiscordRpc(v)
+                                    player.setDiscordEnabled(v)
+                                }
+                            }
+                        }
+                    }
+
                     // ── Library maintenance ───────────────────────────────
                     SettingsCard {
                         heading: "Library"

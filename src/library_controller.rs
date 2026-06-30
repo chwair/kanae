@@ -70,6 +70,7 @@ pub mod library_bridge {
         #[qinvokable] #[cxx_name = "purgeNoLyricsCache"]   fn purge_no_lyrics_cache(self: Pin<&mut Self>);
         #[qinvokable] #[cxx_name = "setLrcLimitDisabled"]  fn set_lrc_limit_disabled(self: Pin<&mut Self>, value: bool);
         #[qinvokable] #[cxx_name = "setRomanizeLyrics"]    fn set_romanize_lyrics(self: Pin<&mut Self>, value: bool);
+        #[qinvokable] #[cxx_name = "setDiscordRpc"]        fn set_discord_rpc(self: Pin<&mut Self>, value: bool);
     }
 }
 
@@ -500,6 +501,16 @@ impl library_bridge::LibraryController {
         let json = {
             let mut st = self.state.lock().unwrap();
             st.settings.romanize_lyrics = value;
+            library_cache::save_settings(&st.settings);
+            serde_json::to_string(&st.settings).unwrap_or_default()
+        };
+        self.as_mut().set_settings_json(QString::from(json.as_str()));
+    }
+
+    pub fn set_discord_rpc(mut self: Pin<&mut Self>, value: bool) {
+        let json = {
+            let mut st = self.state.lock().unwrap();
+            st.settings.discord_rpc = value;
             library_cache::save_settings(&st.settings);
             serde_json::to_string(&st.settings).unwrap_or_default()
         };
