@@ -30,12 +30,8 @@ pub fn scan_drives() -> Vec<DriveInfo> {
     match CdReader::list_drives() {
         Ok(drives) => drives.iter().map(|drive| {
 
-            let display_name = if drive.path.contains("\\\\") {
-                drive.path.split('\\').last().unwrap_or(&drive.path).to_string()
-            } else {
-                drive.path.clone()
-            };
-            
+            let display_name = drive_letter(&drive.path);
+
             let status = if drive.has_audio_cd {
                 format!("{} (Audio CD)", display_name)
             } else {
@@ -95,4 +91,87 @@ pub fn format_duration(seconds: f64) -> String {
     let mins = (seconds / 60.0).floor() as u32;
     let secs = (seconds % 60.0).floor() as u32;
     format!("{:02}:{:02}", mins, secs)
+}
+
+/// Extract a short display label (e.g. "D:") from a drive path such as
+/// "\\.\D:" (Windows), "/dev/sr0" (Linux) or "disk6" (macOS).
+pub fn drive_letter(drive_path: &str) -> String {
+    if drive_path.contains('\\') {
+        drive_path.split('\\').last().unwrap_or(drive_path).to_string()
+    } else if let Some(dev) = drive_path.strip_prefix("/dev/") {
+        dev.to_string()
+    } else {
+        drive_path.to_string()
+    }
+}
+
+pub fn eject_drive(drive_path: &str) {
+    #[cfg(target_os = "windows")]
+    eject_drive_windows(drive_path);
+
+    #[cfg(target_os = "linux")]
+    match std::process::Command::new("eject").arg(drive_path).status() {
+        Ok(s) if s.success() => eprintln!("[eject] ejected {}", drive_path),
+        Ok(s) => eprintln!("[eject] eject exited with {} for {}", s, drive_path),
+        Err(e) => eprintln!("[eject] failed to run eject: {}", e),
+    }
+
+    #[cfg(target_os = "macos")]
+    match std::process::Command::new("diskutil").args(["eject", drive_path]).status() {
+        Ok(s) if s.success() => eprintln!("[eject] ejected {}", drive_path),
+        Ok(s) => eprintln!("[eject] diskutil eject exited with {} for {}", s, drive_path),
+        Err(e) => eprintln!("[eject] failed to run diskutil: {}", e),
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    eprintln!("[eject] eject not implemented on this platform ({})", drive_path);
+}
+
+#[cfg(target_os = "windows")]
+fn eject_drive_windows(drive_path: &str) {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    // Build a wide "\\.\D:" style device path from e.g. "D:\" or "\\.\D:".
+    // The path may start with '\' so find the first alphabetic character.
+    let letter = drive_path.chars()
+        .find(|c| c.is_ascii_alphabetic())
+        .unwrap_or('D')
+        .to_ascii_uppercase();
+    let device = format!("\\\\.\\{}:", letter);
+    let wide: Vec<u16> = OsStr::new(&device)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    unsafe {
+        let handle = winapi::um::fileapi::CreateFileW(
+            wide.as_ptr(),
+            winapi::um::winnt::GENERIC_READ | winapi::um::winnt::GENERIC_WRITE,
+            winapi::um::winnt::FILE_SHARE_READ | winapi::um::winnt::FILE_SHARE_WRITE,
+            std::ptr::null_mut(),
+            winapi::um::fileapi::OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        );
+        if handle == winapi::um::handleapi::INVALID_HANDLE_VALUE {
+            eprintln!("[eject] CreateFileW failed for {}", device);
+            return;
+        }
+        let mut bytes_returned: u32 = 0;
+        let ok = winapi::um::ioapiset::DeviceIoControl(
+            handle,
+            winapi::um::winioctl::IOCTL_STORAGE_EJECT_MEDIA,
+            std::ptr::null_mut(), 0,
+            std::ptr::null_mut(), 0,
+            &mut bytes_returned,
+            std::ptr::null_mut(),
+        );
+        if ok == 0 {
+            eprintln!("[eject] DeviceIoControl EJECT_MEDIA failed for {}", device);
+        } else {
+            eprintln!("[eject] ejected {}", device);
+        }
+        winapi::um::handleapi::CloseHandle(handle);
+    }
 }

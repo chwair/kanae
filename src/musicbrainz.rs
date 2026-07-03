@@ -59,7 +59,14 @@ struct MbArtistCredit {
 #[derive(Debug, Deserialize)]
 struct MbMedium {
     format: Option<String>,
+    position: Option<u32>,
+    discs: Option<Vec<MbDisc>>,
     tracks: Option<Vec<MbTrack>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MbDisc {
+    id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,6 +89,11 @@ pub struct AlbumMetadata {
     pub track_titles: Vec<String>,
     pub track_artists: Vec<String>,
     pub cover_art_url: Option<String>,
+    /// Position of this disc within the release (1-based), e.g. disc 2 of a
+    /// 3-CD box set. 0 when unknown.
+    pub disc_number: u32,
+    /// Total number of media in the release. 0 when unknown.
+    pub disc_count: u32,
 }
 
 const USER_AGENT: &str = "kanae-player/0.1.0 (https://github.com/user/kanae)";
@@ -133,12 +145,22 @@ pub fn lookup_metadata(toc: &Toc) -> Option<AlbumMetadata> {
         .to_string();
     let artist = parse_artist_credit(release.artist_credit.as_deref());
 
-    // Prefer a medium tagged "CD"; fall back to first medium.
+    // Pick the medium that actually contains our disc ID — on multi-CD
+    // releases the first medium would otherwise give the wrong track list.
+    // Fall back to a "CD"-format medium, then the first medium.
     let media = release.media.as_deref()?;
     let cd_medium = media
         .iter()
-        .find(|m| m.format.as_deref() == Some("CD"))
+        .find(|m| {
+            m.discs
+                .as_deref()
+                .is_some_and(|ds| ds.iter().any(|d| d.id.as_deref() == Some(disc_id.as_str())))
+        })
+        .or_else(|| media.iter().find(|m| m.format.as_deref() == Some("CD")))
         .or_else(|| media.first())?;
+
+    let disc_number = cd_medium.position.unwrap_or(0);
+    let disc_count  = media.len() as u32;
 
     let (track_titles, track_artists) =
         parse_tracks(cd_medium.tracks.as_deref(), &artist);
@@ -160,6 +182,8 @@ pub fn lookup_metadata(toc: &Toc) -> Option<AlbumMetadata> {
         track_titles,
         track_artists,
         cover_art_url,
+        disc_number,
+        disc_count,
     })
 }
 

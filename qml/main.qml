@@ -269,6 +269,39 @@ ApplicationWindow {
         }
     }
 
+    // ── WaveText: per-character colour sweep (the lyrics loading effect) ──
+    component WaveText: Row {
+        id: wtRoot
+        property string text: ""
+        property real   pixelSize: 11
+        property bool   animating: true
+        spacing: 0
+        Repeater {
+            model: wtRoot.text.length
+            delegate: Text {
+                text: wtRoot.text[index]
+                font.pixelSize: wtRoot.pixelSize; font.family: "Segoe UI"
+                color: clrText2
+                SequentialAnimation on color {
+                    loops: Animation.Infinite
+                    running: wtRoot.animating && wtRoot.visible
+                    PauseAnimation  { duration: index * 70 }
+                    ColorAnimation  { to: clrText;  duration: 300; easing.type: Easing.InOutSine }
+                    ColorAnimation  { to: clrText2; duration: 300; easing.type: Easing.InOutSine }
+                    PauseAnimation  { duration: (wtRoot.text.length - 1 - index) * 70 }
+                }
+            }
+        }
+    }
+
+    readonly property bool _cdLoading: player.is_loading && !player.is_file_mode
+    readonly property bool _cdLoaded:  player.total_tracks > 0 && !player.is_file_mode
+    // "CD" badge label; shows the disc position within a multi-CD release
+    // (from MusicBrainz), e.g. "CD 2/3".
+    readonly property string _cdBadgeLabel:
+        _cdLoaded && player.cd_disc_count > 1 && player.cd_disc_number > 0
+        ? "CD " + player.cd_disc_number + "/" + player.cd_disc_count : "CD"
+
     // ── Settings building blocks ──────────────────────────────────────────
     // Grouped "card" container with an optional heading + caption.
     component SettingsCard: Rectangle {
@@ -359,7 +392,7 @@ ApplicationWindow {
     // ── Settings window ───────────────────────────────────────────────────
     Window {
         id: settingsWindow
-        title: "Settings – Kanae"
+        title: "Settings \u2013 Kanae"
         width: 520; height: 600
         minimumWidth: 440; minimumHeight: 420
         color: "transparent"
@@ -858,26 +891,11 @@ ApplicationWindow {
                                 color: clrText2
                             }
 
-                            Row {
+                            WaveText {
                                 anchors.centerIn: parent
                                 visible: player.lyrics_loading
-                                spacing: 0
-                                Repeater {
-                                    model: 18  // "Loading lyrics...".length
-                                    delegate: Text {
-                                        text: "Loading lyrics..."[index]
-                                        font.pixelSize: 11; font.family: "Segoe UI"
-                                        color: clrText2
-                                        SequentialAnimation on color {
-                                            loops: Animation.Infinite
-                                            running: player.lyrics_loading
-                                            PauseAnimation  { duration: index * 70 }
-                                            ColorAnimation  { to: clrText;  duration: 300; easing.type: Easing.InOutSine }
-                                            ColorAnimation  { to: clrText2; duration: 300; easing.type: Easing.InOutSine }
-                                            PauseAnimation  { duration: (17 - index) * 70 }
-                                        }
-                                    }
-                                }
+                                animating: player.lyrics_loading
+                                text: "Loading lyrics..."
                             }
                         }
                     }
@@ -982,6 +1000,18 @@ ApplicationWindow {
                                 }
                             }
 
+                            // Eject (visible when viewing the audio CD)
+                            Rectangle {
+                                width: 22; height: 22; radius: 3
+                                visible: player.drive_list.length > 0 && (_view === "library" || (_view === "album" && _showingCdView))
+                                color: pathEjectHov.containsMouse ? clrSurf2 : "transparent"
+                                Behavior on color { ColorAnimation { duration: 80 } }
+                                MatIcon { anchors.centerIn: parent; name: "eject"; size: 12
+                                    color: pathEjectHov.containsMouse ? clrText : clrText2 }
+                                MouseArea { id: pathEjectHov; anchors.fill: parent; hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor; onClicked: player.ejectDisc() }
+                            }
+
                             // Grid/List toggle (only relevant in library view)
                             Row {
                                 spacing: 4; visible: _view === "library"
@@ -1009,44 +1039,6 @@ ApplicationWindow {
                         anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
                         spacing: 0
                         visible: _view === "library"
-
-                        // CD drives bar
-                        Rectangle {
-                            Layout.fillWidth: true
-                            height: player.drive_list.length > 0 ? 64 : 0
-                            visible: player.drive_list.length > 0
-                            color: clrSurface; clip: true
-                            Behavior on height { NumberAnimation { duration: 150 } }
-                            Rectangle { anchors.bottom:parent.bottom;anchors.left:parent.left;anchors.right:parent.right;height:1;color:clrBorder }
-
-                            ListView {
-                                anchors.fill: parent; anchors.margins: 8
-                                orientation: ListView.Horizontal; spacing: 8; clip: true
-                                model: player.drive_list
-                                delegate: Rectangle {
-                                    width: 200; height: 48; radius: 4
-                                    color: driveTileHov.containsMouse ? clrSurf2 : "#181818"
-                                    border.color: clrBorder; border.width: 1
-                                    Behavior on color { ColorAnimation { duration: 100 } }
-                                    RowLayout {
-                                        anchors.fill: parent; anchors.margins: 8; spacing: 8
-                                        Canvas {
-                                            width:28;height:28
-                                            onPaint:{var c=getContext("2d");c.clearRect(0,0,28,28);c.beginPath();c.arc(14,14,12,0,2*Math.PI);c.strokeStyle="#555";c.lineWidth=1.5;c.stroke();c.beginPath();c.arc(14,14,8,0,2*Math.PI);c.strokeStyle="#3a3a3a";c.lineWidth=1.5;c.stroke();c.beginPath();c.arc(14,14,2,0,2*Math.PI);c.fillStyle=clrBg;c.fill()}
-                                        }
-                                        Column {
-                                            Layout.fillWidth:true;spacing:2
-                                            Text{width:parent.width;text:modelData;color:clrText;font.pixelSize:11;font.family:"Segoe UI";elide:Text.ElideRight}
-                                            Text{width:parent.width;text:player.total_tracks>0&&player.selected_drive_index===index?player.album_title:"No disc";color:clrText2;font.pixelSize:10;font.family:"Segoe UI";elide:Text.ElideRight}
-                                        }
-                                    }
-                                    MouseArea {
-                                        id:driveTileHov;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor
-                                        onClicked: { if (player.is_file_mode) player.loadDisc(); _showingCdView = true; _fileMode = false; _view = "album" }
-                                    }
-                                }
-                            }
-                        }
 
                         // ── Library grid / list ───────────────────────────
                         Item {
@@ -1098,14 +1090,17 @@ ApplicationWindow {
                                     var base = JSON.parse(library.library_nodes)
                                     var atRoot = library.current_path.toString() === "Library" || library.current_path.toString() === ""
                                     if (atRoot && player.drive_list.length > 0) {
-                                        var cdLoaded = player.total_tracks > 0 && !player.is_file_mode
+                                        var cdLoaded  = window._cdLoaded
+                                        var cdLoading = window._cdLoading
                                         var cdNode = {
                                             kind: "cd", path: "__cd__", id: "__cd__",
                                             name: cdLoaded ? (player.album_title || "Audio CD") : "Audio CD",
-                                            album_artist: cdLoaded ? (player.album_artist || "") : "",
+                                            album_artist: cdLoaded ? (player.album_artist || "")
+                                                        : (cdLoading ? "" : "No disc"),
                                             year: cdLoaded ? (player.album_year || "") : "",
                                             cover_url: cdLoaded ? (player.cover_art_path || "") : "",
-                                            pinned: false
+                                            pinned: false,
+                                            loading: cdLoading
                                         }
                                         return [cdNode].concat(base)
                                     }
@@ -1171,12 +1166,30 @@ ApplicationWindow {
                                         }
                                     }
 
+                                    // CD badge — marks the audio-CD tile apart from library albums
+                                    Rectangle {
+                                        visible: modelData.kind === "cd"
+                                        anchors.left: tileArt.left; anchors.bottom: tileArt.bottom; anchors.margins: 6
+                                        width: cdBadgeRow.implicitWidth + 12; height: 18; radius: 3
+                                        color: "#cc161616"; border.color: clrBorder; border.width: 1
+                                        Row {
+                                            id: cdBadgeRow; anchors.centerIn: parent; spacing: 4
+                                            MatIcon { anchors.verticalCenter: parent.verticalCenter; name: "album"; size: 11; color: clrAccent }
+                                            Text {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                text: window._cdBadgeLabel
+                                                color: clrAccent; font.pixelSize: 9; font.bold: true; font.family: "Segoe UI"
+                                            }
+                                        }
+                                    }
+
                                     // Text area
                                     Column {
                                         anchors.top: tileArt.bottom; anchors.left: parent.left; anchors.right: parent.right
                                         anchors.bottom: parent.bottom; anchors.topMargin: 6
                                         anchors.leftMargin: 7; anchors.rightMargin: 7; spacing: 2
-                                        Text { width:parent.width;text:modelData.name;color:clrText;font.pixelSize:11;font.family:"Segoe UI";elide:Text.ElideRight;wrapMode:Text.NoWrap }
+                                        WaveText { visible: modelData.loading === true; animating: visible; text: "Loading CD..."; pixelSize: 11 }
+                                        Text { width:parent.width;visible:modelData.loading!==true;text:modelData.name;color:clrText;font.pixelSize:11;font.family:"Segoe UI";elide:Text.ElideRight;wrapMode:Text.NoWrap }
                                         Text { width:parent.width;text:modelData.album_artist.length>0?modelData.album_artist:(modelData.year.length>0?modelData.year:"");color:clrText2;font.pixelSize:10;font.family:"Segoe UI";elide:Text.ElideRight }
                                         Text { width:parent.width;visible:modelData.album_artist.length>0&&modelData.year.length>0;text:modelData.year;color:clrMuted;font.pixelSize:9;font.family:"Segoe UI" }
                                     }
@@ -1244,8 +1257,24 @@ ApplicationWindow {
                                                 property string kk:modelData.kind;onKkChanged:requestPaint()}
                                         }
                                         Column{Layout.fillWidth:true;spacing:1
-                                            Text{width:parent.width;text:modelData.name;color:clrText;font.pixelSize:12;font.family:"Segoe UI";elide:Text.ElideRight}
+                                            WaveText{visible:modelData.loading===true;animating:visible;text:"Loading CD...";pixelSize:12}
+                                            Text{width:parent.width;visible:modelData.loading!==true;text:modelData.name;color:clrText;font.pixelSize:12;font.family:"Segoe UI";elide:Text.ElideRight}
                                             Text{width:parent.width;visible:modelData.album_artist.length>0;text:modelData.album_artist;color:clrText2;font.pixelSize:10;font.family:"Segoe UI";elide:Text.ElideRight}
+                                        }
+                                        // CD badge — marks the audio-CD row apart from library albums
+                                        Rectangle{
+                                            visible: modelData.kind === "cd"
+                                            width: listCdBadgeRow.implicitWidth + 12; height: 18; radius: 3
+                                            color: "transparent"; border.color: clrBorder; border.width: 1
+                                            Row {
+                                                id: listCdBadgeRow; anchors.centerIn: parent; spacing: 4
+                                                MatIcon { anchors.verticalCenter: parent.verticalCenter; name: "album"; size: 11; color: clrAccent }
+                                                Text {
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    text: window._cdBadgeLabel
+                                                    color: clrAccent; font.pixelSize: 9; font.bold: true; font.family: "Segoe UI"
+                                                }
+                                            }
                                         }
                                         Text{text:modelData.year;color:clrText2;font.pixelSize:11;font.family:"Segoe UI";visible:modelData.year.length>0}
                                         Rectangle{width:6;height:6;radius:3;color:clrAccent;visible:modelData.pinned}
@@ -1285,7 +1314,9 @@ ApplicationWindow {
                                 RotationAnimator on rotation{from:0;to:360;duration:800;loops:Animation.Infinite;running:player.is_loading}
                                 ShapePath{strokeColor:clrText2;strokeWidth:2;fillColor:"transparent";capStyle:ShapePath.RoundCap
                                     PathAngleArc{centerX:13;centerY:13;radiusX:10;radiusY:10;startAngle:-90;sweepAngle:250}}}
-                            Text{anchors.horizontalCenter:parent.horizontalCenter;anchors.top:parent.verticalCenter;anchors.topMargin:24;text:"Reading disc";color:clrText2;font.pixelSize:12;font.family:"Segoe UI"}
+                            WaveText{anchors.horizontalCenter:parent.horizontalCenter;anchors.top:parent.verticalCenter;anchors.topMargin:24
+                                visible:parent.visible;animating:visible
+                                text:"Loading CD...";pixelSize:12}
                         }
 
                         Item{anchors.fill:parent;visible:!player.is_loading&&_browseDir===""&&(player.total_tracks===0||(_showingCdView&&player.is_file_mode))

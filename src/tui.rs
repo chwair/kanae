@@ -40,11 +40,22 @@ const CLR_ACCENT: Color = Color::Rgb(191, 191, 191);
 
 // ─── Library node for TUI ─────────────────────────────────────────────────────
 
+/// Display state of the audio-CD node shown at the library root.
+#[derive(Clone)]
+struct CdNodeInfo {
+    /// Album title when a disc is loaded, otherwise "Audio CD".
+    title:   String,
+    /// Secondary line: artist / drive letter / "No disc".
+    sub:     String,
+    /// True while the disc TOC/metadata is being read.
+    loading: bool,
+}
+
 #[derive(Clone)]
 enum TuiLibraryNode {
     Folder { path: PathBuf, name: String },
     Album  { album: LibraryAlbum },
-    Cd,
+    Cd     { info: CdNodeInfo },
 }
 
 impl TuiLibraryNode {
@@ -52,14 +63,14 @@ impl TuiLibraryNode {
         match self {
             TuiLibraryNode::Folder { name, .. } => name,
             TuiLibraryNode::Album  { album }     => &album.album,
-            TuiLibraryNode::Cd                   => "Audio CD",
+            TuiLibraryNode::Cd     { info }      => &info.title,
         }
     }
     fn sub(&self) -> &str {
         match self {
             TuiLibraryNode::Folder { .. }    => "",
             TuiLibraryNode::Album  { album } => &album.album_artist,
-            TuiLibraryNode::Cd               => "",
+            TuiLibraryNode::Cd     { info }  => &info.sub,
         }
     }
     fn year(&self) -> &str {
@@ -72,7 +83,7 @@ impl TuiLibraryNode {
         match self {
             TuiLibraryNode::Folder { .. } => ic.folder,
             TuiLibraryNode::Album  { .. } => ic.album,
-            TuiLibraryNode::Cd            => ic.cd,
+            TuiLibraryNode::Cd     { .. } => ic.cd,
         }
     }
 }
@@ -193,6 +204,12 @@ struct TuiPlayerState {
     disc_load_thread:   Option<thread::JoinHandle<()>>,
     current_disc_id:    String,
     metadata_loaded:    bool,
+    /// Disc ID we last attempted a MusicBrainz lookup for, so a disc that is
+    /// not in the database is not re-queried every poll cycle.
+    meta_attempt_disc_id: String,
+    /// Disc position / media count within the release (multi-CD sets). 0 = unknown.
+    disc_number:        u32,
+    disc_count:         u32,
 
     // File mode
     is_file_mode:       bool,
@@ -248,6 +265,9 @@ impl Default for TuiPlayerState {
             disc_load_thread:    None,
             current_disc_id:     String::new(),
             metadata_loaded:     false,
+            meta_attempt_disc_id: String::new(),
+            disc_number:         0,
+            disc_count:          0,
             is_file_mode:        false,
             file_tracks:         vec![],
             current_track:       -1,
@@ -302,6 +322,56 @@ impl TuiPlayerState {
         self.drives = drives;
     }
 
+    /// "CD" tag for the library node — includes the disc position within the
+    /// release for multi-CD sets, e.g. "CD 2/3" (from MusicBrainz).
+    fn cd_tag(&self) -> String {
+        if self.disc_count > 1 && self.disc_number > 0 {
+            format!("CD {}/{}", self.disc_number, self.disc_count)
+        } else {
+            "CD".to_string()
+        }
+    }
+
+    /// Library-root CD node state, or None when no optical drive is present.
+    fn cd_node_info(&self) -> Option<CdNodeInfo> {
+        if self.drives.is_empty() { return None; }
+        if self.is_loading && !self.is_file_mode {
+            Some(CdNodeInfo {
+                title:   "Loading CD...".into(),
+                sub:     "CD".into(),
+                loading: true,
+            })
+        } else if self.total_tracks > 0 && !self.is_file_mode {
+            let tag = self.cd_tag();
+            let sub = if self.album_artist.is_empty() || self.album_artist == "Unknown Artist" {
+                tag
+            } else {
+                format!("{} · {}", self.album_artist, tag)
+            };
+            Some(CdNodeInfo { title: self.album_title.clone(), sub, loading: false })
+        } else {
+            Some(CdNodeInfo {
+                title:   "Audio CD".into(),
+                sub:     "No disc".into(),
+                loading: false,
+            })
+        }
+    }
+
+    /// Physically eject the selected drive's tray. Never touches file-mode
+    /// playback: local files keep playing while the tray opens.
+    fn eject(&mut self) {
+        let path = self.current_drive_idx
+            .and_then(|i| self.drives.get(i))
+            .or_else(|| self.drives.first())
+            .map(|d| d.path.clone());
+        let Some(path) = path else { return };
+        if !self.is_file_mode {
+            self.stop_playback();
+        }
+        crate::cd_reader::eject_drive(&path);
+    }
+
     fn load_disc(&mut self) {
         if self.is_loading { return; }
         let drive_path = match self.current_drive_idx {
@@ -314,6 +384,8 @@ impl TuiPlayerState {
         *self.disc_load_result.lock().unwrap() = None;
         let result_slot = self.disc_load_result.clone();
         let meta_loaded = self.metadata_loaded;
+        let attempted_id = self.meta_attempt_disc_id.clone();
+        let current_id = self.current_disc_id.clone();
         let handle = thread::spawn(move || {
             let result = match crate::cd_reader::open_drive(&drive_path) {
                 Err(_) => PendingDiscResult::Unavailable { status: "Drive unavailable".into() },
@@ -323,8 +395,16 @@ impl TuiPlayerState {
                         let durations = tracks.iter()
                             .map(|t| crate::cd_reader::format_duration(t.duration_seconds))
                             .collect();
-                        let metadata = if meta_loaded { None } else { crate::musicbrainz::lookup_metadata(&toc) };
                         let disc_id  = crate::musicbrainz::calculate_disc_id(&toc);
+                        // Look up once per disc: a newly inserted disc is always
+                        // queried; the same disc is re-queried only if neither
+                        // loaded nor previously attempted.
+                        let is_new_disc = disc_id != current_id;
+                        let metadata = if is_new_disc || (!meta_loaded && attempted_id != disc_id) {
+                            crate::musicbrainz::lookup_metadata(&toc)
+                        } else {
+                            None
+                        };
                         PendingDiscResult::Loaded { tracks, durations, metadata, disc_id }
                     }
                     Err(_) => PendingDiscResult::Empty { status: "No disc inserted".into() },
@@ -344,7 +424,21 @@ impl TuiPlayerState {
 
         match result {
             PendingDiscResult::Loaded { tracks, durations, metadata, disc_id } => {
-                self.current_disc_id = disc_id;
+                // Periodic same-disc re-poll with no fresh metadata: keep the
+                // existing titles/artists instead of resetting to "Track NN".
+                let same_disc = metadata.is_none()
+                    && self.current_disc_id == disc_id
+                    && self.total_tracks == tracks.len() as i32
+                    && !self.track_titles.is_empty();
+                if same_disc {
+                    self.cd_tracks       = tracks;
+                    self.track_durations = durations;
+                    self.disc_status     = String::new();
+                    return;
+                }
+
+                self.current_disc_id = disc_id.clone();
+                self.meta_attempt_disc_id = disc_id;
                 self.total_tracks    = tracks.len() as i32;
                 self.track_durations = durations;
                 self.track_titles    = (0..tracks.len()).map(|i| {
@@ -366,12 +460,15 @@ impl TuiPlayerState {
                     self.album_year    = meta.year.clone();
                     self.current_cover_url = meta.cover_art_url.clone().unwrap_or_default();
                     self.metadata_loaded = true;
+                    self.disc_number = meta.disc_number;
+                    self.disc_count  = meta.disc_count;
                 } else {
-                    if !self.metadata_loaded {
-                        self.album_title  = "Unknown Album".into();
-                        self.album_artist = "Unknown Artist".into();
-                        self.album_year   = String::new();
-                    }
+                    self.album_title  = "Unknown Album".into();
+                    self.album_artist = "Unknown Artist".into();
+                    self.album_year   = String::new();
+                    self.metadata_loaded = false;
+                    self.disc_number = 0;
+                    self.disc_count  = 0;
                 }
                 self.cd_tracks  = tracks;
                 self.disc_status = String::new();
@@ -391,6 +488,10 @@ impl TuiPlayerState {
                 self.album_artist  = "Unknown Artist".into();
                 self.album_year    = String::new();
                 self.metadata_loaded = false;
+                self.meta_attempt_disc_id.clear();
+                self.current_disc_id.clear();
+                self.disc_number = 0;
+                self.disc_count  = 0;
                 self.current_cover_url.clear();
                 self.lyric_lines.clear();
                 self.lyric_lines_src.clear();
@@ -911,16 +1012,17 @@ impl TuiLibraryState {
         self.nav_stack.get(self.nav_idx)
     }
 
-    fn refresh_nodes(&mut self, cd_info: Option<(String, String)>) {
-        let scan = match &self.scan_result { Some(s) => s, None => { self.nodes.clear(); return; } };
-        let dir  = self.current_dir().cloned();
+    fn refresh_nodes(&mut self, cd_info: Option<CdNodeInfo>) {
+        let dir = self.current_dir().cloned();
 
         let mut nodes: Vec<TuiLibraryNode> = Vec::new();
 
-        if let Some(ref cd) = cd_info {
-            if dir.is_none() { nodes.push(TuiLibraryNode::Cd); }
-            let _ = cd; // used for CD tile
+        if let Some(info) = cd_info {
+            if dir.is_none() { nodes.push(TuiLibraryNode::Cd { info }); }
         }
+
+        // Even with no scanned library, the CD node (if any) should show.
+        let scan = match &self.scan_result { Some(s) => s, None => { self.nodes = nodes; return; } };
 
         match dir {
             None => {
@@ -1068,6 +1170,7 @@ struct TuiApp {
     btn_fwd:    Rect,
     btn_lib:    Rect,
     content_item_rects: Vec<Rect>,
+    cd_eject_rect: Option<Rect>,
     lyric_item_rects:   Vec<Rect>,
     lyric_row_lyric_idx: Vec<usize>,
     last_position_poll: Instant,
@@ -1151,6 +1254,7 @@ impl TuiApp {
             btn_fwd:  Rect::default(),
             btn_lib:  Rect::default(),
             content_item_rects:   vec![],
+            cd_eject_rect:        None,
             lyric_item_rects:     vec![],
             lyric_row_lyric_idx: vec![],
             last_position_poll: Instant::now(),
@@ -1297,9 +1401,7 @@ impl TuiApp {
             }
         }
 
-        let cd_info = if !self.player.is_file_mode && self.player.total_tracks > 0 {
-            Some((self.player.album_title.clone(), self.player.album_artist.clone()))
-        } else { None };
+        let cd_info = self.player.cd_node_info();
         self.library.refresh_nodes(cd_info);
 
         let drive_interval = if self.player.total_tracks > 0 { Duration::from_secs(1) } else { Duration::from_secs(3) };
@@ -1505,7 +1607,7 @@ impl TuiApp {
                     self.content_scroll    = 0;
                 }
             }
-            Some(TuiLibraryNode::Cd) => {
+            Some(TuiLibraryNode::Cd { .. }) => {
                 if self.player.is_file_mode { /* switch back to CD mode */ }
                 self.cd_view_active = true;
                 self.file_mode_active = false;
@@ -1654,8 +1756,29 @@ fn hard_push_chars(text: &str, width: usize, rows: &mut Vec<String>, cur: &mut S
     }
 }
 
+/// Per-character shimmer: a highlight sweeps left to right across `text`
+/// (the "Loading lyrics…" effect). `phase` advances the sweep.
+fn shimmer_spans(text: &str, phase: usize) -> Vec<Span<'static>> {
+    let n = text.chars().count().max(1);
+    let peak = phase % n;
+    text.chars().enumerate().map(|(i, ch)| {
+        let dist = {
+            let d = (i as isize - peak as isize).unsigned_abs();
+            d.min(n.saturating_sub(d))
+        };
+        let color = match dist {
+            0 => CLR_TEXT,
+            1 => Color::Rgb(191, 191, 191),
+            2 => Color::Rgb(150, 150, 150),
+            _ => CLR_TEXT2,
+        };
+        Span::styled(ch.to_string(), Style::default().fg(color))
+    }).collect()
+}
+
 fn render(app: &mut TuiApp, frame: &mut Frame) {
     let area = frame.area();
+    app.cd_eject_rect = None;
 
     let vert = Layout::vertical([
         Constraint::Length(1), // title bar
@@ -1801,23 +1924,9 @@ fn render_lyrics(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     if lines.is_empty() {
         let is_loading = app.player.lyric_fetch_thread.is_some();
         if is_loading {
-            // Per-character shimmer: highlight sweeps left to right
             const LOADING_TEXT: &str = "Loading lyrics\u{2026}";
             let n = LOADING_TEXT.chars().count();
-            let peak = app.lyric_shimmer_phase % n;
-            let spans: Vec<Span> = LOADING_TEXT.chars().enumerate().map(|(i, ch)| {
-                let dist = {
-                    let d = (i as isize - peak as isize).unsigned_abs();
-                    d.min(n.saturating_sub(d))
-                };
-                let color = match dist {
-                    0 => CLR_TEXT,
-                    1 => Color::Rgb(191, 191, 191),
-                    2 => Color::Rgb(150, 150, 150),
-                    _ => CLR_TEXT2,
-                };
-                Span::styled(ch.to_string(), Style::default().fg(color))
-            }).collect();
+            let spans = shimmer_spans(LOADING_TEXT, app.lyric_shimmer_phase);
             let padding = (w.saturating_sub(n)) / 2;
             let mut padded: Vec<Span> = vec![Span::raw(" ".repeat(padding))];
             padded.extend(spans);
@@ -1950,7 +2059,12 @@ fn render_path_bar(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         View::Album => {
             if app.cd_view_active {
                 spans.push(Span::styled(" ⟋ ", sep_style));
-                spans.push(Span::styled("Audio CD", current_style));
+                let label = if app.player.disc_count > 1 && app.player.disc_number > 0 {
+                    format!("Audio CD ({}/{})", app.player.disc_number, app.player.disc_count)
+                } else {
+                    "Audio CD".to_string()
+                };
+                spans.push(Span::styled(label, current_style));
             } else {
                 let album = if app.browse_dir.is_some() { app.browse_album_name.clone() }
                             else                        { app.player.album_title.clone() };
@@ -2020,6 +2134,8 @@ fn render_library(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         let name   = node.name();
         let sub    = node.sub();
         let yr     = node.year();
+        let is_cd      = matches!(node, TuiLibraryNode::Cd { .. });
+        let cd_loading = matches!(node, TuiLibraryNode::Cd { info } if info.loading);
 
         // Keep a fixed year column so rows align even when year is missing.
         let year_col_w = 6usize;
@@ -2040,19 +2156,39 @@ fn render_library(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
              Style::default().fg(CLR_TEXT2),
              Style::default().fg(CLR_MUTED))
         };
-        let icon_style = if is_selected { Style::default().fg(CLR_ACCENT) } else { Style::default().fg(CLR_TEXT2) };
+        // The audio-CD row gets an always-accented icon so it stands apart
+        // from folders and albums.
+        let icon_style = if is_cd || is_selected { Style::default().fg(CLR_ACCENT) } else { Style::default().fg(CLR_TEXT2) };
 
-        let row_line = Line::from(vec![
-            Span::styled(format!("{} ", icon), icon_style),
-            Span::styled(name_display, name_style),
-            if sub.is_empty() { Span::raw("") } else {
-                Span::styled(format!("  {}", sub_display), sub_style)
-            },
-            Span::styled(
+        let mut spans: Vec<Span> = vec![Span::styled(format!("{} ", icon), icon_style)];
+        if cd_loading {
+            // Same sweep animation as the lyrics loader.
+            spans.extend(shimmer_spans(&name_display, app.lyric_shimmer_phase));
+        } else {
+            spans.push(Span::styled(name_display, name_style));
+        }
+        if !sub.is_empty() {
+            spans.push(Span::styled(format!("  {}", sub_display), sub_style));
+        }
+        if is_cd {
+            // Eject "button" in the year column (clickable, see handle_mouse).
+            app.cd_eject_rect = Some(Rect {
+                x: area.x + area.width.saturating_sub(year_col_w as u16),
+                y, width: year_col_w as u16, height: 1,
+            });
+            let ej_style = if is_selected {
+                Style::default().fg(CLR_ACCENT).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(CLR_MUTED)
+            };
+            spans.push(Span::styled(" Eject", ej_style));
+        } else {
+            spans.push(Span::styled(
                 if yr.is_empty() { "      ".to_string() } else { format!("  {:>4}", yr) },
                 yr_style,
-            ),
-        ]);
+            ));
+        }
+        let row_line = Line::from(spans);
         let para = Paragraph::new(row_line);
         if is_selected {
             frame.render_widget(para.style(Style::default().bg(CLR_SURF2)), row_rect);
@@ -2069,10 +2205,9 @@ fn render_track_list(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
 
     if app.player.is_loading && app.browse_dir.is_none() {
         let spin = app.icons.spinner[app.lyric_shimmer_phase % app.icons.spinner.len()];
-        frame.render_widget(
-            Paragraph::new(format!(" {} Reading disc…", spin)).style(Style::default().fg(CLR_TEXT2)),
-            area,
-        );
+        let mut spans: Vec<Span> = vec![Span::styled(format!(" {} ", spin), Style::default().fg(CLR_TEXT2))];
+        spans.extend(shimmer_spans("Loading CD…", app.lyric_shimmer_phase));
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
         return;
     }
 
@@ -2270,7 +2405,11 @@ fn render_controls(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(line), area);
 
     if area.height > 1 {
-        let hints = " Space:⏯  ←→:seek  Shift←→:navigate  n/p:track  +/-:vol  s:settings  q:quit";
+        let hints = if app.player.drives.is_empty() {
+            " Space:⏯  ←→:seek  Shift←→:navigate  n/p:track  +/-:vol  s:settings  q:quit"
+        } else {
+            " Space:⏯  ←→:seek  Shift←→:navigate  n/p:track  +/-:vol  e:eject  s:settings  q:quit"
+        };
         let hint_area = Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 };
         frame.render_widget(
             Paragraph::new(hints).style(Style::default().fg(CLR_MUTED)),
@@ -2625,6 +2764,13 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
             app.settings_input_text.push(c);
         }
 
+        KeyCode::Char('e') => {
+            if !app.player.drives.is_empty() {
+                app.player.eject();
+                app.toast_msg = Some(("Ejecting disc…".to_string(), std::time::Instant::now()));
+            }
+        }
+
         KeyCode::Char('s') => {
             if app.view == View::Settings {
                 app.view = View::Library;
@@ -2929,6 +3075,13 @@ fn handle_mouse(app: &mut TuiApp, event: MouseEvent) {
                     return;
                 }
             }
+            if let Some(rect) = app.cd_eject_rect {
+                if rect_contains(rect, x, y) {
+                    app.player.eject();
+                    app.toast_msg = Some(("Ejecting disc…".to_string(), std::time::Instant::now()));
+                    return;
+                }
+            }
             for (i, &rect) in app.content_item_rects.iter().enumerate() {
                 if rect_contains(rect, x, y) {
                     let abs_idx = i + app.content_scroll;
@@ -3133,7 +3286,11 @@ pub fn run_tui() -> io::Result<()> {
         let timeout = tick_rate;
         if event::poll(timeout)? {
             match event::read()? {
-                Event::Key(key) => handle_key(&mut app, key.code, key.modifiers),
+                // Windows terminals report both Press and Release key events —
+                // only act on Press so keys don't register twice.
+                Event::Key(key) if key.kind != crossterm::event::KeyEventKind::Release =>
+                    handle_key(&mut app, key.code, key.modifiers),
+                Event::Key(_) => {}
                 Event::Mouse(m) => handle_mouse(&mut app, m),
                 Event::Resize(_, _) => {}
                 _ => {}
