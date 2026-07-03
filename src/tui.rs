@@ -200,6 +200,9 @@ struct TuiPlayerState {
     cd_tracks:          Vec<TrackInfo>,
     disc_status:        String,
     is_loading:         bool,
+    /// When the current disc read started; used to only surface the
+    /// "Reading CD" state after 1s so the empty-drive poll doesn't flash it.
+    loading_since:      Option<Instant>,
     disc_load_result:   Arc<Mutex<Option<PendingDiscResult>>>,
     disc_load_thread:   Option<thread::JoinHandle<()>>,
     current_disc_id:    String,
@@ -261,6 +264,7 @@ impl Default for TuiPlayerState {
             cd_tracks:           vec![],
             disc_status:         "No disc inserted".into(),
             is_loading:          false,
+            loading_since:       None,
             disc_load_result:    Arc::new(Mutex::new(None)),
             disc_load_thread:    None,
             current_disc_id:     String::new(),
@@ -335,9 +339,9 @@ impl TuiPlayerState {
     /// Library-root CD node state, or None when no optical drive is present.
     fn cd_node_info(&self) -> Option<CdNodeInfo> {
         if self.drives.is_empty() { return None; }
-        if self.is_loading && !self.is_file_mode {
+        if self.show_loading() && !self.is_file_mode {
             Some(CdNodeInfo {
-                title:   "Loading CD...".into(),
+                title:   "Reading CD...".into(),
                 sub:     "CD".into(),
                 loading: true,
             })
@@ -414,6 +418,17 @@ impl TuiPlayerState {
         });
         self.disc_load_thread = Some(handle);
         self.is_loading = true;
+        if self.loading_since.is_none() {
+            self.loading_since = Some(Instant::now());
+        }
+    }
+
+    /// Whether the UI should show the "Reading CD" state: only after the disc
+    /// read has been running for a second straight, so the quick periodic
+    /// empty-drive checks don't flash it.
+    fn show_loading(&self) -> bool {
+        self.is_loading
+            && self.loading_since.is_some_and(|t| t.elapsed() >= Duration::from_secs(1))
     }
 
     fn poll_load(&mut self) {
@@ -421,6 +436,7 @@ impl TuiPlayerState {
         let Some(result) = result else { return };
         if let Some(t) = self.disc_load_thread.take() { let _ = t.join(); }
         self.is_loading = false;
+        self.loading_since = None;
 
         match result {
             PendingDiscResult::Loaded { tracks, durations, metadata, disc_id } => {
@@ -2203,10 +2219,10 @@ fn render_track_list(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
 
     let tracks = app.effective_tracklist();
 
-    if app.player.is_loading && app.browse_dir.is_none() {
+    if app.player.show_loading() && app.browse_dir.is_none() {
         let spin = app.icons.spinner[app.lyric_shimmer_phase % app.icons.spinner.len()];
         let mut spans: Vec<Span> = vec![Span::styled(format!(" {} ", spin), Style::default().fg(CLR_TEXT2))];
-        spans.extend(shimmer_spans("Loading CD…", app.lyric_shimmer_phase));
+        spans.extend(shimmer_spans("Reading CD…", app.lyric_shimmer_phase));
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
         return;
     }

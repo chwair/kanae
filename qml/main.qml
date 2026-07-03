@@ -294,7 +294,15 @@ ApplicationWindow {
         }
     }
 
-    readonly property bool _cdLoading: player.is_loading && !player.is_file_mode
+    // True only after the player has been reading the disc for >= 1s straight,
+    // so the periodic empty-drive poll doesn't flash a "Reading CD" state.
+    property bool _cdLoading: false
+    readonly property bool _cdLoadingRaw: player.is_loading && !player.is_file_mode
+    on_CdLoadingRawChanged: {
+        if (_cdLoadingRaw) cdLoadingDelay.restart()
+        else { cdLoadingDelay.stop(); _cdLoading = false }
+    }
+    Timer { id: cdLoadingDelay; interval: 1000; onTriggered: window._cdLoading = true }
     readonly property bool _cdLoaded:  player.total_tracks > 0 && !player.is_file_mode
     // "CD" badge label; shows the disc position within a multi-CD release
     // (from MusicBrainz), e.g. "CD 2/3".
@@ -1188,7 +1196,7 @@ ApplicationWindow {
                                         anchors.top: tileArt.bottom; anchors.left: parent.left; anchors.right: parent.right
                                         anchors.bottom: parent.bottom; anchors.topMargin: 6
                                         anchors.leftMargin: 7; anchors.rightMargin: 7; spacing: 2
-                                        WaveText { visible: modelData.loading === true; animating: visible; text: "Loading CD..."; pixelSize: 11 }
+                                        WaveText { visible: modelData.loading === true; animating: visible; text: "Reading CD..."; pixelSize: 11 }
                                         Text { width:parent.width;visible:modelData.loading!==true;text:modelData.name;color:clrText;font.pixelSize:11;font.family:"Segoe UI";elide:Text.ElideRight;wrapMode:Text.NoWrap }
                                         Text { width:parent.width;text:modelData.album_artist.length>0?modelData.album_artist:(modelData.year.length>0?modelData.year:"");color:clrText2;font.pixelSize:10;font.family:"Segoe UI";elide:Text.ElideRight }
                                         Text { width:parent.width;visible:modelData.album_artist.length>0&&modelData.year.length>0;text:modelData.year;color:clrMuted;font.pixelSize:9;font.family:"Segoe UI" }
@@ -1257,7 +1265,7 @@ ApplicationWindow {
                                                 property string kk:modelData.kind;onKkChanged:requestPaint()}
                                         }
                                         Column{Layout.fillWidth:true;spacing:1
-                                            WaveText{visible:modelData.loading===true;animating:visible;text:"Loading CD...";pixelSize:12}
+                                            WaveText{visible:modelData.loading===true;animating:visible;text:"Reading CD...";pixelSize:12}
                                             Text{width:parent.width;visible:modelData.loading!==true;text:modelData.name;color:clrText;font.pixelSize:12;font.family:"Segoe UI";elide:Text.ElideRight}
                                             Text{width:parent.width;visible:modelData.album_artist.length>0;text:modelData.album_artist;color:clrText2;font.pixelSize:10;font.family:"Segoe UI";elide:Text.ElideRight}
                                         }
@@ -1309,17 +1317,17 @@ ApplicationWindow {
                         anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
                         visible: _view === "album"
 
-                        Item{anchors.fill:parent;visible:player.is_loading&&_browseDir==="";z:5
+                        Item{anchors.fill:parent;visible:window._cdLoading&&_browseDir==="";z:5
                             Shape{anchors.centerIn:parent;width:26;height:26
-                                RotationAnimator on rotation{from:0;to:360;duration:800;loops:Animation.Infinite;running:player.is_loading}
+                                RotationAnimator on rotation{from:0;to:360;duration:800;loops:Animation.Infinite;running:window._cdLoading}
                                 ShapePath{strokeColor:clrText2;strokeWidth:2;fillColor:"transparent";capStyle:ShapePath.RoundCap
                                     PathAngleArc{centerX:13;centerY:13;radiusX:10;radiusY:10;startAngle:-90;sweepAngle:250}}}
                             WaveText{anchors.horizontalCenter:parent.horizontalCenter;anchors.top:parent.verticalCenter;anchors.topMargin:24
                                 visible:parent.visible;animating:visible
-                                text:"Loading CD...";pixelSize:12}
+                                text:"Reading CD...";pixelSize:12}
                         }
 
-                        Item{anchors.fill:parent;visible:!player.is_loading&&_browseDir===""&&(player.total_tracks===0||(_showingCdView&&player.is_file_mode))
+                        Item{anchors.fill:parent;visible:!window._cdLoading&&_browseDir===""&&(player.total_tracks===0||(_showingCdView&&player.is_file_mode))
                             Column{anchors.centerIn:parent;spacing:12
                                 Canvas{width:48;height:48;anchors.horizontalCenter:parent.horizontalCenter;opacity:0.45;onPaint:{var c=getContext("2d");c.clearRect(0,0,48,48);c.beginPath();c.arc(24,24,21,0,2*Math.PI);c.strokeStyle="#555";c.lineWidth=1.5;c.stroke();c.beginPath();c.arc(24,24,4,0,2*Math.PI);c.fillStyle="#3a3a3a";c.fill()}}
                                 Text{anchors.horizontalCenter:parent.horizontalCenter;text:player.drive_status.length>0?player.drive_status:"No disc inserted";color:clrText2;font.pixelSize:13;font.family:"Segoe UI"}
