@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 
 const AUDIO_EXTENSIONS: &[&str] = &[
-    "mp3", "flac", "ogg", "opus", "m4a", "aac", "wav", "aiff", "aif", "wma", "ape",
+    "mp3", "mp2", "mp1", "flac", "ogg", "opus", "m4a", "mp4", "aac", "alac",
+    "wav", "aiff", "aif", "caf", "mka", "wma", "ape",
 ];
 
 pub fn is_audio_file(path: &Path) -> bool {
@@ -65,10 +66,10 @@ fn collect_dir(dir: &Path) -> Vec<LocalTrack> {
 
 pub fn read_file_metadata(path: &Path) -> LocalTrack {
     use symphonia::core::{
-        formats::FormatOptions,
+        formats::{probe::Hint, FormatOptions, TrackType},
         io::MediaSourceStream,
-        meta::{MetadataOptions, StandardTagKey},
-        probe::Hint,
+        meta::{MetadataOptions, StandardTag},
+        units::Timestamp,
     };
 
     let mut track = LocalTrack {
@@ -88,30 +89,29 @@ pub fn read_file_metadata(path: &Path) -> LocalTrack {
         if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
             hint.with_extension(ext);
         }
-        let meta_opts = MetadataOptions { limit_metadata_bytes: symphonia::core::meta::Limit::Maximum(4 * 1024 * 1024), ..Default::default() };
-        if let Ok(mut probed) = symphonia::default::get_probe().format(
-            &hint, mss, &FormatOptions::default(), &meta_opts,
+        // 0.6 is gapless-aware at the container level: `duration`/`num_frames`
+        // already exclude encoder delay/padding, matching gapless playback.
+        if let Ok(mut reader) = symphonia::default::get_probe().probe(
+            &hint, mss, FormatOptions::default(), MetadataOptions::default(),
         ) {
-            if let Some(t) = probed.format.default_track() {
-                if let (Some(tb), Some(n_frames)) = (t.codec_params.time_base, t.codec_params.n_frames) {
-                    let time = tb.calc_time(n_frames);
-                    track.duration_secs = time.seconds as f64 + time.frac;
+            if let Some(t) = reader.default_track(TrackType::Audio) {
+                if let (Some(tb), Some(dur)) = (t.time_base, t.duration) {
+                    track.duration_secs =
+                        tb.calc_time_saturating(Timestamp::new(dur.get() as i64)).as_secs_f64();
                 }
             }
 
-            // Consume top-level metadata (ID3, Vorbis Comment, etc.)
-            let metadata = probed.format.metadata();
-            let revision = metadata.current();
-            if let Some(rev) = revision {
-                for tag in rev.tags() {
-                    let v = tag.value.to_string();
-                    match tag.std_key {
-                        Some(StandardTagKey::TrackTitle)   => track.title        = v,
-                        Some(StandardTagKey::Artist)       => track.artist       = v,
-                        Some(StandardTagKey::Album)        => track.album        = v,
-                        Some(StandardTagKey::AlbumArtist)  => track.album_artist = v,
-                        Some(StandardTagKey::Date)         => {
-                            // Take just the year portion (first 4 chars).
+            // Consume media-level metadata (ID3, Vorbis Comment, APE, etc.)
+            if let Some(rev) = reader.metadata().skip_to_latest() {
+                for tag in &rev.media.tags {
+                    match &tag.std {
+                        Some(StandardTag::TrackTitle(v))  => track.title        = v.to_string(),
+                        Some(StandardTag::Artist(v))      => track.artist       = v.to_string(),
+                        Some(StandardTag::Album(v))       => track.album        = v.to_string(),
+                        Some(StandardTag::AlbumArtist(v)) => track.album_artist = v.to_string(),
+                        // Take just the year portion (first 4 chars).
+                        Some(StandardTag::ReleaseDate(v)) => track.year = v.chars().take(4).collect(),
+                        Some(StandardTag::RecordingDate(v)) if track.year.is_empty() => {
                             track.year = v.chars().take(4).collect();
                         }
                         _ => {}
@@ -165,15 +165,18 @@ pub fn read_file_metadata(path: &Path) -> LocalTrack {
                     Some(MimeType::Png) => "png",
                     _ => "jpg",
                 };
+                // Key the cache file by picture *content*, not source path, so the
+                // same art embedded in every track of an album (or shared across
+                // albums) dedupes to a single file instead of one copy per track.
                 let dest = crate::library_cache::cover_cache_dir().join(format!("kanae_cover_{:016x}.{}",
                     {
                         use std::collections::hash_map::DefaultHasher;
                         use std::hash::{Hash, Hasher};
                         let mut h = DefaultHasher::new();
-                        path.hash(&mut h);
+                        pic.data().hash(&mut h);
                         h.finish()
                     }, ext));
-                if std::fs::write(&dest, pic.data()).is_ok() {
+                if dest.exists() || std::fs::write(&dest, pic.data()).is_ok() {
                     let url_path = dest.to_string_lossy().replace('\\', "/");
                     // Trim any leading slash so format!() produces exactly 3 slashes.
                     track.cover_art_path = Some(format!("file:///{}", url_path.trim_start_matches('/')));
@@ -216,12 +219,10 @@ pub fn play_local_file(
 ) {
     use crate::audio_player::AudioController;
     use symphonia::core::{
-        audio::SampleBuffer,
-        codecs::DecoderOptions,
-        formats::{SeekMode, SeekTo},
+        codecs::{audio::AudioDecoderOptions, CodecParameters},
+        formats::{probe::Hint, FormatOptions, SeekMode, SeekTo, TrackType},
         io::MediaSourceStream,
         meta::MetadataOptions,
-        probe::Hint,
         units::Time,
     };
 
@@ -241,41 +242,45 @@ pub fn play_local_file(
         hint.with_extension(ext);
     }
 
-    let fmt_opts = symphonia::core::formats::FormatOptions { enable_gapless: true, ..Default::default() };
-    let probed = match symphonia::default::get_probe().format(
-        &hint, mss, &fmt_opts, &MetadataOptions::default(),
+    let mut format = match symphonia::default::get_probe().probe(
+        &hint, mss, FormatOptions::default(), MetadataOptions::default(),
     ) {
-        Ok(p)  => p,
+        Ok(f)  => f,
         Err(e) => { eprintln!("[file] probe {}: {}", file_path.display(), e); playback_ended_arc.store(true, Ordering::Relaxed); return; }
     };
 
-    let mut format = probed.format;
-    let track = match format.default_track() {
+    let track = match format.default_track(TrackType::Audio) {
         Some(t) => t,
         None    => { eprintln!("[file] no audio track in {}", file_path.display()); playback_ended_arc.store(true, Ordering::Relaxed); return; }
     };
 
-    let sample_rate = track.codec_params.sample_rate.unwrap_or(44100);
-    let n_channels  = track.codec_params.channels.map(|c| c.count()).unwrap_or(2);
-    let track_id    = track.id;
-    let time_base   = track.codec_params.time_base;
+    let params = match &track.codec_params {
+        Some(CodecParameters::Audio(p)) => p.clone(),
+        _ => { eprintln!("[file] no audio codec params in {}", file_path.display()); playback_ended_arc.store(true, Ordering::Relaxed); return; }
+    };
 
-    let mut decoder = match symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
-    {
+    let sample_rate = params.sample_rate.unwrap_or(44100);
+    let n_channels  = params.channels.as_ref().map(|c| c.count()).unwrap_or(2);
+    let track_id    = track.id;
+    let time_base   = track.time_base;
+
+    // Gapless is decoder-side in 0.6: packets carry trim info and the decoder
+    // strips encoder delay/padding when this option is set (default: on).
+    let mut dec_opts = AudioDecoderOptions::default();
+    dec_opts.gapless = true;
+    let mut decoder = match symphonia::default::get_codecs().make_audio_decoder(&params, &dec_opts) {
         Ok(d)  => d,
         Err(e) => { eprintln!("[file] decoder: {}", e); playback_ended_arc.store(true, Ordering::Relaxed); return; }
     };
 
     if start_offset > 0.1 {
         let _ = format.seek(SeekMode::Accurate, SeekTo::Time {
-            time: Time { seconds: start_offset as u64, frac: start_offset.fract() },
+            time: Time::try_from_secs_f64(start_offset).unwrap_or(Time::ZERO),
             track_id: Some(track_id),
         });
     }
 
     let mut current_vol = f64::from_bits(volume_arc.load(Ordering::Relaxed)) as f32;
-    let mut sample_buf: Option<SampleBuffer<f32>> = None;
     let mut fade_first_packet = start_offset < 0.05;
 
     let (stream_sender, samples_emitted_arc) = audio_controller.begin_stream(
@@ -286,43 +291,36 @@ pub fn play_local_file(
         if stop_flag.load(Ordering::Relaxed) { break; }
 
         let packet = match format.next_packet() {
-            Ok(p) => p,
-            Err(symphonia::core::errors::Error::IoError(ref e))
-                if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Ok(Some(p)) => p,
+            Ok(None)    => break, // end of stream
             Err(symphonia::core::errors::Error::ResetRequired) => { decoder.reset(); continue; }
             Err(e) => { eprintln!("[file] packet: {}", e); break; }
         };
-        if packet.track_id() != track_id { continue; }
+        if packet.track_id != track_id { continue; }
 
-        let chunk_start = if let Some(tb) = time_base {
-            let t = tb.calc_time(packet.ts());
-            t.seconds as f64 + t.frac
-        } else {
-            packet.ts() as f64 / sample_rate as f64
-        };
+        let chunk_start = time_base
+            .and_then(|tb| tb.calc_time(packet.pts))
+            .map(|t| t.as_secs_f64())
+            .unwrap_or_else(|| packet.pts.get() as f64 / sample_rate as f64);
 
         let decoded = match decoder.decode(&packet) {
             Ok(d) => d,
-            Err(symphonia::core::errors::Error::DecodeError(ref msg)) => { eprintln!("[file] decode: {}", msg); continue; }
+            Err(symphonia::core::errors::Error::DecodeError(msg)) => { eprintln!("[file] decode: {}", msg); continue; }
             Err(e) => { eprintln!("[file] decode fatal: {}", e); break; }
         };
 
-        if sample_buf.as_ref().map_or(true, |b| b.capacity() < decoded.capacity()) {
-            sample_buf = Some(SampleBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec()));
-        }
-        let sb = sample_buf.as_mut().unwrap();
-        sb.copy_interleaved_ref(decoded);
+        let mut samples: Vec<f32> = Vec::new();
+        decoded.copy_to_vec_interleaved(&mut samples);
 
         let target_vol = f64::from_bits(volume_arc.load(Ordering::Relaxed)) as f32;
-        let raw = sb.samples();
-        let n   = raw.len() as f32;
+        let n    = samples.len() as f32;
         let fade = fade_first_packet;
         fade_first_packet = false;
-        let samples: Vec<f32> = raw.iter().enumerate().map(|(i, &s)| {
+        for (i, s) in samples.iter_mut().enumerate() {
             let t = i as f32 / n;
             let fi = if fade { t } else { 1.0 };
-            (s * (current_vol + (target_vol - current_vol) * t) * fi).clamp(-1.0, 1.0)
-        }).collect();
+            *s = (*s * (current_vol + (target_vol - current_vol) * t) * fi).clamp(-1.0, 1.0);
+        }
         current_vol = target_vol;
 
         if !stream_sender.send(samples) { break; }

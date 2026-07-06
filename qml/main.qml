@@ -678,22 +678,34 @@ ApplicationWindow {
                     cursorShape: Qt.PointingHandCursor; onClicked: settingsWindow.show() }
             }
 
-            // Now playing (centre)
-            Text {
+            // Now playing (left-aligned): \u25B6 Artist \u2014 Title, title brightest.
+            MatIcon {
+                id: npTitleIcon
+                visible: player.is_playing && player.total_tracks > 0
                 anchors.left: Qt.platform.os === "osx" ? trafficLights.right : parent.left
+                anchors.leftMargin: 10
+                anchors.verticalCenter: parent.verticalCenter
+                name: "play"; size: 13; color: "#5a5a5a"
+            }
+            Text {
+                anchors.left: npTitleIcon.right
                 anchors.right: Qt.platform.os === "osx" ? macSettingsBtn.left : winButtons.left
-                anchors.leftMargin: 8; anchors.rightMargin: 8
+                anchors.leftMargin: 6; anchors.rightMargin: 8
                 anchors.verticalCenter: parent.verticalCenter
                 elide: Text.ElideRight
+                textFormat: Text.StyledText
                 text: {
                     if (!player.is_playing || player.total_tracks === 0) return ""
-                    var num = (player.current_track+1).toString().padStart(2,"0")
-                    var title = (player.track_titles[player.current_track] || "").trim()
+                    function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;") }
+                    var title  = esc((player.track_titles[player.current_track] || "").trim())
                     var rawArt = (player.track_artists[player.current_track] || "").trim()
-                    var artist = rawArt.length > 0 ? rawArt : (player.album_artist || "").trim()
-                    return "\u25B6  " + num + "  \u00B7  " + (artist.length > 0 ? artist + "  \u2014  " : "") + title
+                    var artist = esc(rawArt.length > 0 ? rawArt : (player.album_artist || "").trim())
+                    var head = artist.length > 0
+                        ? "<font color='#7a7a7a'>" + artist + "</font>&nbsp;&nbsp;<font color='#3a3a3a'>\u2014</font>&nbsp;&nbsp;"
+                        : ""
+                    return head + "<font color='#a8a8a8'>" + title + "</font>"
                 }
-                color: clrText2; font.pixelSize: 11; font.family: "Segoe UI"
+                font.pixelSize: 11; font.family: "Segoe UI"
             }
 
             // Windows titlebar buttons
@@ -1156,6 +1168,10 @@ ApplicationWindow {
                                         Image {
                                             anchors.fill: parent; fillMode: Image.Stretch; smooth: true; mipmap: true
                                             source: modelData.cover_url || ""; visible: status === Image.Ready
+                                            // Decode off the UI thread at thumbnail size — full-size
+                                            // covers otherwise cost several MB of texture per tile.
+                                            asynchronous: true
+                                            sourceSize.width: 512; sourceSize.height: 512
                                         }
                                         Canvas {
                                             anchors.centerIn: parent; width:40;height:40;opacity:0.35
@@ -1259,7 +1275,8 @@ ApplicationWindow {
                                         anchors.fill:parent;anchors.leftMargin:12;anchors.rightMargin:12;spacing:10
                                         Rectangle {
                                             width:32;height:32;radius:3;color:clrSurf2;clip:true
-                                            Image{anchors.fill:parent;fillMode:Image.Stretch;smooth:true;mipmap:true;source:modelData.cover_url||"";visible:status===Image.Ready}
+                                            Image{anchors.fill:parent;fillMode:Image.Stretch;smooth:true;mipmap:true;source:modelData.cover_url||"";visible:status===Image.Ready
+                                                asynchronous:true;sourceSize.width:64;sourceSize.height:64}
                                             Canvas{anchors.centerIn:parent;width:16;height:16;opacity:0.6;visible:modelData.kind==="folder"||modelData.cover_url===""
                                                 onPaint:{var c=getContext("2d");c.clearRect(0,0,16,16);if(modelData.kind==="folder"){c.fillStyle="#555";c.fillRect(0,3,16,11)}else{c.beginPath();c.arc(8,8,6,0,2*Math.PI);c.strokeStyle="#555";c.lineWidth=1.5;c.stroke()}}
                                                 property string kk:modelData.kind;onKkChanged:requestPaint()}
@@ -1370,33 +1387,27 @@ ApplicationWindow {
 
             TextMetrics{id:timeMetrics;font.pixelSize:11;font.family:Qt.platform.os==="osx"?"Menlo":"Consolas";text:"00:00"}
 
+            // Single compact row: current time \u00B7 seek slider \u00B7 total time
             RowLayout{
-                Layout.fillWidth:true;Layout.leftMargin:14;Layout.rightMargin:14;Layout.topMargin:7;Layout.bottomMargin:4
-                spacing:0;visible:_view==="album"||player.is_playing
+                Layout.fillWidth:true;Layout.leftMargin:14;Layout.rightMargin:14;Layout.topMargin:8;Layout.bottomMargin:6
+                spacing:10;visible:_view==="album"||player.is_playing
                 Text{text:formatTime(player.current_time);color:clrText;font.pixelSize:11;font.family:Qt.platform.os==="osx"?"Menlo":"Consolas";Layout.preferredWidth:timeMetrics.advanceWidth;horizontalAlignment:Text.AlignLeft}
-                Item{Layout.preferredWidth:8}
-                Item{Layout.fillWidth:true;height:20
-                    ScrollText{anchors.fill:parent;visible:player.total_tracks>0&&player.current_track>=0&&!player.is_single_file;centered:true
-                        text:{if(player.total_tracks===0||player.current_track<0)return "";var num=(player.current_track+1).toString().padStart(2,"0");var title=(player.track_titles[player.current_track]||"").trim();var rawArt=(player.track_artists[player.current_track]||"").trim();var artist=rawArt.length>0?rawArt:(player.album_artist||"").trim();return num+"  \u00B7  "+artist+"  \u2014  "+title}
-                        textColor:clrText2;pixelSize:11;fontFamily:"Segoe UI"}}
-                Item{Layout.preferredWidth:8}
+                Slider{id:seekSlider;Layout.fillWidth:true
+                    implicitHeight:20;padding:0;from:0;to:Math.max(player.total_time,1);value:pressed?value:player.current_time
+                    enabled:player.total_tracks>0;onPressedChanged:{if(!pressed)player.seek(value)}
+                    background:Item{implicitHeight:20
+                        Rectangle{anchors.verticalCenter:parent.verticalCenter;width:parent.width;height:3;radius:1;color:clrSurf2
+                            Rectangle{id:seekFill;width:parent.width*seekSlider.visualPosition;height:parent.height;radius:1;color:clrAccent
+                                Behavior on width{enabled:!seekSlider.pressed;NumberAnimation{duration:60;easing.type:Easing.OutSine}}
+                                Rectangle{anchors.top:parent.top;anchors.left:parent.left;anchors.right:parent.right;height:1;radius:1;color:"#ffffff";opacity:0.08}}}}
+                    handle:Rectangle{x:seekSlider.visualPosition*seekSlider.availableWidth-width/2;y:seekSlider.availableHeight/2-height/2
+                        width:11;height:11;radius:5.5;color:seekSlider.pressed?"#ffffff":clrAccent;visible:player.total_tracks>0
+                        opacity:seekSlider.hovered||seekSlider.pressed?1.0:0.0
+                        Behavior on opacity{NumberAnimation{duration:130}}
+                        Behavior on color{ColorAnimation{duration:80}}
+                        Rectangle{anchors.fill:parent;anchors.margins:-1;radius:parent.radius+1;color:"transparent";border.color:"#ffffff";border.width:1;opacity:0.08}}
+                }
                 Text{text:formatTime(player.total_time);color:clrText2;font.pixelSize:11;font.family:Qt.platform.os==="osx"?"Menlo":"Consolas";Layout.preferredWidth:timeMetrics.advanceWidth;horizontalAlignment:Text.AlignRight}
-            }
-
-            Slider{id:seekSlider;Layout.fillWidth:true;Layout.leftMargin:14;Layout.rightMargin:14;Layout.bottomMargin:10;visible:_view==="album"||player.is_playing
-                implicitHeight:20;padding:0;from:0;to:Math.max(player.total_time,1);value:pressed?value:player.current_time
-                enabled:player.total_tracks>0;onPressedChanged:{if(!pressed)player.seek(value)}
-                background:Item{implicitHeight:20
-                    Rectangle{anchors.verticalCenter:parent.verticalCenter;width:parent.width;height:3;radius:1;color:clrSurf2
-                        Rectangle{id:seekFill;width:parent.width*seekSlider.visualPosition;height:parent.height;radius:1;color:clrAccent
-                            Behavior on width{enabled:!seekSlider.pressed;NumberAnimation{duration:60;easing.type:Easing.OutSine}}
-                            Rectangle{anchors.top:parent.top;anchors.left:parent.left;anchors.right:parent.right;height:1;radius:1;color:"#ffffff";opacity:0.08}}}}
-                handle:Rectangle{x:seekSlider.visualPosition*seekSlider.availableWidth-width/2;y:seekSlider.availableHeight/2-height/2
-                    width:11;height:11;radius:5.5;color:seekSlider.pressed?"#ffffff":clrAccent;visible:player.total_tracks>0
-                    opacity:seekSlider.hovered||seekSlider.pressed?1.0:0.0
-                    Behavior on opacity{NumberAnimation{duration:130}}
-                    Behavior on color{ColorAnimation{duration:80}}
-                    Rectangle{anchors.fill:parent;anchors.margins:-1;radius:parent.radius+1;color:"transparent";border.color:"#ffffff";border.width:1;opacity:0.08}}
             }
 
             // ── Transport + volume ────────────────────────────────────────
@@ -1416,7 +1427,45 @@ ApplicationWindow {
                     MatIcon{anchors.centerIn:parent;name:"next";size:14;color:clrText}
                     MouseArea{anchors.fill:parent;enabled:player.current_track>=0&&player.current_track<player.total_tracks-1;cursorShape:enabled?Qt.PointingHandCursor:Qt.ArrowCursor
                         onClicked:{var wp=player.is_playing;player.nextTrack();if(wp)player.playPause()}}}
-                Item{Layout.fillWidth:true}
+
+                // ── Now playing: centered title / artist; click → current song ──
+                Item{
+                    Layout.fillWidth:true; Layout.preferredHeight:38
+                    Column{
+                        anchors.verticalCenter:parent.verticalCenter
+                        anchors.left:parent.left; anchors.right:parent.right
+                        anchors.leftMargin:12; anchors.rightMargin:12; spacing:2
+                        visible: player.total_tracks>0 && player.current_track>=0
+                        ScrollText{
+                            width:parent.width; centered:true
+                            text:(player.track_titles[player.current_track]||"").trim()
+                            textColor:npMa.containsMouse?clrAccent:clrText; pixelSize:12; bold:true
+                        }
+                        ScrollText{
+                            width:parent.width; centered:true
+                            text:{
+                                var rawArt=(player.track_artists[player.current_track]||"").trim()
+                                var artist=rawArt.length>0?rawArt:(player.album_artist||"").trim()
+                                if(player.is_single_file) return artist
+                                var num=(player.current_track+1).toString().padStart(2,"0")
+                                return artist.length>0 ? num+"  ·  "+artist : num+"  ·  "+(player.album_title||"").trim()
+                            }
+                            textColor:clrText2; pixelSize:10
+                        }
+                    }
+                    MouseArea{
+                        id:npMa; anchors.fill:parent; hoverEnabled:true
+                        enabled: player.total_tracks>0 && player.current_track>=0
+                        cursorShape: enabled?Qt.PointingHandCursor:Qt.ArrowCursor
+                        onClicked:{
+                            window._browseDir=""; window._browseAlbumName=""; window._view="album"
+                            Qt.callLater(function(){
+                                if(player.current_track>=0 && trackList.count>player.current_track)
+                                    trackList.positionViewAtIndex(player.current_track, ListView.Center)
+                            })
+                        }
+                    }
+                }
                 MatIcon{size:16;color:clrText2
                     name:volSlider.value<=0.001?"volume-mute":(volSlider.value<0.5?"volume-low":"volume")}
                 Slider{id:volSlider;Layout.preferredWidth:88;implicitHeight:30;padding:0;from:0;to:1;value:1.0

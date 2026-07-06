@@ -1420,7 +1420,7 @@ impl player_bridge::PlayerController {
 
     pub fn open_files_dialog(self: Pin<&mut Self>) {
         let paths = rfd::FileDialog::new()
-            .add_filter("Audio", &["mp3", "flac", "ogg", "opus", "m4a", "aac", "wav", "aiff", "aif", "wma", "ape"])
+            .add_filter("Audio", &["mp3", "mp2", "mp1", "flac", "ogg", "opus", "m4a", "mp4", "aac", "alac", "wav", "aiff", "aif", "caf", "mka", "wma", "ape"])
             .set_title("Open Audio Files")
             .pick_files();
         if let Some(paths) = paths {

@@ -41,7 +41,7 @@ const CLR_ACCENT: Color = Color::Rgb(191, 191, 191);
 // ─── Library node for TUI ─────────────────────────────────────────────────────
 
 /// Display state of the audio-CD node shown at the library root.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct CdNodeInfo {
     /// Album title when a disc is loaded, otherwise "Audio CD".
     title:   String,
@@ -918,6 +918,10 @@ struct TuiLibraryState {
     nav_stack:     Vec<PathBuf>,
     nav_idx:       usize,
     nodes:         Vec<TuiLibraryNode>,
+    // Node list rebuilds are expensive (clones every album), so they only run
+    // when something changed: this flag, or the CD node differing from last tick.
+    nodes_dirty:   bool,
+    last_cd_info:  Option<CdNodeInfo>,
     // Album browse (previewing an album before loading it). Identified by the
     // album's stable id, so multiple albums/singles in one directory differ.
     browse_album_path: Option<String>,
@@ -947,6 +951,8 @@ impl Default for TuiLibraryState {
             nav_stack:    vec![],
             nav_idx:      0,
             nodes:        vec![],
+            nodes_dirty:  true,
+            last_cd_info: None,
             browse_album_path: None,
             browse_tracks:     vec![],
         }
@@ -993,7 +999,7 @@ impl TuiLibraryState {
             }
         }
         if has_new {
-            self.refresh_nodes(None);
+            self.nodes_dirty = true;
         }
         let done = { let mut g = self.done_result.lock().unwrap(); g.take() };
         if let Some(result) = done {
@@ -1002,7 +1008,7 @@ impl TuiLibraryState {
             self.progress_rx  = None;
             self.is_scanning  = false;
             self.scan_message = String::new();
-            self.refresh_nodes(None);
+            self.nodes_dirty = true;
         }
     }
 
@@ -1015,7 +1021,7 @@ impl TuiLibraryState {
             } else {
                 let rescan = crate::library_cache::needs_rescan(&self.settings, &result);
                 self.scan_result = Some(result);
-                self.refresh_nodes(None);
+                self.nodes_dirty = true;
                 if rescan { self.start_scan(); }
             }
         } else if !self.settings.search_paths.is_empty() {
@@ -1417,8 +1423,14 @@ impl TuiApp {
             }
         }
 
+        // Rebuild the node list only when the library changed or the CD node
+        // state differs — not on every 50 ms tick (it clones every album).
         let cd_info = self.player.cd_node_info();
-        self.library.refresh_nodes(cd_info);
+        if self.library.nodes_dirty || cd_info != self.library.last_cd_info {
+            self.library.last_cd_info = cd_info.clone();
+            self.library.refresh_nodes(cd_info);
+            self.library.nodes_dirty = false;
+        }
 
         let drive_interval = if self.player.total_tracks > 0 { Duration::from_secs(1) } else { Duration::from_secs(3) };
         if !self.player.is_file_mode && now.duration_since(self.last_drive_scan) > drive_interval {
@@ -1597,7 +1609,7 @@ impl TuiApp {
         match self.library.nodes.get(idx).cloned() {
             Some(TuiLibraryNode::Folder { path, .. }) => {
                 self.library.navigate_to(path);
-                self.library.refresh_nodes(None);
+                self.library.nodes_dirty = true;
                 self.content_selected = 0;
                 self.content_scroll = 0;
             }
@@ -2840,12 +2852,12 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
                 app.browse_dir = None; app.browse_album_name = String::new();
                 app.view = View::Library; app.content_selected = 0; app.content_scroll = 0;
             } else if app.library.can_go_back() {
-                app.library.navigate_back(); app.library.refresh_nodes(None); app.content_selected = 0; app.content_scroll = 0;
+                app.library.navigate_back(); app.library.nodes_dirty = true; app.content_selected = 0; app.content_scroll = 0;
             }
         }
         KeyCode::Right if modifiers.contains(KeyModifiers::SHIFT) => {
             if app.library.can_go_forward() {
-                app.library.navigate_forward(); app.library.refresh_nodes(None); app.content_selected = 0; app.content_scroll = 0;
+                app.library.navigate_forward(); app.library.nodes_dirty = true; app.content_selected = 0; app.content_scroll = 0;
             }
         }
 
@@ -2869,7 +2881,7 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
                 app.content_scroll = 0;
             } else if app.library.can_go_back() {
                 app.library.navigate_back();
-                app.library.refresh_nodes(None);
+                app.library.nodes_dirty = true;
                 app.content_selected = 0;
                 app.content_scroll = 0;
             }
@@ -2935,7 +2947,7 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
                     } else if sel == idx_merge {
                         app.library.settings.merge_all_folders = !app.library.settings.merge_all_folders;
                         crate::library_cache::save_settings(&app.library.settings);
-                        app.library.refresh_nodes(None);
+                        app.library.nodes_dirty = true;
                     } else if sel == idx_image {
                         app.tui_settings.image_method = app.tui_settings.image_method.next();
                         crate::library_cache::save_tui_settings(&app.tui_settings);
@@ -3053,13 +3065,13 @@ fn handle_mouse(app: &mut TuiApp, event: MouseEvent) {
                     app.browse_dir = None; app.browse_album_name = String::new();
                     app.view = View::Library; app.content_scroll = 0;
                 } else if app.library.can_go_back() {
-                    app.library.navigate_back(); app.library.refresh_nodes(None); app.content_scroll = 0;
+                    app.library.navigate_back(); app.library.nodes_dirty = true; app.content_scroll = 0;
                 }
                 return;
             }
             if rect_contains(app.btn_fwd, x, y) {
                 if app.library.can_go_forward() {
-                    app.library.navigate_forward(); app.library.refresh_nodes(None); app.content_scroll = 0;
+                    app.library.navigate_forward(); app.library.nodes_dirty = true; app.content_scroll = 0;
                 }
                 return;
             }
@@ -3068,7 +3080,7 @@ fn handle_mouse(app: &mut TuiApp, event: MouseEvent) {
                     match app.breadcrumb_nav_targets.get(i) {
                         Some(None) => {
                             app.library.navigate_to_root();
-                            app.library.refresh_nodes(None);
+                            app.library.nodes_dirty = true;
                             app.view = View::Library;
                             app.browse_dir = None;
                             app.browse_album_name = String::new();
@@ -3078,7 +3090,7 @@ fn handle_mouse(app: &mut TuiApp, event: MouseEvent) {
                             let nav_i = *nav_i;
                             if nav_i < app.library.nav_stack.len() {
                                 app.library.nav_idx = nav_i;
-                                app.library.refresh_nodes(None);
+                                app.library.nodes_dirty = true;
                                 app.view = View::Library;
                                 app.browse_dir = None;
                                 app.browse_album_name = String::new();

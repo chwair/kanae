@@ -24,7 +24,9 @@ tui = ["dep:ratatui", "dep:crossterm", "dep:unicode-width", "dep:ratatui-image"]
 [dependencies]
 # ── Shared ────────────────────────────────────────────────────────────────────
 cd-da-reader = "0.4.1"
-rodio = "0.22"
+# Output-only: kanae decodes with symphonia itself, so rodio's decoder features
+# (which would pull a second, older symphonia tree) are disabled.
+rodio = { version = "0.22", default-features = false, features = ["playback", "dither"] }
 sha1 = "0.10"
 base64 = "0.22"
 ureq = { version = "3", features = ["json"] }
@@ -33,7 +35,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 lofty = "0.22"
 rayon = "1"
-symphonia = { version = "0.5", features = ["mp3", "aac", "flac", "vorbis", "pcm", "isomp4", "ogg", "aiff"] }
+# "all" = every codec/container/metadata reader (0.6 adds APE decode);
+# opt-simd enables SSE/AVX/NEON DSP.
+symphonia = { version = "0.6", features = ["all", "opt-simd"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 # ── GUI-only ─────────────────────────────────────────────────────────────────
