@@ -41,20 +41,31 @@ impl SmtcHandle {
         match u {
             SmtcUpdate::Metadata { title, artist, album, cover_url, duration } => {
                 eprintln!("[smtc] set_metadata {:?} – {:?}", artist, title);
-                // Pass http(s) URLs as-is.
-                // Windows: WinRT requires the three-slash form file:///C:/path — pass as-is.
-                // macOS/Linux: souvlaki expects a file:// URI; convert bare absolute paths.
+                // Pass http(s) URLs as-is. Local covers need per-platform shapes
+                // (souvlaki 0.8.3 behaviour):
+                // - Windows strips "file://" and feeds the rest to
+                //   GetFileFromPathAsync, so it must be "file://" + a native
+                //   C:\ path — "file:///C:/…" yields the bogus "path too long".
+                // - macOS fs::read()s the string directly → bare path.
+                // - Linux (MPRIS) wants a real percent-encoded file:// URI.
                 let normalised: Option<String> = cover_url.as_deref().and_then(|u| {
                     if u.starts_with("http") {
                         Some(u.to_string())
-                    } else if u.starts_with("file:///") {
-                        Some(u.to_string())
+                    } else if let Some(p) = u.strip_prefix("file:///") {
+                        #[cfg(target_os = "windows")]
+                        { Some(format!("file://{}", p.replace('/', "\\"))) }
+                        #[cfg(target_os = "macos")]
+                        { Some(format!("/{}", p)) }
+                        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+                        { Some(format!("file:///{}", encode_uri_path(p))) }
                     } else if u.starts_with('/') {
-                        // Bare absolute POSIX path → file:// URI (macOS/Linux only)
-                        #[cfg(not(target_os = "windows"))]
-                        { Some(format!("file://{}", u)) }
+                        // Bare absolute POSIX path.
                         #[cfg(target_os = "windows")]
                         { None }
+                        #[cfg(target_os = "macos")]
+                        { Some(u.to_string()) }
+                        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+                        { Some(format!("file://{}", encode_uri_path(u))) }
                     } else {
                         None
                     }
@@ -89,7 +100,6 @@ impl SmtcHandle {
                 }
             }
             SmtcUpdate::Playing { progress } => {
-                eprintln!("[smtc] Playing {:.1}s", progress.as_secs_f64());
                 if let Err(e) = self.controls.set_playback(MediaPlayback::Playing {
                     progress: Some(MediaPosition(progress)),
                 }) { eprintln!("[smtc] Playing ERR: {:?}", e); }
@@ -112,6 +122,22 @@ impl SmtcHandle {
     pub fn drain_commands(&self) -> Vec<SmtcCommand> {
         std::mem::take(&mut self.commands.lock().unwrap())
     }
+}
+
+/// Percent-encode a filesystem path for use inside a file:// URI (MPRIS).
+/// Keeps `/` and `:`, encodes everything else outside the RFC 3986 unreserved
+/// set (cover paths are never pre-encoded, so `%` is encoded too).
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn encode_uri_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for b in path.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9'
+            | b'-' | b'.' | b'_' | b'~' | b'/' | b':' => out.push(b as char),
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
 }
 
 /// On macOS TUI mode: briefly pump the main run loop so MPRemoteCommandCenter

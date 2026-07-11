@@ -30,6 +30,25 @@ struct GetResult {
 
 const USER_AGENT: &str = concat!("Kanae v", env!("CARGO_PKG_VERSION"), " (https://github.com/chwair/kanae)");
 
+/// Load a sidecar `.lrc` file that sits next to the audio file (same name,
+/// `.lrc` extension). Returns parsed lines, or None when there is no such file
+/// or it contains no timestamped lines — callers then fall back to the
+/// cache/web path.
+pub fn load_local_lrc(audio_path: &str) -> Option<Vec<LyricLine>> {
+    if audio_path.is_empty() { return None; }
+    let lrc_path = std::path::Path::new(audio_path).with_extension("lrc");
+    if !lrc_path.is_file() { return None; }
+    let raw = std::fs::read_to_string(&lrc_path).ok()?;
+    let lines = parse_lrc(raw.trim_start_matches('\u{feff}'));
+    if lines.is_empty() {
+        eprintln!("[lrclib] sidecar {} has no timestamped lines — ignoring", lrc_path.display());
+        None
+    } else {
+        eprintln!("[lrclib] using sidecar lyrics: {} ({} line(s))", lrc_path.display(), lines.len());
+        Some(lines)
+    }
+}
+
 /// Fetch lyrics for a known lrclib ID.  Returns `(raw_lrc, parsed_lines)` on success.
 pub fn fetch_by_id(id: u64) -> Option<(String, Vec<LyricLine>)> {
     let url = format!("https://lrclib.net/api/get/{}", id);

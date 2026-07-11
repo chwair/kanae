@@ -71,6 +71,7 @@ pub mod library_bridge {
         #[qinvokable] #[cxx_name = "setLrcLimitDisabled"]  fn set_lrc_limit_disabled(self: Pin<&mut Self>, value: bool);
         #[qinvokable] #[cxx_name = "setRomanizeLyrics"]    fn set_romanize_lyrics(self: Pin<&mut Self>, value: bool);
         #[qinvokable] #[cxx_name = "setDiscordRpc"]        fn set_discord_rpc(self: Pin<&mut Self>, value: bool);
+        #[qinvokable] #[cxx_name = "setAlbumSort"]         fn set_album_sort(self: Pin<&mut Self>, value: QString);
     }
 }
 
@@ -517,6 +518,17 @@ impl library_bridge::LibraryController {
         self.as_mut().set_settings_json(QString::from(json.as_str()));
     }
 
+    pub fn set_album_sort(mut self: Pin<&mut Self>, value: QString) {
+        let json = {
+            let mut st = self.state.lock().unwrap();
+            st.settings.album_sort = value.to_string();
+            library_cache::save_settings(&st.settings);
+            serde_json::to_string(&st.settings).unwrap_or_default()
+        };
+        self.as_mut().set_settings_json(QString::from(json.as_str()));
+        self.as_mut().refresh_nodes();
+    }
+
     fn refresh_nav(mut self: Pin<&mut Self>) {
         let (back, fwd, path) = {
             let st = self.state.lock().unwrap();
@@ -639,9 +651,12 @@ fn build_nodes_json(cd: Option<&std::path::Path>, result: &LibraryScanResult, se
     dtos.sort_by(|a, b| {
         if a.pinned != b.pinned { return b.pinned.cmp(&a.pinned); }
         if a.kind != b.kind { return if a.kind == "folder" { std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater }; }
-        let ak = format!("{} {}", a.album_artist.to_lowercase(), a.name.to_lowercase());
-        let bk = format!("{} {}", b.album_artist.to_lowercase(), b.name.to_lowercase());
-        ak.cmp(&bk)
+        if a.kind == "folder" { return a.name.to_lowercase().cmp(&b.name.to_lowercase()); }
+        crate::library::compare_albums(
+            &settings.album_sort,
+            (&a.album_artist, &a.name, &a.year),
+            (&b.album_artist, &b.name, &b.year),
+        ).then_with(|| a.id.cmp(&b.id))
     });
 
     serde_json::to_string(&dtos).unwrap_or_else(|_| "[]".to_string())

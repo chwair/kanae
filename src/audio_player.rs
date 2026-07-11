@@ -108,8 +108,10 @@ pub struct AudioController {
 
 impl AudioController {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let sink_handle = DeviceSinkBuilder::open_default_sink()
+        let mut sink_handle = DeviceSinkBuilder::open_default_sink()
             .map_err(|e| format!("Failed to open audio sink: {:?}", e))?;
+        // A sink is opened per track; the drop notice is expected, not a bug.
+        sink_handle.log_on_drop(false);
         let player = Player::connect_new(&sink_handle.mixer());
         Ok(Self { _sink_handle: sink_handle, player })
     }

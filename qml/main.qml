@@ -52,11 +52,7 @@ ApplicationWindow {
     property var _browseTracks: {
         var j = library.album_tracks_json.toString()
         if (!j || j === "[]") return []
-        try {
-            var parsed = JSON.parse(j)
-            if (parsed.length > 0) console.log("[dbg] _browseTracks updated: " + parsed.length + " tracks, first=" + JSON.stringify(parsed[0]))
-            return parsed
-        } catch(e) { return [] }
+        try { return JSON.parse(j) } catch(e) { return [] }
     }
 
     // Unified track list model: use browse data when previewing, player data when playing.
@@ -132,13 +128,11 @@ ApplicationWindow {
     function playBrowsedTrack(idx) {
         if (_browseDir !== "") {
             var paths = _browseTracks.map(function(t){ return t.path })
-            console.log("[dbg] playBrowsedTrack: idx=" + idx + " paths=" + paths.length)
             _playingAlbumDir = _browseDir
             _browseDir = ""; _browseAlbumName = ""
             _suppressFileModeFlag = true
             player.openDroppedPaths(paths)
             _suppressFileModeFlag = false
-            console.log("[dbg] after openDroppedPaths: total_tracks=" + player.total_tracks + " is_file_mode=" + player.is_file_mode)
             Qt.callLater(function() { player.loadTrack(idx); player.playPause() })
         } else {
             player.loadTrack(idx); player.playPause()
@@ -208,12 +202,17 @@ ApplicationWindow {
         }
     }
 
-    Timer { interval: 100; repeat: true; running: true; onTriggered: player.updatePosition() }
+    // 100 ms position updates are only needed while audio is actually playing;
+    // when paused/idle the tick just drains SMTC commands, so 300 ms is plenty.
+    Timer { interval: player.is_playing ? 100 : 300; repeat: true; running: true; onTriggered: player.updatePosition() }
     Timer { interval: player.total_tracks > 0 ? 1000 : 3000; repeat: true
             running: !player.is_loading
             onTriggered: { if (player.drive_list.length === 0) player.scanDrives(); else player.checkDrive() } }
-    Timer { interval: 200; repeat: true; running: true; onTriggered: { player.pollLoad(); library.pollScan() } }
-    Timer { interval: 300; repeat: true; running: true; onTriggered: player.pollLyrics() }
+    // Fast polling only matters while a disc load or library scan is in flight.
+    Timer { interval: player.is_loading || library.is_scanning ? 150 : 500
+            repeat: true; running: true; onTriggered: { player.pollLoad(); library.pollScan() } }
+    // Lyric results only arrive while a fetch is in flight.
+    Timer { interval: 300; repeat: true; running: player.lyrics_loading; onTriggered: player.pollLyrics() }
 
     DropArea {
         anchors.fill: parent; keys: ["text/uri-list"]
@@ -701,7 +700,7 @@ ApplicationWindow {
                     var rawArt = (player.track_artists[player.current_track] || "").trim()
                     var artist = esc(rawArt.length > 0 ? rawArt : (player.album_artist || "").trim())
                     var head = artist.length > 0
-                        ? "<font color='#7a7a7a'>" + artist + "</font>&nbsp;&nbsp;<font color='#3a3a3a'>\u2014</font>&nbsp;&nbsp;"
+                        ? "<font color='#7a7a7a'>" + artist + "</font>&nbsp;&nbsp;<font color='#3a3a3a'>-</font>&nbsp;&nbsp;"
                         : ""
                     return head + "<font color='#a8a8a8'>" + title + "</font>"
                 }
@@ -735,8 +734,14 @@ ApplicationWindow {
                 Rectangle {
                     width:32;height:parent.height;color:"transparent"
                     Rectangle{anchors.fill:parent;color:maxHov.containsMouse?clrSurf2:"transparent";Behavior on color{ColorAnimation{duration:100}}}
-                    MatIcon{anchors.centerIn:parent;size:11
-                        name:window.visibility===Window.Maximized?"restore":"maximize"
+                    // Drawn empty square: the icon font is a FILL=1 subset, so the
+                    // crop_square glyph renders as a solid block.
+                    Rectangle{anchors.centerIn:parent;width:8;height:8
+                        visible:window.visibility!==Window.Maximized
+                        color:"transparent";border.width:1
+                        border.color:maxHov.containsMouse?clrText:clrText2}
+                    MatIcon{anchors.centerIn:parent;size:11;name:"restore"
+                        visible:window.visibility===Window.Maximized
                         color:maxHov.containsMouse?clrText:clrText2}
                     MouseArea{id:maxHov;anchors.fill:parent;hoverEnabled:true;onClicked:window.visibility===Window.Maximized?window.showNormal():window.showMaximized()}
                 }
@@ -830,7 +835,11 @@ ApplicationWindow {
                             id:coverRect;anchors.left:parent.left;anchors.right:parent.right;anchors.top:parent.top
                             height:sidebarColumn._naturalCoverH;color:clrSurf2
                             border.color:coverImg.status!==Image.Ready?clrBorder:"transparent";border.width:1
-                            Image{id:coverImg;anchors.fill:parent;source:player.cover_art_path;fillMode:Image.Stretch;smooth:true;mipmap:true;visible:status===Image.Ready}
+                            // Cap the decode size: embedded art is often 1500–3000 px and a
+                            // full-res RGBA texture of that costs tens of MB. 1024 covers the
+                            // sidebar's 400 px max width even on 2x-DPI screens.
+                            Image{id:coverImg;anchors.fill:parent;source:player.cover_art_path;fillMode:Image.Stretch;smooth:true;mipmap:true;visible:status===Image.Ready
+                                asynchronous:true;sourceSize.width:1024;sourceSize.height:1024}
                             Canvas{anchors.centerIn:parent;width:44;height:44;opacity:0.3;visible:coverImg.status!==Image.Ready
                                 onPaint:{var c=getContext("2d");c.clearRect(0,0,44,44);c.beginPath();c.arc(22,22,20,0,2*Math.PI);c.strokeStyle="#888";c.lineWidth=1.5;c.stroke();c.beginPath();c.arc(22,22,4,0,2*Math.PI);c.fillStyle="#666";c.fill()}}
                             MouseArea{anchors.fill:parent;cursorShape:Qt.PointingHandCursor;onClicked:coverOnSide=true}
@@ -840,7 +849,9 @@ ApplicationWindow {
                     Item{id:metaBlock;Layout.fillWidth:true;Layout.preferredHeight:70;clip:true
                         Rectangle{id:thumbRect;x:sidebarColumn._slideX;y:0;height:70;width:sidebarColumn._thumbW;color:clrSurf2
                             border.color:coverImg.status!==Image.Ready?clrBorder:"transparent";border.width:1;clip:true
-                            Image{anchors.fill:parent;source:player.cover_art_path;fillMode:Image.Stretch;smooth:true;mipmap:true;visible:coverImg.status===Image.Ready}
+                            // Same source + sourceSize as coverImg so both share one cache entry.
+                            Image{anchors.fill:parent;source:player.cover_art_path;fillMode:Image.Stretch;smooth:true;mipmap:true;visible:coverImg.status===Image.Ready
+                                asynchronous:true;sourceSize.width:1024;sourceSize.height:1024}
                             MouseArea{anchors.fill:parent;cursorShape:Qt.PointingHandCursor;onClicked:coverOnSide=false}}
                         Column{
                             anchors.left:parent.left;anchors.right:parent.right;anchors.verticalCenter:parent.verticalCenter
@@ -1035,6 +1046,50 @@ ApplicationWindow {
                             // Grid/List toggle (only relevant in library view)
                             Row {
                                 spacing: 4; visible: _view === "library"
+                                // Album sort mode (click to cycle). Persisted via
+                                // library.setAlbumSort \u2192 settings.json; _cur re-reads it.
+                                Rectangle {
+                                    id: sortToggle
+                                    width: sortRow.implicitWidth + 16; height: 22; radius: 3
+                                    color: sortHov.containsMouse ? clrSurf2 : "transparent"
+                                    Behavior on color { ColorAnimation { duration: 80 } }
+                                    readonly property var _modes: ["artist", "album", "year_desc", "year_asc"]
+                                    readonly property var _labels: ({"artist": "Artist", "album": "Album",
+                                                                     "year_desc": "Year", "year_asc": "Year"})
+                                    readonly property bool _desc: _cur === "year_desc"
+                                    property string _cur: {
+                                        try {
+                                            var s = JSON.parse(library.settings_json)
+                                            return s.album_sort && _modes.indexOf(s.album_sort) >= 0 ? s.album_sort : "artist"
+                                        } catch (e) { return "artist" }
+                                    }
+                                    Row {
+                                        id: sortRow; anchors.centerIn: parent; spacing: 4
+                                        // Direction arrow: chevron glyph rotated up (ascending /
+                                        // A-Z) or down (newest first), flipping with a short spin.
+                                        MatIcon {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            name: "chevron-right"; size: 11
+                                            rotation: sortToggle._desc ? 90 : -90
+                                            Behavior on rotation { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+                                            color: sortHov.containsMouse ? clrText : clrText2
+                                        }
+                                        Text {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            text: sortToggle._labels[sortToggle._cur]
+                                            color: sortHov.containsMouse ? clrText : clrText2
+                                            font.pixelSize: 10; font.family: "Segoe UI"
+                                        }
+                                    }
+                                    MouseArea {
+                                        id: sortHov; anchors.fill: parent; hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            var i = sortToggle._modes.indexOf(sortToggle._cur)
+                                            library.setAlbumSort(sortToggle._modes[(i + 1) % sortToggle._modes.length])
+                                        }
+                                    }
+                                }
                                 Rectangle {
                                     width:22;height:22;radius:3
                                     color: gridToggleHov.containsMouse || window._libUseGrid ? clrSurf2 : "transparent"
@@ -1166,12 +1221,14 @@ ApplicationWindow {
                                         anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
                                         height: parent.width; color: clrSurf2
                                         Image {
-                                            anchors.fill: parent; fillMode: Image.Stretch; smooth: true; mipmap: true
+                                            // No mipmap: at 320 px the texture is already ~1:1 with the
+                                            // tile (cells are 150–300 px), so mipmaps would only add VRAM.
+                                            anchors.fill: parent; fillMode: Image.Stretch; smooth: true
                                             source: modelData.cover_url || ""; visible: status === Image.Ready
                                             // Decode off the UI thread at thumbnail size — full-size
                                             // covers otherwise cost several MB of texture per tile.
                                             asynchronous: true
-                                            sourceSize.width: 512; sourceSize.height: 512
+                                            sourceSize.width: 320; sourceSize.height: 320
                                         }
                                         Canvas {
                                             anchors.centerIn: parent; width:40;height:40;opacity:0.35
@@ -1369,10 +1426,7 @@ ApplicationWindow {
                                     }
                                     Text{text:modelData.duration;color:isCurrent?"#888":"#3a3a3a";font.pixelSize:11;font.family:"Consolas, monospace";Behavior on color{ColorAnimation{duration:110}}}
                                 }
-                                MouseArea{id:rowMs;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor;onClicked:{
-                                    console.log("[dbg] track clicked: idx=" + index)
-                                    window.playBrowsedTrack(index)
-                                }}
+                                MouseArea{id:rowMs;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor;onClicked:window.playBrowsedTrack(index)}
                             }
                             ScrollBar.vertical:ScrollBar{id:vScrollBar;policy:ScrollBar.AsNeeded
                                 contentItem:Rectangle{implicitWidth:4;radius:2;color:clrMuted;visible:vScrollBar.size<1.0;opacity:vScrollBar.active?0.85:0.3;Behavior on opacity{NumberAnimation{duration:200}}}

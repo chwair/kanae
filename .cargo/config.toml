@@ -1,9 +1,9 @@
 [env]
-CXXFLAGS = "-Wno-implicit-function-declaration"
+#CXXFLAGS = "-Wno-implicit-function-declaration"
 
-#QMAKE = { value = "6.8.0/msvc2022_64/bin/qmake.exe", relative = true }
-#QT_PLUGIN_PATH = { value = "6.8.0/msvc2022_64/plugins", relative = true }
-#QML_IMPORT_PATH = { value = "6.8.0/msvc2022_64/qml", relative = true }
+QMAKE = { value = "6.8.0/msvc2022_64/bin/qmake.exe", relative = true }
+QT_PLUGIN_PATH = { value = "6.8.0/msvc2022_64/plugins", relative = true }
+QML_IMPORT_PATH = { value = "6.8.0/msvc2022_64/qml", relative = true }
 
 [target.x86_64-pc-windows-msvc]
 runner = ["powershell", "-NoProfile", "-File", "scripts/dev-runner.ps1"]
