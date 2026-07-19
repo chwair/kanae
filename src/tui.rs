@@ -823,6 +823,14 @@ impl TuiPlayerState {
         let handle = thread::spawn(move || {
             use crate::lyric_cache::{LyricContentCache, cd_key, file_key};
 
+            // A sidecar .lrc next to the audio file always wins over web/cached lyrics.
+            if let Some(lines) = crate::lrclib::load_local_lrc(&file_path) {
+                if gen_arc.load(Ordering::SeqCst) == gen {
+                    *result_slot.lock().unwrap() = Some(Some(lines));
+                }
+                return;
+            }
+
             let cache_key = if !disc_id.is_empty() && track_idx >= 0 {
                 cd_key(&disc_id, track_idx)
             } else {
@@ -1095,6 +1103,26 @@ impl TuiLibraryState {
                 }
             }
         }
+
+        // Display order: CD tile first, then folders (A→Z), then albums in the
+        // configured sort mode. sort_by is stable, so ties keep discovery order.
+        let mode = self.settings.album_sort.clone();
+        let rank = |n: &TuiLibraryNode| match n {
+            TuiLibraryNode::Cd { .. }     => 0u8,
+            TuiLibraryNode::Folder { .. } => 1,
+            TuiLibraryNode::Album { .. }  => 2,
+        };
+        nodes.sort_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| match (a, b) {
+            (TuiLibraryNode::Folder { name: na, .. }, TuiLibraryNode::Folder { name: nb, .. }) =>
+                na.to_lowercase().cmp(&nb.to_lowercase()),
+            (TuiLibraryNode::Album { album: x }, TuiLibraryNode::Album { album: y }) =>
+                crate::library::compare_albums(
+                    &mode,
+                    (&x.album_artist, &x.album, &x.year),
+                    (&y.album_artist, &y.album, &y.year),
+                ).then_with(|| x.id.cmp(&y.id)),
+            _ => std::cmp::Ordering::Equal,
+        }));
         self.nodes = nodes;
     }
 
@@ -2469,18 +2497,20 @@ fn render_settings(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     let lrc_limit_disabled = app.library.settings.lrc_limit_disabled;
     let romanize_lyrics  = app.library.settings.romanize_lyrics;
     let discord_rpc      = app.library.settings.discord_rpc;
+    let album_sort       = app.library.settings.album_sort.clone();
     let n_paths          = paths.len();
     let idx_add          = n_paths;
     let idx_merge        = n_paths + 1;
-    let idx_image        = n_paths + 2;
-    let idx_iconset      = n_paths + 3;
-    let idx_romanize     = n_paths + 4;
-    let idx_lrc_lim      = n_paths + 5;
-    let idx_purge_lrc    = n_paths + 6;
-    let idx_purge_nolyrics = n_paths + 7;
-    let idx_discord      = n_paths + 8;
-    let idx_rescan       = n_paths + 9;
-    let total            = n_paths + 10;
+    let idx_sort         = n_paths + 2;
+    let idx_image        = n_paths + 3;
+    let idx_iconset      = n_paths + 4;
+    let idx_romanize     = n_paths + 5;
+    let idx_lrc_lim      = n_paths + 6;
+    let idx_purge_lrc    = n_paths + 7;
+    let idx_purge_nolyrics = n_paths + 8;
+    let idx_discord      = n_paths + 9;
+    let idx_rescan       = n_paths + 10;
+    let total            = n_paths + 11;
     if app.settings_selected >= total { app.settings_selected = total.saturating_sub(1); }
     let sel = app.settings_selected;
 
@@ -2566,6 +2596,24 @@ fn render_settings(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         ]));
         items.push(Line::from(vec![
             Span::styled("         Show only albums, hide folder tiles", Style::default().fg(CLR_MUTED)),
+        ]));
+    }
+
+    {
+        let sort_label = crate::library::album_sort_label(&album_sort);
+        let is_sel = sel == idx_sort;
+        let (marker, row_style) = if is_sel {
+            (app.icons.sel_marker, Style::default().fg(CLR_ACCENT))
+        } else {
+            (" ", Style::default().fg(CLR_TEXT2))
+        };
+        let val_style = if is_sel { Style::default().fg(CLR_TEXT) } else { Style::default().fg(CLR_MUTED) };
+        items.push(Line::from(vec![
+            Span::styled(format!("  {} Sort albums by", marker), row_style),
+            Span::styled(format!("  {} {} {}", app.icons.cycle_left, sort_label, app.icons.cycle_right), val_style),
+        ]));
+        items.push(Line::from(vec![
+            Span::styled("      Order of album tiles in the library", Style::default().fg(CLR_MUTED)),
         ]));
     }
 
@@ -2812,9 +2860,16 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Left if modifiers.is_empty() => {
             if app.view == View::Settings && !app.settings_input_mode {
                 let paths_len = app.library.settings.search_paths.len();
-                let idx_image   = paths_len + 2;
-                let idx_iconset = paths_len + 3;
-                if app.settings_selected == idx_image {
+                let idx_sort    = paths_len + 2;
+                let idx_image   = paths_len + 3;
+                let idx_iconset = paths_len + 4;
+                if app.settings_selected == idx_sort {
+                    app.library.settings.album_sort =
+                        crate::library::album_sort_prev(&app.library.settings.album_sort).to_string();
+                    crate::library_cache::save_settings(&app.library.settings);
+                    app.library.nodes_dirty = true;
+                    return;
+                } else if app.settings_selected == idx_image {
                     app.tui_settings.image_method = app.tui_settings.image_method.prev();
                     crate::library_cache::save_tui_settings(&app.tui_settings);
                     app.apply_image_method();
@@ -2831,9 +2886,16 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Right if modifiers.is_empty() => {
             if app.view == View::Settings && !app.settings_input_mode {
                 let paths_len = app.library.settings.search_paths.len();
-                let idx_image   = paths_len + 2;
-                let idx_iconset = paths_len + 3;
-                if app.settings_selected == idx_image {
+                let idx_sort    = paths_len + 2;
+                let idx_image   = paths_len + 3;
+                let idx_iconset = paths_len + 4;
+                if app.settings_selected == idx_sort {
+                    app.library.settings.album_sort =
+                        crate::library::album_sort_next(&app.library.settings.album_sort).to_string();
+                    crate::library_cache::save_settings(&app.library.settings);
+                    app.library.nodes_dirty = true;
+                    return;
+                } else if app.settings_selected == idx_image {
                     app.tui_settings.image_method = app.tui_settings.image_method.next();
                     crate::library_cache::save_tui_settings(&app.tui_settings);
                     app.apply_image_method();
@@ -2915,14 +2977,15 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
                     let paths_len         = app.library.settings.search_paths.len();
                     let idx_add           = paths_len;
                     let idx_merge         = paths_len + 1;
-                    let idx_image         = paths_len + 2;
-                    let idx_iconset       = paths_len + 3;
-                    let idx_romanize      = paths_len + 4;
-                    let idx_lrc_lim       = paths_len + 5;
-                    let idx_purge_lrc     = paths_len + 6;
-                    let idx_purge_nolyrics = paths_len + 7;
-                    let idx_discord       = paths_len + 8;
-                    let idx_rescan        = paths_len + 9;
+                    let idx_sort          = paths_len + 2;
+                    let idx_image         = paths_len + 3;
+                    let idx_iconset       = paths_len + 4;
+                    let idx_romanize      = paths_len + 5;
+                    let idx_lrc_lim       = paths_len + 6;
+                    let idx_purge_lrc     = paths_len + 7;
+                    let idx_purge_nolyrics = paths_len + 8;
+                    let idx_discord       = paths_len + 9;
+                    let idx_rescan        = paths_len + 10;
                     let sel = app.settings_selected;
                     if app.settings_input_mode {
                         let path = app.settings_input_text.trim().to_string();
@@ -2946,6 +3009,11 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
                         app.settings_input_text.clear();
                     } else if sel == idx_merge {
                         app.library.settings.merge_all_folders = !app.library.settings.merge_all_folders;
+                        crate::library_cache::save_settings(&app.library.settings);
+                        app.library.nodes_dirty = true;
+                    } else if sel == idx_sort {
+                        app.library.settings.album_sort =
+                            crate::library::album_sort_next(&app.library.settings.album_sort).to_string();
                         crate::library_cache::save_settings(&app.library.settings);
                         app.library.nodes_dirty = true;
                     } else if sel == idx_image {
@@ -3007,7 +3075,7 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Down => {
             match app.view {
                 View::Settings => {
-                    let max = app.library.settings.search_paths.len() + 9;
+                    let max = app.library.settings.search_paths.len() + 10;
                     if app.settings_selected < max { app.settings_selected += 1; }
                 }
                 _ => {
@@ -3156,7 +3224,7 @@ fn handle_mouse(app: &mut TuiApp, event: MouseEvent) {
         }
         MouseEventKind::ScrollDown => {
             if app.view == View::Settings {
-                let max = app.library.settings.search_paths.len() + 9;
+                let max = app.library.settings.search_paths.len() + 10;
                 if app.settings_selected < max { app.settings_selected += 1; }
             } else {
                 let max = match app.view {

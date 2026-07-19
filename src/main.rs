@@ -37,6 +37,27 @@ use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 #[cfg(all(feature = "gui", feature = "tui"))]
 use std::io::IsTerminal;
 
+/// Give the process an explicit AppUserModelID and register a display name
+/// for it, so the Windows media flyout (SMTC) shows "Kanae" instead of
+/// "Unknown app". Must run before any window is created.
+#[cfg(windows)]
+fn setup_windows_app_identity() {
+    const AUMID: &str = "Kanae.Player";
+    // Per-user registration (no admin): maps the AUMID to a display name.
+    let _ = (|| -> std::io::Result<()> {
+        use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+        let (key, _) = RegKey::predef(HKEY_CURRENT_USER)
+            .create_subkey(format!(r"Software\Classes\AppUserModelId\{}", AUMID))?;
+        key.set_value("DisplayName", &"Kanae")
+    })();
+    #[link(name = "shell32")]
+    extern "system" {
+        fn SetCurrentProcessExplicitAppUserModelID(appid: *const u16) -> i32;
+    }
+    let wide: Vec<u16> = AUMID.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe { SetCurrentProcessExplicitAppUserModelID(wide.as_ptr()); }
+}
+
 // ── Hybrid helpers: decide desktop vs terminal at runtime ────────────────────
 
 /// True when the user launched us from an interactive terminal (as opposed to
@@ -73,6 +94,9 @@ fn detach_own_console() {
 }
 
 fn main() {
+    #[cfg(windows)]
+    setup_windows_app_identity();
+
     // ── Hybrid: TUI in a terminal, GUI otherwise; --gui / --tui override ──
     #[cfg(all(feature = "gui", feature = "tui"))]
     {

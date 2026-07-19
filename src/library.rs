@@ -68,6 +68,10 @@ pub struct LibrarySettings {
     /// When true, publish Discord Rich Presence. On by default.
     #[serde(default = "default_true")]
     pub discord_rpc: bool,
+    /// Album sort order: "artist" (default), "album", "year_desc", "year_asc".
+    /// Empty string means the default.
+    #[serde(default)]
+    pub album_sort: String,
 }
 
 impl Default for LibrarySettings {
@@ -81,7 +85,65 @@ impl Default for LibrarySettings {
             lrc_limit_disabled: false,
             romanize_lyrics:   false,
             discord_rpc:       true,
+            album_sort:        String::new(),
         }
+    }
+}
+
+// ─── Album sorting ───────────────────────────────────────────────────────────
+
+/// The album sort modes, in the order the UIs cycle through them.
+pub const ALBUM_SORT_MODES: [&str; 4] = ["artist", "album", "year_desc", "year_asc"];
+
+/// Human-readable label for an album sort mode.
+pub fn album_sort_label(mode: &str) -> &'static str {
+    match mode {
+        "album"     => "Album",
+        "year_desc" => "Year (newest)",
+        "year_asc"  => "Year (oldest)",
+        _           => "Artist",
+    }
+}
+
+/// Next / previous mode in the cycle (unknown or empty modes count as "artist").
+pub fn album_sort_next(mode: &str) -> &'static str {
+    let i = ALBUM_SORT_MODES.iter().position(|m| *m == mode).unwrap_or(0);
+    ALBUM_SORT_MODES[(i + 1) % ALBUM_SORT_MODES.len()]
+}
+pub fn album_sort_prev(mode: &str) -> &'static str {
+    let i = ALBUM_SORT_MODES.iter().position(|m| *m == mode).unwrap_or(0);
+    ALBUM_SORT_MODES[(i + ALBUM_SORT_MODES.len() - 1) % ALBUM_SORT_MODES.len()]
+}
+
+/// Leading numeric part of a year tag ("2003-05-01" → 2003). None when absent.
+fn year_num(y: &str) -> Option<i64> {
+    let digits: String = y.trim().chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() { None } else { digits.parse().ok() }
+}
+
+/// Compare two albums for display under the given sort mode. Each side is
+/// `(album_artist, album_name, year)`. Albums with an unknown year sort after
+/// dated ones in both year modes.
+pub fn compare_albums(
+    mode: &str,
+    a: (&str, &str, &str),
+    b: (&str, &str, &str),
+) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let artist = || a.0.to_lowercase().cmp(&b.0.to_lowercase());
+    let name   = || a.1.to_lowercase().cmp(&b.1.to_lowercase());
+    match mode {
+        "album" => name().then_with(artist),
+        "year_desc" | "year_asc" => {
+            let ord = match (year_num(a.2), year_num(b.2)) {
+                (Some(x), Some(y)) => if mode == "year_desc" { y.cmp(&x) } else { x.cmp(&y) },
+                (Some(_), None)    => Ordering::Less,
+                (None, Some(_))    => Ordering::Greater,
+                (None, None)       => Ordering::Equal,
+            };
+            ord.then_with(artist).then_with(name)
+        }
+        _ => artist().then_with(name),
     }
 }
 

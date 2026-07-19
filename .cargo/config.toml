@@ -1,10 +1,13 @@
 [env]
+# Homebrew Qt's qyieldcpu.h implicitly declares __yield, which newer Apple
+# clang rejects. Scoped to the mac targets via cc-rs's CXXFLAGS_<target>
+# lookup — a plain CXXFLAGS would also reach MSVC, which errors on the flag.
 CXXFLAGS_aarch64-apple-darwin = "-Wno-implicit-function-declaration"
 CXXFLAGS_x86_64-apple-darwin = "-Wno-implicit-function-declaration"
 
-#QMAKE = { value = "6.8.0/msvc2022_64/bin/qmake.exe", relative = true }
-#QT_PLUGIN_PATH = { value = "6.8.0/msvc2022_64/plugins", relative = true }
-#QML_IMPORT_PATH = { value = "6.8.0/msvc2022_64/qml", relative = true }
+QMAKE = { value = "6.8.0/msvc2022_64/bin/qmake.exe", relative = true }
+QT_PLUGIN_PATH = { value = "6.8.0/msvc2022_64/plugins", relative = true }
+QML_IMPORT_PATH = { value = "6.8.0/msvc2022_64/qml", relative = true }
 
 [target.x86_64-pc-windows-msvc]
 runner = ["powershell", "-NoProfile", "-File", "scripts/dev-runner.ps1"]

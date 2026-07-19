@@ -175,6 +175,9 @@ pub struct PlayerState {
     file_tracks: Vec<crate::file_player::LocalTrack>,
     discord: Option<crate::discord::DiscordPresence>,
     discord_enabled: bool,
+    /// Whole second of the last SMTC/Discord progress push; used to throttle
+    /// those updates to 1 Hz (the position timer itself ticks at 10 Hz).
+    last_progress_push_sec: i64,
 }
 
 impl Default for PlayerState {
@@ -212,6 +215,7 @@ impl Default for PlayerState {
             file_tracks: Vec::new(),
             discord: crate::discord::DiscordPresence::new(),
             discord_enabled: crate::library_cache::load_settings().discord_rpc,
+            last_progress_push_sec: -1,
         }
     }
 }
@@ -477,6 +481,12 @@ impl player_bridge::PlayerController {
             }
         } else {
             self.as_mut().start_playback();
+            {
+                let mut state = self.state.lock().unwrap();
+                // Force an SMTC "Playing" push on the next position tick even if
+                // the whole second hasn't changed since the pause.
+                state.last_progress_push_sec = -1;
+            }
             {
                 let current_track = *self.as_ref().current_track();
                 self.state.lock().unwrap().sync_discord(current_track, true);
@@ -974,15 +984,24 @@ impl player_bridge::PlayerController {
             f64::from_bits(state.heard_position.load(Ordering::Relaxed))
         };
         self.as_mut().set_current_time(pos);
-        {
+        // SMTC progress and Discord presence only need second-level granularity;
+        // pushing them on every 100 ms tick costs a WinRT/IPC call each time.
+        let sec = pos.max(0.0) as i64;
+        let should_push = {
             let mut state = self.state.lock().unwrap();
-            if let Some(ref mut h) = state.smtc_handle {
-                h.update(crate::smtc::SmtcUpdate::Playing {
-                    progress: std::time::Duration::from_secs_f64(pos.max(0.0)),
-                });
+            let changed = state.last_progress_push_sec != sec;
+            if changed { state.last_progress_push_sec = sec; }
+            changed
+        };
+        if should_push {
+            {
+                let mut state = self.state.lock().unwrap();
+                if let Some(ref mut h) = state.smtc_handle {
+                    h.update(crate::smtc::SmtcUpdate::Playing {
+                        progress: std::time::Duration::from_secs_f64(pos.max(0.0)),
+                    });
+                }
             }
-        }
-        {
             let current_track = *self.as_ref().current_track();
             let is_playing    = *self.as_ref().is_playing();
             self.state.lock().unwrap().sync_discord(current_track, is_playing);
@@ -1315,6 +1334,14 @@ impl player_bridge::PlayerController {
 
         let handle = thread::spawn(move || {
             use crate::lyric_cache::{LyricContentCache, cd_key, file_key};
+
+            // A sidecar .lrc next to the audio file always wins over web/cached lyrics.
+            if let Some(lines) = crate::lrclib::load_local_lrc(&file_path) {
+                if gen_arc.load(Ordering::SeqCst) == generation {
+                    *result_slot.lock().unwrap() = Some(Some(lines));
+                }
+                return;
+            }
 
             let cache_key = if !disc_id.is_empty() && track_idx >= 0 {
                 cd_key(&disc_id, track_idx)
