@@ -44,7 +44,7 @@ jobs:
             needs_qt: false
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -128,7 +128,7 @@ jobs:
             needs_qt: false
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -232,20 +232,20 @@ jobs:
             needs_qt: false
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      # ALSA is needed by rodio for every variant.
+      # ALSA is needed by rodio, and D-Bus by souvlaki (MPRIS media controls) —
+      # both are unconditional dependencies, so every variant needs them.
       - name: Install system dependencies (common)
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev
+          sudo apt-get install -y libasound2-dev libdbus-1-dev pkg-config
 
-      # D-Bus (MPRIS), GLib/Wayland (Qt), fuse2 + patchelf (AppImage tooling).
+      # GLib/Wayland (Qt), fuse2 + patchelf (AppImage tooling).
       - name: Install system dependencies (gui/hybrid)
         if: matrix.needs_qt
         run: |
           sudo apt-get install -y \
-            libdbus-1-dev \
             libglib2.0-dev \
             libwayland-dev \
             libxkbcommon-dev \

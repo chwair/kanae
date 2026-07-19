@@ -16,28 +16,33 @@
 - Discord RPC support
 - Windows, Mac and Linux support
 
-## Get started
-The simplest way to install Kanae is to:
-- Install Rust if you haven't already
-- Install QT6
-- Clone this repo:
+## Install
+Grab a build from the [releases page](https://github.com/chwair/kanae/releases). Each release ships three variants per platform:
+
+| Variant | What it is | Windows | macOS | Linux |
+|---|---|---|---|---|
+| **hybrid** | One app, both frontends — opens the TUI when run from a terminal, the GUI otherwise | installer | `.app` zip | AppImage |
+| **gui** | GUI only | installer | `.app` zip | AppImage |
+| **tui** | TUI only, single-file executable, no Qt needed | `.exe` | binary | binary |
+
+The hybrid build decides at launch: started from a terminal → TUI; double-clicked / launched from the desktop → GUI. Force a frontend with `--gui`/`-g` or `--tui`/`-t`.
+
+> macOS builds are ad-hoc signed; on first launch you may need to right-click → Open (or `xattr -d com.apple.quarantine Kanae.app`).
+
+## Build from source
+- Install Rust and Qt 6 (Qt only needed for the GUI; point `QMAKE` at your Qt install if it isn't on PATH)
 ```bash
 git clone https://github.com/chwair/kanae
 cd kanae
-```
-- Install thru cargo:
-```bash
-cargo install --path .
-```
-- Run it:
-```bash
-# TUI
-kanae
 
-# GUI
-kanae -g
+cargo install --path .                                   # hybrid (GUI + TUI)
+cargo install --path . --no-default-features --features tui   # TUI only, no Qt required
 ```
-I'll document more specific ways on installing Kanae later.
+
+### Packaging locally
+- **Windows**: `.\scripts\package.ps1 -Variant hybrid -MakeInstaller` — builds, runs `windeployqt6`, and produces the NSIS installer.
+- **macOS**: `cargo bundle-mac` then `macdeployqt` on the resulting `.app`.
+- **CI**: pushing a `v*` tag builds installers, `.app` zips, AppImages, and TUI binaries for all three platforms and attaches them to a GitHub release (see `.github/workflows/release.yml`).
 
 ## License
 MIT
