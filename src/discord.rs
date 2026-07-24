@@ -11,6 +11,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const CLIENT_ID: &str = "1513290345322905781";
 const COVER_CACHE_TTL: Duration = Duration::from_secs(58 * 60);
 const SEEK_THRESHOLD_SECS: f64 = 3.0;
+/// Backoff before each retry of a failed cover upload. Length caps the attempts.
+const COVER_RETRY_BACKOFF_SECS: [u64; 3] = [5, 20, 60];
+
+/// A finished upload, tagged with the request it answers.
+struct CoverResult {
+    gen: u64,
+    url: Option<String>,
+}
 
 pub struct TrackInfo {
     pub title:         String,
@@ -31,8 +39,12 @@ pub struct DiscordPresence {
     cached_cover_src:    String,
     cached_cover_litter: String,
     cover_cache:         HashMap<String, (String, Instant)>,
-    cover_slot:          Arc<Mutex<Option<Option<String>>>>,
-    cover_thread:        Option<thread::JoinHandle<()>>,
+    cover_slot:          Arc<Mutex<Option<CoverResult>>>,
+    /// Bumped per upload request; results carrying a stale gen are discarded.
+    cover_gen:           u64,
+    cover_inflight:      bool,
+    cover_attempts:      usize,
+    cover_retry_at:      Option<Instant>,
     // Change detection — only call IPC when something actually changes
     last_title:          String,
     last_artist:         String,
@@ -54,7 +66,10 @@ impl DiscordPresence {
             cached_cover_litter: String::new(),
             cover_cache:         HashMap::new(),
             cover_slot:          Arc::new(Mutex::new(None)),
-            cover_thread:        None,
+            cover_gen:           0,
+            cover_inflight:      false,
+            cover_attempts:      0,
+            cover_retry_at:      None,
             last_title:          String::new(),
             last_artist:         String::new(),
             last_album:          String::new(),
@@ -75,20 +90,50 @@ impl DiscordPresence {
         }
     }
 
+    /// Upload the current cover in the background, tagged with a fresh gen.
+    fn spawn_cover_upload(&mut self) {
+        let src = self.cached_cover_src.clone();
+        if src.is_empty() { return; }
+        self.cover_gen     += 1;
+        self.cover_attempts += 1;
+        self.cover_inflight = true;
+        self.cover_retry_at = None;
+        let gen  = self.cover_gen;
+        let slot = self.cover_slot.clone();
+        thread::spawn(move || {
+            let url = upload_cover_art(&src);
+            *slot.lock().unwrap() = Some(CoverResult { gen, url });
+        });
+    }
+
     /// Poll the background upload thread; returns true if the cover URL changed.
     fn poll_cover(&mut self) -> bool {
-        let result = self.cover_slot.lock().unwrap().take();
-        if let Some(maybe_url) = result {
-            if let Some(t) = self.cover_thread.take() { let _ = t.join(); }
-            let url = maybe_url.unwrap_or_default();
-            eprintln!("[discord] litterbox url: {:?}", url);
-            if !url.is_empty() {
-                self.cover_cache.insert(self.cached_cover_src.clone(), (url.clone(), Instant::now()));
-            }
-            self.cached_cover_litter = url;
-            return true;
-        }
-        false
+        let Some(result) = self.cover_slot.lock().unwrap().take() else { return false };
+        // An upload for a cover we've since moved off of. Dropping it keeps its
+        // URL from being cached under — or pushed for — the current track.
+        if result.gen != self.cover_gen { return false; }
+        self.cover_inflight = false;
+
+        let Some(url) = result.url else {
+            // Failed. Schedule a retry so one flaky upload doesn't cost the
+            // cover for as long as this track stays loaded.
+            self.cover_retry_at = COVER_RETRY_BACKOFF_SECS
+                .get(self.cover_attempts - 1)
+                .map(|secs| Instant::now() + Duration::from_secs(*secs));
+            eprintln!(
+                "[discord] cover upload failed (attempt {}); retry: {}",
+                self.cover_attempts,
+                if self.cover_retry_at.is_some() { "scheduled" } else { "gave up" },
+            );
+            return false;
+        };
+
+        eprintln!("[discord] litterbox url: {:?}", url);
+        self.cover_cache.insert(self.cached_cover_src.clone(), (url.clone(), Instant::now()));
+        self.cached_cover_litter = url;
+        self.cover_attempts = 0;
+        self.cover_retry_at = None;
+        true
     }
 
     /// Call every tick with current player state.
@@ -117,6 +162,10 @@ impl DiscordPresence {
         if cover_src != self.cached_cover_src {
             self.cached_cover_src    = cover_src.clone();
             self.cached_cover_litter = String::new();
+            self.cover_gen          += 1; // orphan any in-flight upload
+            self.cover_inflight      = false;
+            self.cover_attempts      = 0;
+            self.cover_retry_at      = None;
             *self.cover_slot.lock().unwrap() = None;
             if !cover_src.is_empty() {
                 if let Some((cached_url, upload_time)) = self.cover_cache.get(&cover_src) {
@@ -125,13 +174,12 @@ impl DiscordPresence {
                         self.cached_cover_litter = cached_url.clone();
                     }
                 }
-                if self.cached_cover_litter.is_empty() {
-                    let slot   = self.cover_slot.clone();
-                    let handle = thread::spawn(move || {
-                        *slot.lock().unwrap() = Some(upload_cover_art(&cover_src));
-                    });
-                    self.cover_thread = Some(handle);
-                }
+                if self.cached_cover_litter.is_empty() { self.spawn_cover_upload(); }
+            }
+        } else if self.cached_cover_litter.is_empty() && !self.cover_inflight {
+            // Retry an earlier failure once its backoff expires.
+            if self.cover_retry_at.is_some_and(|at| Instant::now() >= at) {
+                self.spawn_cover_upload();
             }
         }
 

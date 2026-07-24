@@ -916,6 +916,12 @@ impl player_bridge::PlayerController {
         }
 
         if !*self.as_ref().is_playing() {
+            // Discord's cover art finishes uploading on a background thread, and
+            // only sync_discord collects it. Keep ticking it while paused or the
+            // art never lands until playback resumes. update() is a cheap no-op
+            // once the presence it pushed is up to date.
+            let current_track = *self.as_ref().current_track();
+            self.state.lock().unwrap().sync_discord(current_track, false);
             return;
         }
         let ended = {

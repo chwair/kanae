@@ -231,7 +231,11 @@ fn fetch_cover_art(release_id: &str) -> Option<String> {
                 match resp.body_mut().read_to_vec() {
                     Ok(bytes) if !bytes.is_empty() => {
                         let ext = if bytes.starts_with(b"\x89PNG") { "png" } else { "jpg" };
-                        let path = std::env::temp_dir().join(format!("kanae_cover.{}", ext));
+                        // Per-release filename: a shared one makes every disc's cover
+                        // look like the same source to consumers that key off the path
+                        // (Discord's upload cache, Qt's image cache).
+                        let path = std::env::temp_dir()
+                            .join(format!("kanae_cover_{}.{}", release_id, ext));
                         match std::fs::write(&path, &bytes) {
                             Ok(()) => {
                                 let url_path = path.to_string_lossy().replace('\\', "/");
