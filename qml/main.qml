@@ -223,6 +223,43 @@ ApplicationWindow {
         }
     }
 
+    // ── Keyboard shortcuts ─────────────────────────────────────────────────
+    property real _volBeforeMute: 1.0
+    function togglePlayPause() {
+        if (player.total_tracks > 0 && player.current_track >= 0) player.playPause()
+    }
+    // Mirrors the prev button: restart the track past 4s, otherwise skip back.
+    function prevTrackOrRestart() {
+        if (!(player.current_track > 0 || player.current_time > 4)) return
+        if (player.current_time > 4) { player.seek(0) }
+        else { var wp = player.is_playing; player.previousTrack(); if (wp) player.playPause() }
+    }
+    function nextTrackShortcut() {
+        if (!(player.current_track >= 0 && player.current_track < player.total_tracks - 1)) return
+        var wp = player.is_playing; player.nextTrack(); if (wp) player.playPause()
+    }
+    function volumeBy(delta) {
+        var v = Math.max(0, Math.min(1, volSlider.value + delta))
+        volSlider.value = v; player.setVolumeLevel(v)
+    }
+    function toggleMute() {
+        if (volSlider.value > 0.001) { _volBeforeMute = volSlider.value; volSlider.value = 0; player.setVolumeLevel(0) }
+        else { var v = _volBeforeMute > 0.001 ? _volBeforeMute : 1.0; volSlider.value = v; player.setVolumeLevel(v) }
+    }
+
+    // Disabled while the first-run "where's your music" field has focus so
+    // typing a path doesn't trigger playback/volume shortcuts.
+    property bool _shortcutsEnabled: !musicDirInput.activeFocus
+    Shortcut { sequence: "Space"; enabled: window._shortcutsEnabled; onActivated: togglePlayPause() }
+    Shortcut { sequence: "Left";  enabled: window._shortcutsEnabled; onActivated: prevTrackOrRestart() }
+    Shortcut { sequence: "Right"; enabled: window._shortcutsEnabled; onActivated: nextTrackShortcut() }
+    Shortcut { sequence: "Up";    enabled: window._shortcutsEnabled; onActivated: volumeBy(0.05) }
+    Shortcut { sequence: "Down";  enabled: window._shortcutsEnabled; onActivated: volumeBy(-0.05) }
+    Shortcut { sequence: "M";     enabled: window._shortcutsEnabled; onActivated: toggleMute() }
+    Shortcut { sequence: "Ctrl+Left";  onActivated: goBack() }
+    Shortcut { sequence: "Ctrl+Right"; onActivated: goForward() }
+    Shortcut { sequence: "Ctrl+,"; onActivated: settingsWindow.show() }
+
     property int _lyricsTrackIdx: player.current_track
     on_LyricsTrackIdxChanged: {
         Qt.callLater(function() {

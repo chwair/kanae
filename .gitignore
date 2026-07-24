@@ -15,7 +15,6 @@
 build_*.txt
 smtc_log.txt
 .qmlls.ini
-.cargo/config.toml
 
 # Windows debug symbols
 *.pdb
@@ -26,7 +25,13 @@ smtc_log.txt
 *.user
 AGENTS.md
 .claude/
+CLAUDE.MD
 
 # OS
 Thumbs.db
 .DS_Store
+
+# Local packaging outputs (installer/zip/AppImage land in repo root)
+/kanae-*.exe
+/kanae-*.zip
+/kanae-*.AppImage

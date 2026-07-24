@@ -27,6 +27,7 @@ RequestExecutionLevel admin
 SetCompressor   /SOLID lzma
 
 !include "MUI2.nsh"
+!include "FileFunc.nsh"
 
 !define MUI_ABORTWARNING
 !define MUI_FINISHPAGE_RUN          "$INSTDIR\${APPEXE}"
@@ -46,6 +47,12 @@ SetCompressor   /SOLID lzma
 Section "Kanae" SecMain
   SectionIn RO  ; required section
 
+  ; Upgrade path: clear out any previous install first so stale Qt DLLs and
+  ; QML plugins from an older version can't be loaded by the new binary.
+  ; User data is untouched (Kanae keeps caches/config under %APPDATA%).
+  IfFileExists "$INSTDIR\${APPEXE}" 0 +2
+    RMDir /r "$INSTDIR"
+
   SetOutPath "$INSTDIR"
   File /r "dist\*.*"
 
@@ -53,11 +60,18 @@ Section "Kanae" SecMain
   WriteRegStr   HKLM "${REGKEY}"     "InstallDir"          "$INSTDIR"
   WriteRegStr   HKLM "${UNINSTREG}"  "DisplayName"         "${APPNAME}"
   WriteRegStr   HKLM "${UNINSTREG}"  "DisplayVersion"      "${VERSION}"
+  WriteRegStr   HKLM "${UNINSTREG}"  "DisplayIcon"         "$INSTDIR\${APPEXE}"
   WriteRegStr   HKLM "${UNINSTREG}"  "Publisher"           "Kanae"
+  WriteRegStr   HKLM "${UNINSTREG}"  "URLInfoAbout"        "https://github.com/chwair/kanae"
   WriteRegStr   HKLM "${UNINSTREG}"  "UninstallString"     '"$INSTDIR\Uninstall.exe"'
   WriteRegStr   HKLM "${UNINSTREG}"  "QuietUninstallString" '"$INSTDIR\Uninstall.exe" /S'
   WriteRegDWORD HKLM "${UNINSTREG}"  "NoModify"            1
   WriteRegDWORD HKLM "${UNINSTREG}"  "NoRepair"            1
+
+  ; Installed size, shown in Add/Remove Programs.
+  ${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2
+  IntFmt $0 "0x%08X" $0
+  WriteRegDWORD HKLM "${UNINSTREG}" "EstimatedSize" $0
 
   ; Shortcuts
   CreateDirectory "$SMPROGRAMS\${APPNAME}"

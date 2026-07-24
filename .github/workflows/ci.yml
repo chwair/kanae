@@ -1,0 +1,82 @@
+name: CI
+
+# Fast compile checks on every push/PR. Full packaging (installers, .app,
+# AppImage) lives in release.yml and runs on tags / manual dispatch.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep in sync with release.yml.
+  QT_VERSION: '6.8.3'
+  QT_MODULES: 'qtshadertools'
+
+jobs:
+  # TUI-only check on all three platforms — no Qt, so this is the fast signal.
+  check-tui:
+    name: check tui (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      # ALSA for rodio, D-Bus for souvlaki (MPRIS) — unconditional deps.
+      - name: Install system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libdbus-1-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: check-tui
+
+      - name: Check
+        run: cargo check --no-default-features --features tui
+
+  # Hybrid (GUI + TUI) check on Linux — exercises the cxx-qt build and QML
+  # compilation without paying for three Qt installs per commit.
+  check-hybrid:
+    name: check hybrid (ubuntu)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libdbus-1-dev pkg-config \
+            libglib2.0-dev libwayland-dev libxkbcommon-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: check-hybrid
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          modules: ${{ env.QT_MODULES }}
+          cache: true
+
+      - name: Set QMAKE
+        run: echo "QMAKE=$(which qmake)" >> "$GITHUB_ENV"
+
+      - name: Check
+        run: cargo check

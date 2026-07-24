@@ -46,26 +46,28 @@ impl SmtcHandle {
                 // - Windows strips "file://" and feeds the rest to
                 //   GetFileFromPathAsync, so it must be "file://" + a native
                 //   C:\ path — "file:///C:/…" yields the bogus "path too long".
-                // - macOS fs::read()s the string directly → bare path.
-                // - Linux (MPRIS) wants a real percent-encoded file:// URI.
+                // - macOS + Linux (MPRIS) both feed the string to
+                //   `[NSURL URLWithString:]` / GIO, which require a real,
+                //   percent-encoded `file://` URI *with* a scheme. A bare path
+                //   (`/Users/…`) produces a nil NSURL → nil NSImage, and
+                //   souvlaki then aborts the process from its async artwork task
+                //   (non-unwinding panic in `msg_send!(image, size)`). We also
+                //   only emit the URL when the file actually exists, so a missing
+                //   cover can never reach that nil-image abort path.
                 let normalised: Option<String> = cover_url.as_deref().and_then(|u| {
                     if u.starts_with("http") {
                         Some(u.to_string())
                     } else if let Some(p) = u.strip_prefix("file:///") {
                         #[cfg(target_os = "windows")]
                         { Some(format!("file://{}", p.replace('/', "\\"))) }
-                        #[cfg(target_os = "macos")]
-                        { Some(format!("/{}", p)) }
-                        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-                        { Some(format!("file:///{}", encode_uri_path(p))) }
+                        #[cfg(not(target_os = "windows"))]
+                        { file_uri_if_exists(&format!("/{}", p)) }
                     } else if u.starts_with('/') {
                         // Bare absolute POSIX path.
                         #[cfg(target_os = "windows")]
                         { None }
-                        #[cfg(target_os = "macos")]
-                        { Some(u.to_string()) }
-                        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-                        { Some(format!("file://{}", encode_uri_path(u))) }
+                        #[cfg(not(target_os = "windows"))]
+                        { file_uri_if_exists(u) }
                     } else {
                         None
                     }
@@ -124,10 +126,26 @@ impl SmtcHandle {
     }
 }
 
-/// Percent-encode a filesystem path for use inside a file:// URI (MPRIS).
+/// Build a `file://` URI for an absolute path, but only if the file exists.
+///
+/// Returning `None` for a missing file is a safety guard: souvlaki 0.8.3's
+/// macOS backend loads cover art on a background GCD queue and does not
+/// null-check the resulting `NSImage`, so a path it can't read leads to a
+/// `msg_send!(nil, size)` that aborts the whole process (non-unwinding panic).
+#[cfg(not(target_os = "windows"))]
+fn file_uri_if_exists(abs_path: &str) -> Option<String> {
+    if std::path::Path::new(abs_path).is_file() {
+        Some(format!("file://{}", encode_uri_path(abs_path)))
+    } else {
+        eprintln!("[smtc] cover file missing, skipping artwork: {}", abs_path);
+        None
+    }
+}
+
+/// Percent-encode a filesystem path for use inside a file:// URI.
 /// Keeps `/` and `:`, encodes everything else outside the RFC 3986 unreserved
 /// set (cover paths are never pre-encoded, so `%` is encoded too).
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(not(target_os = "windows"))]
 fn encode_uri_path(path: &str) -> String {
     let mut out = String::with_capacity(path.len());
     for b in path.bytes() {
