@@ -11,7 +11,7 @@ use crossterm::{
         MouseButton, MouseEvent, MouseEventKind,
     },
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen, SetTitle},
 };
 use ratatui::{
     backend::CrosstermBackend,
@@ -1266,6 +1266,8 @@ struct TuiApp {
     auto_detected_proto: Option<ProtocolType>,
     icons: Icons,
     discord: Option<crate::discord::DiscordPresence>,
+    // Last string written via SetTitle, so we only touch the terminal when it changes.
+    last_terminal_title: String,
 }
 
 impl TuiApp {
@@ -1341,6 +1343,30 @@ impl TuiApp {
             auto_detected_proto: None,
             icons,
             discord: crate::discord::DiscordPresence::new(),
+            last_terminal_title: "Kanae".to_string(),
+        }
+    }
+
+    /// Window/terminal-tab title: "Kanae" when idle, otherwise "Kanae — Artist - Title",
+    /// with a "(paused)" suffix when loaded but not currently playing.
+    fn terminal_title(&self) -> String {
+        if self.player.current_track < 0 || self.player.total_tracks <= 0 {
+            return "Kanae".to_string();
+        }
+        let i = self.player.current_track as usize;
+        let title = self.player.track_titles.get(i).map(|s| s.as_str()).unwrap_or("");
+        if title.is_empty() {
+            return "Kanae".to_string();
+        }
+        let artist = {
+            let a = self.player.track_artists.get(i).map(|s| s.as_str()).unwrap_or("");
+            if a.is_empty() { self.player.album_artist.as_str() } else { a }
+        };
+        let song = if artist.is_empty() { title.to_string() } else { format!("{} - {}", artist, title) };
+        if self.player.is_playing {
+            format!("Kanae — {}", song)
+        } else {
+            format!("Kanae — {} (paused)", song)
         }
     }
 
@@ -3338,7 +3364,7 @@ pub fn run_tui() -> io::Result<()> {
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture, SetTitle("Kanae"))?;
 
     let backend  = CrosstermBackend::new(stdout);
     let mut term = Terminal::new(backend)?;
@@ -3377,6 +3403,12 @@ pub fn run_tui() -> io::Result<()> {
         app.tick();
         term.draw(|f| render(&mut app, f))?;
 
+        let title = app.terminal_title();
+        if title != app.last_terminal_title {
+            execute!(term.backend_mut(), SetTitle(&title))?;
+            app.last_terminal_title = title;
+        }
+
         if app.quitting { break; }
 
         let timeout = tick_rate;
@@ -3396,7 +3428,7 @@ pub fn run_tui() -> io::Result<()> {
 
     app.player.stop_playback();
     disable_raw_mode()?;
-    execute!(term.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(term.backend_mut(), LeaveAlternateScreen, DisableMouseCapture, SetTitle(""))?;
     term.show_cursor()?;
 
     // Restore stderr now that the TUI is gone.

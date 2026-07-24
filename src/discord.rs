@@ -165,13 +165,20 @@ impl DiscordPresence {
         self.last_pushed_position = info.position_secs;
 
         let title = if info.title.is_empty() { "Unknown Track".to_string() } else { info.title.clone() };
-        let state = if !info.artist.is_empty() {
+        let mut state = if !info.artist.is_empty() {
             info.artist.clone()
         } else if !info.album.is_empty() {
             info.album.clone()
         } else {
             "Kanae".to_string()
         };
+        // Discord Rich Presence has no dedicated "paused" state, so we mark it
+        // two ways: drop the progress-bar timestamps (below) and tag the state
+        // line — otherwise a paused track is indistinguishable from one that
+        // simply has no known duration.
+        if !info.is_playing {
+            state.push_str(" • Paused");
+        }
 
         let mut activity = Activity::new()
             .kind(ActivityType::Listening)
@@ -180,6 +187,8 @@ impl DiscordPresence {
 
         // Timestamps: start = when this track "began" in Unix time,
         // end = when it will finish. Both together give Discord a progress bar.
+        // Only sent while playing — a live countdown next to a paused track would
+        // keep ticking, so paused presence carries no timestamps at all.
         if info.is_playing && info.duration_secs > 0.0 {
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -192,9 +201,15 @@ impl DiscordPresence {
 
         if !self.cached_cover_litter.is_empty() {
             let tooltip = if info.album.is_empty() { None } else { Some(info.album.as_str()) };
-            activity = activity.assets(
-                Assets::new().large_image(self.cached_cover_litter.as_str(), tooltip),
-            );
+            let mut assets = Assets::new().large_image(self.cached_cover_litter.as_str(), tooltip);
+            // A small pause badge over the cover reinforces the paused state for
+            // viewers. "paused" is an asset key registered in the Discord app's
+            // Rich Presence art assets; if it isn't present Discord just ignores
+            // it, and the " • Paused" state tag still conveys the status.
+            if !info.is_playing {
+                assets = assets.small_image("paused", Some("Paused"));
+            }
+            activity = activity.assets(assets);
         }
 
         if let Err(e) = self.client.send(Packet::new_activity(Some(&activity), None)) {

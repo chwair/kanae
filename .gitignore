@@ -25,6 +25,7 @@ smtc_log.txt
 *.user
 AGENTS.md
 .claude/
+CLAUDE.MD
 
 # OS
 Thumbs.db
