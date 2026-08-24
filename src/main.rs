@@ -19,6 +19,7 @@ mod romaji;
 mod lyric_cache;
 mod library;
 mod library_cache;
+mod queue;
 
 mod smtc;
 mod discord;

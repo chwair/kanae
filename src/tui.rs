@@ -193,6 +193,23 @@ impl Icons {
     }
 }
 
+/// Album-level fields for a local track list, so a session can be rebuilt
+/// without re-reading metadata.
+#[derive(Clone, Default)]
+struct FileAlbumMeta {
+    title:  String,
+    artist: String,
+    year:   String,
+    cover:  String,
+}
+
+/// Where playback goes back to once the queue drains.
+struct TuiQueueResume {
+    tracks: Vec<LocalTrack>,
+    meta: FileAlbumMeta,
+    next_index: i32,
+}
+
 struct TuiPlayerState {
     // Drive / CD
     drives:             Vec<DriveInfo>,
@@ -217,6 +234,11 @@ struct TuiPlayerState {
     // File mode
     is_file_mode:       bool,
     file_tracks:        Vec<LocalTrack>,
+
+    // Queue: songs that play ahead of the rest of the album
+    queue:              crate::queue::Queue,
+    /// Album to return to once the queue drains.
+    queue_resume:       Option<TuiQueueResume>,
 
     // Playback
     current_track:      i32,
@@ -274,6 +296,8 @@ impl Default for TuiPlayerState {
             disc_count:          0,
             is_file_mode:        false,
             file_tracks:         vec![],
+            queue:               crate::queue::Queue::new(),
+            queue_resume:        None,
             current_track:       -1,
             total_tracks:        0,
             is_playing:          false,
@@ -518,37 +542,53 @@ impl TuiPlayerState {
     }
 
     fn load_file_tracks(&mut self, paths: Vec<String>) {
-        self.stop_playback();
-        self.current_disc_id.clear();
         let tracks = crate::file_player::collect_files_from_paths(&paths);
         if tracks.is_empty() { return; }
 
-        let n = tracks.len();
-        self.track_durations = tracks.iter().map(|t| t.display_duration()).collect();
-        self.track_titles    = tracks.iter().map(|t| t.title.clone()).collect();
-        self.track_artists   = tracks.iter().map(|t| t.artist.clone()).collect();
-
         let first_album = tracks[0].album.clone();
         let all_same = tracks.iter().all(|t| t.album == first_album);
-        self.album_title = if all_same && !first_album.is_empty() {
+        let title = if all_same && !first_album.is_empty() {
             first_album
         } else {
             paths.first()
                 .and_then(|p| std::path::Path::new(p).file_name())
                 .and_then(|n| n.to_str())
                 .unwrap_or("Files")
-                .into()
+                .to_string()
         };
         let first_aa = tracks[0].album_artist.clone();
-        self.album_artist = if tracks.iter().all(|t| t.album_artist == first_aa) && !first_aa.is_empty() {
-            first_aa
-        } else { String::new() };
         let first_year = tracks[0].year.clone();
-        self.album_year = if tracks.iter().all(|t| t.year == first_year) { first_year } else { String::new() };
+        let meta = FileAlbumMeta {
+            title,
+            artist: if tracks.iter().all(|t| t.album_artist == first_aa) && !first_aa.is_empty() {
+                first_aa
+            } else { String::new() },
+            year: if tracks.iter().all(|t| t.year == first_year) { first_year } else { String::new() },
+            cover: tracks.first().and_then(|t| t.cover_art_path.clone()).unwrap_or_default(),
+        };
 
-        self.current_cover_url = tracks.first()
-            .and_then(|t| t.cover_art_path.clone())
-            .unwrap_or_default();
+        // Picking an album by hand supersedes the queue's return point.
+        self.queue_resume = None;
+        self.apply_file_tracks(tracks, meta);
+    }
+
+    /// Publish an already-collected set of local tracks as the active session.
+    /// Split out of `load_file_tracks` so the queue can swap sessions without
+    /// re-reading metadata from disk.
+    fn apply_file_tracks(&mut self, tracks: Vec<LocalTrack>, meta: FileAlbumMeta) {
+        if tracks.is_empty() { return; }
+        self.stop_playback();
+        self.current_disc_id.clear();
+
+        let n = tracks.len();
+        self.track_durations = tracks.iter().map(|t| t.display_duration()).collect();
+        self.track_titles    = tracks.iter().map(|t| t.title.clone()).collect();
+        self.track_artists   = tracks.iter().map(|t| t.artist.clone()).collect();
+
+        self.album_title  = meta.title;
+        self.album_artist = meta.artist;
+        self.album_year   = meta.year;
+        self.current_cover_url = meta.cover;
         self.file_tracks   = tracks;
         self.is_file_mode  = true;
         self.total_tracks  = n as i32;
@@ -564,7 +604,14 @@ impl TuiPlayerState {
         self.current_position.store(0u64, Ordering::Relaxed);
     }
 
+    /// Track selection from the UI. Choosing a track by hand supersedes the
+    /// album the queue was going to return to.
     fn load_track(&mut self, idx: i32) {
+        self.queue_resume = None;
+        self.load_track_at(idx);
+    }
+
+    fn load_track_at(&mut self, idx: i32) {
         if idx < 0 { return; }
         let duration = if self.is_file_mode {
             if (idx as usize) >= self.file_tracks.len() { return; }
@@ -612,8 +659,12 @@ impl TuiPlayerState {
             let heard       = self.heard_position.clone();
             let pos         = self.current_position.clone();
             let ended       = self.playback_ended.clone();
+            // The TUI has no visualizer; hand the player a throwaway tap.
+            let vis_tap = std::sync::Arc::new(std::sync::Mutex::new(crate::audio_player::VisTap::new()));
             let handle = thread::spawn(move || {
-                crate::file_player::play_local_file(file_path, offset, stop_flag, vol, heard, pos, ended);
+                // The TUI has no crossfade: no fade-in, and a handover flag that is never set.
+                crate::file_player::play_local_file(file_path, offset, stop_flag, vol, heard, pos, ended,
+                                                    vis_tap, 0.0, std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)));
             });
             self.playback_thread = Some(handle);
             self.is_playing = true;
@@ -731,13 +782,93 @@ impl TuiPlayerState {
         if was_playing { self.start_playback(); }
     }
 
+    // ── Queue ───────────────────────────────────────────────────────────────
+
+    fn enqueue_paths(&mut self, paths: &[String]) -> usize {
+        self.queue.extend_from_paths(paths)
+    }
+
+    /// Remember the album to come back to, unless the queue already took over.
+    fn capture_queue_resume(&mut self) {
+        if self.queue_resume.is_some() || !self.is_file_mode || self.file_tracks.is_empty() {
+            return;
+        }
+        self.queue_resume = Some(TuiQueueResume {
+            tracks: self.file_tracks.clone(),
+            meta: FileAlbumMeta {
+                title:  self.album_title.clone(),
+                artist: self.album_artist.clone(),
+                year:   self.album_year.clone(),
+                cover:  self.current_cover_url.clone(),
+            },
+            next_index: self.current_track + 1,
+        });
+    }
+
+    /// Swap the session over to a queued song, loaded but not started.
+    ///
+    /// Loaded in its album rather than on its own, so the track list shows the
+    /// real album with the song selected instead of a one-track pseudo-album.
+    fn play_queue_entry(&mut self, entry: crate::queue::QueueEntry) {
+        let (tracks, index) = crate::player::album_context_for(&entry.path);
+        let first = &tracks[0];
+        let meta = if tracks.len() == 1 {
+            FileAlbumMeta {
+                title:  first.title.clone(),
+                artist: first.artist.clone(),
+                year:   first.year.clone(),
+                cover:  first.cover_art_path.clone().unwrap_or_default(),
+            }
+        } else {
+            FileAlbumMeta {
+                title:  first.album.clone(),
+                artist: first.album_artist.clone(),
+                year:   first.year.clone(),
+                cover:  first.cover_art_path.clone().unwrap_or_default(),
+            }
+        };
+        self.apply_file_tracks(tracks, meta);
+        self.load_track_at(index);
+    }
+
+    /// Load whatever should play next: queued songs first, then the rest of the
+    /// album, then the album the queue interrupted. Leaves playback stopped.
+    fn advance(&mut self) -> bool {
+        if let Some(entry) = self.queue.pop_front() {
+            self.capture_queue_resume();
+            self.play_queue_entry(entry);
+            return true;
+        }
+        if let Some(r) = self.queue_resume.take() {
+            let count = r.tracks.len() as i32;
+            let next  = r.next_index;
+            self.apply_file_tracks(r.tracks, r.meta);
+            if next < count {
+                self.load_track_at(next);
+                return true;
+            }
+            return false;
+        }
+        if self.current_track + 1 < self.total_tracks {
+            self.load_track_at(self.current_track + 1);
+            return true;
+        }
+        false
+    }
+
+    /// Jump straight to a queue entry, dropping the ones before it.
+    fn queue_play_at(&mut self, index: usize) {
+        for _ in 0..index { self.queue.pop_front(); }
+        let Some(entry) = self.queue.pop_front() else { return };
+        self.capture_queue_resume();
+        self.play_queue_entry(entry);
+        self.start_playback();
+    }
+
     fn next_track(&mut self) {
-        let n = self.current_track;
-        let total = self.total_tracks;
-        if n + 1 < total {
-            let was_playing = self.is_playing;
-            self.load_track(n + 1);
-            if was_playing { self.start_playback(); }
+        let was_playing = self.is_playing;
+        if self.advance() && was_playing {
+            self.start_playback();
         }
     }
 
@@ -783,9 +914,9 @@ impl TuiPlayerState {
                 return;
             }
 
-            let next = self.current_track + 1;
-            if next < self.total_tracks {
-                self.load_track(next);
+            // Queue entries come first; `advance` also handles returning to the
+            // album once the queue drains.
+            if self.advance() {
                 self.start_playback();
                 self.fetch_lyrics_for_current();
             }
@@ -1264,6 +1395,20 @@ struct TuiApp {
     tui_settings:        TuiSettings,
     // Auto-detected image protocol (saved at startup so "Auto" can be restored)
     auto_detected_proto: Option<ProtocolType>,
+    // Protocols the terminal actually answered the startup query with.
+    supported_protos: Vec<ProtocolType>,
+    // The startup picker, kept so "None" can be undone without re-querying.
+    base_picker: Option<Picker>,
+    // Queue pane
+    queue_open:     bool,
+    /// When true the queue pane takes the arrow keys instead of the track list.
+    queue_focus:    bool,
+    queue_selected: usize,
+    // Set when the terminal contents may no longer match our buffer, so the
+    // next frame is emitted in full instead of as a diff.
+    needs_full_redraw: bool,
+    // View the last frame was drawn for, to notice a switch away from the cover.
+    last_drawn_view: View,
     icons: Icons,
     discord: Option<crate::discord::DiscordPresence>,
     // Last string written via SetTitle, so we only touch the terminal when it changes.
@@ -1341,6 +1486,13 @@ impl TuiApp {
             settings_input_text: String::new(),
             tui_settings,
             auto_detected_proto: None,
+            supported_protos: Vec::new(),
+            base_picker: None,
+            queue_open: false,
+            queue_focus: false,
+            queue_selected: 0,
+            needs_full_redraw: true,
+            last_drawn_view: View::Library,
             icons,
             discord: crate::discord::DiscordPresence::new(),
             last_terminal_title: "Kanae".to_string(),
@@ -1425,15 +1577,14 @@ impl TuiApp {
             TuiImageMethod::Auto => {
                 self.auto_detected_proto.unwrap_or(ProtocolType::Halfblocks)
             }
-            TuiImageMethod::Halfblocks => ProtocolType::Halfblocks,
-            TuiImageMethod::Sixel      => ProtocolType::Sixel,
-            TuiImageMethod::Kitty      => ProtocolType::Kitty,
-            TuiImageMethod::Iterm2     => ProtocolType::Iterm2,
+            method => resolve_protocol(method),
         };
         match self.picker.as_mut() {
             Some(p) => p.set_protocol_type(proto),
             None    => {
-                let mut p = Picker::halfblocks();
+                // Re-enabling after "None": restore the startup picker so the
+                // queried cell size and capabilities come back with it.
+                let mut p = self.base_picker.clone().unwrap_or_else(Picker::halfblocks);
                 p.set_protocol_type(proto);
                 self.picker = Some(p);
             }
@@ -1657,6 +1808,35 @@ impl TuiApp {
                 self.player.track_durations.get(i).cloned().unwrap_or_default(),
             )).collect()
         } else { vec![] }
+    }
+
+    /// Paths the 'a' key should enqueue: the selected album/folder in the
+    /// library, or the selected track in an album view. CD tracks have no file
+    /// path, so they yield nothing.
+    fn queueable_selection(&self) -> Vec<String> {
+        match self.view {
+            View::Library => match self.library.nodes.get(self.content_selected) {
+                Some(TuiLibraryNode::Album { album }) => album.track_paths.iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect(),
+                Some(TuiLibraryNode::Folder { path, .. }) => vec![path.to_string_lossy().into_owned()],
+                _ => vec![],
+            },
+            View::Album => {
+                if self.browse_dir.is_some() {
+                    self.library.browse_tracks.get(self.content_selected)
+                        .map(|t| vec![t.path.to_string_lossy().into_owned()])
+                        .unwrap_or_default()
+                } else if self.player.is_file_mode {
+                    self.player.file_tracks.get(self.content_selected)
+                        .map(|t| vec![t.path.to_string_lossy().into_owned()])
+                        .unwrap_or_default()
+                } else {
+                    vec![]
+                }
+            }
+            View::Settings => vec![],
+        }
     }
 
     fn open_album_view_for_library_item(&mut self, idx: usize) {
@@ -1901,12 +2081,31 @@ fn render_title_bar(app: &TuiApp, frame: &mut Frame, area: Rect) {
 }
 
 fn render_main(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
-    let sw = app.sidebar_w.max(12).min(area.width.saturating_sub(20));
+    // The queue takes a fixed slice off the right edge, but only when there is
+    // room left for the track list to stay usable.
+    let queue_w = if app.queue_open && area.width >= 70 { 30u16 } else { 0 };
+    let body = if queue_w > 0 {
+        let cols = Layout::horizontal([
+            Constraint::Min(0),
+            Constraint::Length(1),
+            Constraint::Length(queue_w),
+        ]).split(area);
+        let div_lines: Vec<Line> = (0..cols[1].height)
+            .map(|_| Line::from(Span::styled("│", Style::default().fg(CLR_BORDER))))
+            .collect();
+        frame.render_widget(Paragraph::new(div_lines), cols[1]);
+        render_queue_pane(app, frame, cols[2]);
+        cols[0]
+    } else {
+        area
+    };
+
+    let sw = app.sidebar_w.max(12).min(body.width.saturating_sub(20));
     let horiz = Layout::horizontal([
         Constraint::Length(sw),
         Constraint::Length(1), // draggable divider
         Constraint::Min(0),
-    ]).split(area);
+    ]).split(body);
 
     app.divider_rect = horiz[1];
 
@@ -1917,6 +2116,110 @@ fn render_main(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
 
     render_sidebar(app, frame, horiz[0]);
     render_right_panel(app, frame, horiz[2]);
+}
+
+fn render_queue_pane(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
+    let entries = app.player.queue.entries();
+    if app.queue_selected >= entries.len() {
+        app.queue_selected = entries.len().saturating_sub(1);
+    }
+
+    let [header, list_area] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Min(0),
+    ]).areas(area);
+
+    let title_style = if app.queue_focus {
+        Style::default().fg(CLR_ACCENT).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(CLR_TEXT).add_modifier(Modifier::BOLD)
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" Queue", title_style),
+            Span::styled(
+                if entries.is_empty() { String::new() } else { format!("  {}", entries.len()) },
+                Style::default().fg(CLR_TEXT2),
+            ),
+        ])),
+        Rect { height: 1, ..header },
+    );
+    frame.render_widget(
+        Paragraph::new("─".repeat(area.width as usize)).style(Style::default().fg(CLR_BORDER)),
+        Rect { y: header.y + 1, height: 1, ..header },
+    );
+
+    if entries.is_empty() {
+        frame.render_widget(
+            Paragraph::new("Nothing queued.\n\n'a' adds the\nselected item.")
+                .style(Style::default().fg(CLR_MUTED))
+                .wrap(ratatui::widgets::Wrap { trim: true }),
+            list_area,
+        );
+        return;
+    }
+
+    // Two rows per entry (title, then artist/duration), scrolled to keep the
+    // selection visible.
+    let rows_per = 2usize;
+    let visible = (list_area.height as usize / rows_per).max(1);
+    let first = app.queue_selected.saturating_sub(visible.saturating_sub(1));
+    let inner_w = list_area.width.saturating_sub(2) as usize;
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, e) in entries.iter().enumerate().skip(first).take(visible) {
+        let selected = app.queue_focus && i == app.queue_selected;
+        let (marker, title_style) = if selected {
+            (app.icons.sel_marker, Style::default().fg(CLR_ACCENT))
+        } else {
+            (" ", Style::default().fg(CLR_TEXT2))
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{} ", marker), title_style),
+            Span::styled(truncate_to_cols(&e.title, inner_w.saturating_sub(2)), title_style),
+        ]));
+        let sub = if e.artist.is_empty() {
+            e.duration.clone()
+        } else {
+            format!("{}  {}", truncate_to_cols(&e.artist, inner_w.saturating_sub(8)), e.duration)
+        };
+        lines.push(Line::from(Span::styled(
+            format!("  {}", sub),
+            Style::default().fg(CLR_MUTED),
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines), list_area);
+}
+
+/// Clamp the diff width of the cells the image widget just wrote.
+///
+/// The graphics protocols pack a whole escape sequence into one cell's symbol
+/// (sixel and iTerm2 use a single cell, kitty one per row). ratatui measures
+/// that symbol's display width to work out how many columns the cell covers,
+/// gets a five-figure answer, and advances the diff iterator past the end of
+/// the buffer — so every widget after the cover silently stops being emitted.
+/// `ForcedWidth` exists for exactly this; without it the panel below and to the
+/// right of the album art never repaints.
+fn pin_escape_cell_widths(frame: &mut Frame, area: Rect) {
+    use ratatui::buffer::CellDiffOption;
+    // Any legitimate single-cell grapheme is far shorter than this; only the
+    // protocol escape blobs clear the bar.
+    const ESCAPE_MIN_LEN: usize = 32;
+    let one = std::num::NonZeroU16::new(1).unwrap();
+    let buf = frame.buffer_mut();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                // Leave the covered cells alone — they carry the widget's own
+                // skip marker, and overriding it would paint over the image.
+                if cell.diff_option == CellDiffOption::None
+                    && cell.symbol().len() >= ESCAPE_MIN_LEN
+                {
+                    cell.set_diff_option(CellDiffOption::ForcedWidth(one));
+                }
+            }
+        }
+    }
 }
 
 fn render_sidebar(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
@@ -1935,7 +2238,12 @@ fn render_sidebar(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         .map(|p| { let s = p.font_size(); (s.0 as f32, s.1 as f32) })
         .unwrap_or((8.0, 16.0));
     let inner_w = area.width.saturating_sub(2) as f32;
-    let cover_inner_h = (inner_w * (cell_pw / cell_ph) / app.cover_aspect).round() as u16;
+    // A degenerate aspect (a 1-pixel-wide cover, or a font_size of 0 from a
+    // terminal that answered the size query badly) makes this ratio infinite,
+    // which saturates the cast and overflows the `+ 2` below.
+    let aspect = if app.cover_aspect.is_finite() && app.cover_aspect > 0.01 { app.cover_aspect } else { 1.0 };
+    let px_ratio = if cell_ph > 0.0 { cell_pw / cell_ph } else { 0.5 };
+    let cover_inner_h = (inner_w * px_ratio / aspect).round().clamp(0.0, 512.0) as u16;
     let cover_h = (cover_inner_h + 2).min(area.height.saturating_sub(8)); // leave room for meta+lyrics
     let meta_h    = 4u16;
     let lyrics_h  = area.height.saturating_sub(cover_h + meta_h + 2);
@@ -1955,9 +2263,13 @@ fn render_sidebar(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     frame.render_widget(cover_block, vert[0]);
     // During a sidebar drag, skip the stateful widget to avoid re-encoding on
     // every intermediate size; ratatui-image will re-encode once drag ends.
+    // A zero-sized area makes the resize step divide by zero, so require real
+    // room before handing the rect to the image widget.
+    let can_draw_cover = inner.width >= 2 && inner.height >= 2 && !app.divider_dragging;
     if let Some(ref mut proto) = app.cover_protocol {
-        if !app.divider_dragging {
+        if can_draw_cover {
             frame.render_stateful_widget(StatefulImage::new(), inner, proto);
+            pin_escape_cell_widths(frame, inner);
         }
     } else if inner.height >= 3 && inner.width >= 3 {
         let mid_y = inner.y + inner.height / 2;
@@ -2487,10 +2799,12 @@ fn render_controls(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(line), area);
 
     if area.height > 1 {
-        let hints = if app.player.drives.is_empty() {
-            " Space:⏯  ←→:seek  Shift←→:navigate  n/p:track  +/-:vol  s:settings  q:quit"
+        let hints = if app.queue_focus {
+            " ↑↓:select  J/K:move  Enter:play  x:remove  C:clear  Tab/Esc:back  q:quit"
+        } else if app.player.drives.is_empty() {
+            " Space:⏯  ←→:seek  n/p:track  a:queue  u:queue pane  +/-:vol  s:settings  q:quit"
         } else {
-            " Space:⏯  ←→:seek  Shift←→:navigate  n/p:track  +/-:vol  e:eject  s:settings  q:quit"
+            " Space:⏯  ←→:seek  n/p:track  a:queue  u:queue pane  e:eject  s:settings  q:quit"
         };
         let hint_area = Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 };
         frame.render_widget(
@@ -2652,6 +2966,12 @@ fn render_settings(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
 
     {
         let method_label = app.tui_settings.image_method.label();
+        // Flag a method the terminal never reported, so the fallback to the
+        // detected protocol doesn't look like the setting was ignored.
+        let unavailable = matches!(
+            app.tui_settings.image_method,
+            TuiImageMethod::Sixel | TuiImageMethod::Kitty | TuiImageMethod::Iterm2
+        ) && !app.supported_protos.contains(&resolve_protocol(app.tui_settings.image_method));
         let is_sel = sel == idx_image;
         let (marker, row_style) = if is_sel {
             (app.icons.sel_marker, Style::default().fg(CLR_ACCENT))
@@ -2663,8 +2983,13 @@ fn render_settings(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
             Span::styled(format!("  {} Image method", marker), row_style),
             Span::styled(format!("  {} {} {}", app.icons.cycle_left, method_label, app.icons.cycle_right), val_style),
         ]));
+        let hint = if unavailable {
+            "      Cover art rendering method — this terminal didn't report support"
+        } else {
+            "      Cover art rendering method"
+        };
         items.push(Line::from(vec![
-            Span::styled("      Cover art rendering method", Style::default().fg(CLR_MUTED)),
+            Span::styled(hint, Style::default().fg(CLR_MUTED)),
         ]));
     }
 
@@ -2864,6 +3189,71 @@ fn handle_key(app: &mut TuiApp, code: KeyCode, modifiers: KeyModifiers) {
         // Settings input: capture all printable chars before other bindings
         KeyCode::Char(c) if app.view == View::Settings && app.settings_input_mode => {
             app.settings_input_text.push(c);
+        }
+
+        // ── Queue ───────────────────────────────────────────────────────────
+        KeyCode::Char('u') if app.view != View::Settings || !app.settings_input_mode => {
+            app.queue_open = !app.queue_open;
+            if !app.queue_open { app.queue_focus = false; }
+            app.needs_full_redraw = true;
+        }
+        KeyCode::Tab if app.queue_open => {
+            app.queue_focus = !app.queue_focus;
+        }
+        KeyCode::Char('a') if app.view != View::Settings => {
+            let paths = app.queueable_selection();
+            if paths.is_empty() {
+                app.toast_msg = Some(("Nothing to queue here".to_string(), Instant::now()));
+            } else {
+                let n = app.player.enqueue_paths(&paths);
+                app.queue_open = true;
+                app.needs_full_redraw = true;
+                app.toast_msg = Some((
+                    format!("Queued {} track{}", n, if n == 1 { "" } else { "s" }),
+                    Instant::now(),
+                ));
+            }
+        }
+        // Queue-pane bindings, ahead of the generic list navigation below.
+        KeyCode::Up if app.queue_focus => {
+            app.queue_selected = app.queue_selected.saturating_sub(1);
+        }
+        KeyCode::Down if app.queue_focus => {
+            let max = app.player.queue.len().saturating_sub(1);
+            if app.queue_selected < max { app.queue_selected += 1; }
+        }
+        KeyCode::Char('K') if app.queue_focus => {
+            if app.queue_selected > 0 {
+                let to = app.queue_selected - 1;
+                app.player.queue.move_entry(app.queue_selected, to);
+                app.queue_selected = to;
+            }
+        }
+        KeyCode::Char('J') if app.queue_focus => {
+            let to = app.queue_selected + 1;
+            if to < app.player.queue.len() {
+                app.player.queue.move_entry(app.queue_selected, to);
+                app.queue_selected = to;
+            }
+        }
+        KeyCode::Char('x') | KeyCode::Delete if app.queue_focus => {
+            app.player.queue.remove(app.queue_selected);
+            let max = app.player.queue.len().saturating_sub(1);
+            if app.queue_selected > max { app.queue_selected = max; }
+        }
+        KeyCode::Char('C') if app.queue_focus => {
+            app.player.queue.clear();
+            app.queue_selected = 0;
+        }
+        KeyCode::Enter if app.queue_focus => {
+            if app.queue_selected < app.player.queue.len() {
+                app.player.queue_play_at(app.queue_selected);
+                app.player.fetch_lyrics_for_current();
+                app.queue_selected = 0;
+            }
+        }
+        KeyCode::Esc if app.queue_focus => {
+            app.queue_focus = false;
         }
 
         KeyCode::Char('e') => {
@@ -3243,8 +3633,10 @@ fn handle_mouse(app: &mut TuiApp, event: MouseEvent) {
             app.seek_dragging = false;
             app.vol_dragging  = false;
             if app.divider_dragging {
-                // Sidebar was resized — force cover reload at new size
+                // Sidebar was resized — force cover reload at new size, and a
+                // full redraw since the drag painted over the old graphic.
                 app.cover_loaded_url.clear();
+                app.needs_full_redraw = true;
             }
             app.divider_dragging = false;
         }
@@ -3355,6 +3747,40 @@ unsafe fn restore_stderr(saved: *mut std::ffi::c_void) {
     }
 }
 
+// ─── Image protocol support ──────────────────────────────────────────────────
+
+/// Protocols the terminal reported during the startup query. Halfblocks is
+/// plain text so it always works; iTerm2 is env-detected rather than queried,
+/// so it counts as supported only when detection actually picked it.
+fn supported_protocols(picker: &Picker) -> Vec<ProtocolType> {
+    use ratatui_image::picker::Capability;
+    let mut out = vec![ProtocolType::Halfblocks];
+    for cap in picker.capabilities() {
+        match cap {
+            Capability::Kitty => out.push(ProtocolType::Kitty),
+            Capability::Sixel => out.push(ProtocolType::Sixel),
+            _ => {}
+        }
+    }
+    if picker.protocol_type() == ProtocolType::Iterm2 {
+        out.push(ProtocolType::Iterm2);
+    }
+    out
+}
+
+/// The protocol an image-method setting asks for. Forcing one is an explicit
+/// override, so it is always honoured even when the startup query didn't list
+/// it — detection misses terminals that render fine. `supported_protocols` only
+/// drives the advisory note in the settings screen.
+fn resolve_protocol(method: TuiImageMethod) -> ProtocolType {
+    match method {
+        TuiImageMethod::Sixel  => ProtocolType::Sixel,
+        TuiImageMethod::Kitty  => ProtocolType::Kitty,
+        TuiImageMethod::Iterm2 => ProtocolType::Iterm2,
+        _                      => ProtocolType::Halfblocks,
+    }
+}
+
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 pub fn run_tui() -> io::Result<()> {
@@ -3373,34 +3799,58 @@ pub fn run_tui() -> io::Result<()> {
     // Query terminal for image protocol support (must be after entering alt screen,
     // before reading terminal events).
     let tui_settings = crate::library_cache::load_tui_settings();
+    // Always query, even when a protocol is forced. `Picker::halfblocks()` carries
+    // an arbitrary 10x20 cell size and no capability list, so building a Sixel or
+    // Kitty picker on top of it encodes at the wrong scale and emits graphics
+    // escapes blind — on a terminal that doesn't understand them they land as
+    // literal bytes and shred the layout.
+    //
+    // The query also reads stdin, and a terminal that never answers leaves
+    // ratatui-image with a thread parked on `stdin().read()` that swallows the
+    // user's keystrokes, so skip it entirely when covers are switched off.
+    let queried = if tui_settings.image_method == TuiImageMethod::None {
+        Picker::halfblocks()
+    } else {
+        Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks())
+    };
+    let supported = supported_protocols(&queried);
+    let auto_detected_proto = Some(queried.protocol_type());
+
     let maybe_picker: Option<Picker> = match tui_settings.image_method {
         TuiImageMethod::None => None,
-        TuiImageMethod::Auto => Some(
-            Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks())
-        ),
+        TuiImageMethod::Auto => Some(queried.clone()),
         method => {
-            let proto = match method {
-                TuiImageMethod::Halfblocks => ProtocolType::Halfblocks,
-                TuiImageMethod::Sixel      => ProtocolType::Sixel,
-                TuiImageMethod::Kitty      => ProtocolType::Kitty,
-                TuiImageMethod::Iterm2     => ProtocolType::Iterm2,
-                _                          => ProtocolType::Halfblocks,
-            };
-            let mut p = Picker::halfblocks();
-            p.set_protocol_type(proto);
+            let mut p = queried.clone();
+            p.set_protocol_type(resolve_protocol(method));
             Some(p)
         }
     };
-    // Remember what was auto-detected so the user can switch back to Auto later.
-    let auto_detected_proto = maybe_picker.as_ref().map(|p| p.protocol_type());
 
     let mut app = TuiApp::new();
     app.picker = maybe_picker;
     app.auto_detected_proto = auto_detected_proto;
+    app.supported_protos = supported;
+    app.base_picker = Some(queried);
     let tick_rate = Duration::from_millis(50);
 
     loop {
         app.tick();
+
+        // A sixel cover lives entirely in one cell's symbol, and the cells it
+        // covers are marked skip, so ratatui only emits it when that symbol
+        // changes. Anything that wipes the terminal behind our back — a resize,
+        // or another view painting over the sidebar — leaves the buffer looking
+        // unchanged, and the image plus the static rows around it never get
+        // written again. Redraw in full whenever that can have happened.
+        if app.view != app.last_drawn_view {
+            app.needs_full_redraw = true;
+            app.last_drawn_view = app.view.clone();
+        }
+        if app.needs_full_redraw {
+            term.clear()?;
+            app.needs_full_redraw = false;
+        }
+
         term.draw(|f| render(&mut app, f))?;
 
         let title = app.terminal_title();
@@ -3420,7 +3870,10 @@ pub fn run_tui() -> io::Result<()> {
                     handle_key(&mut app, key.code, key.modifiers),
                 Event::Key(_) => {}
                 Event::Mouse(m) => handle_mouse(&mut app, m),
-                Event::Resize(_, _) => {}
+                // A resize invalidates the graphic the terminal is holding, but
+                // our buffer cell for it is unchanged, so the diff would never
+                // re-emit it.
+                Event::Resize(_, _) => app.needs_full_redraw = true,
                 _ => {}
             }
         }

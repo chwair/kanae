@@ -216,6 +216,13 @@ pub fn play_local_file(
     heard_position_arc: Arc<AtomicU64>,
     current_position: Arc<AtomicU64>,
     playback_ended_arc: Arc<AtomicBool>,
+    vis_tap: Arc<std::sync::Mutex<crate::audio_player::VisTap>>,
+    // fade_in_secs: seconds to ramp up from silence at the start (0 = full gain).
+    fade_in_secs: f64,
+    // fade_out_secs: set by the player to hand this track over to the next one —
+    // the bits of an f64 giving how long to ramp down to silence, after which the
+    // stream ends. Zero means "play to the end normally".
+    fade_out_secs: Arc<AtomicU64>,
 ) {
     use crate::audio_player::AudioController;
     use symphonia::core::{
@@ -281,11 +288,21 @@ pub fn play_local_file(
     }
 
     let mut current_vol = f64::from_bits(volume_arc.load(Ordering::Relaxed)) as f32;
-    let mut fade_first_packet = start_offset < 0.05;
+    // Output seconds emitted so far, used to place both fade ramps.
+    let mut emitted_secs = 0.0f64;
+    // Where the fade-out was triggered, once it has been.
+    let mut fade_out_from: Option<f64> = None;
+    let fade_in = if start_offset < 0.05 { fade_in_secs.max(0.0) } else { 0.0 };
 
     let (stream_sender, samples_emitted_arc) = audio_controller.begin_stream(
         sample_rate, n_channels as u16, stop_flag.clone(), 4,
     );
+
+    // Bind the visualizer to the device's consumed-sample counter so it reads
+    // the window being heard, not the one being decoded.
+    if let Ok(mut tap) = vis_tap.lock() {
+        tap.attach(samples_emitted_arc.clone(), n_channels as u16);
+    }
 
     loop {
         if stop_flag.load(Ordering::Relaxed) { break; }
@@ -312,18 +329,45 @@ pub fn play_local_file(
         let mut samples: Vec<f32> = Vec::new();
         decoded.copy_to_vec_interleaved(&mut samples);
 
+        // Feed the visualizer here, BEFORE volume scaling, so the spectrum is
+        // independent of the playback volume.
+        if let Ok(mut tap) = vis_tap.lock() { tap.push(&samples, n_channels as u16); }
+
         let target_vol = f64::from_bits(volume_arc.load(Ordering::Relaxed)) as f32;
-        let n    = samples.len() as f32;
-        let fade = fade_first_packet;
-        fade_first_packet = false;
+        let count  = samples.len();
+        let n      = count as f32;
+        let frames = count as f64 / (sample_rate as f64 * (n_channels as f64).max(1.0));
+
+        // Pick up a crossfade handover requested since the last packet.
+        let requested = f64::from_bits(fade_out_secs.load(Ordering::Relaxed));
+        if fade_out_from.is_none() && requested > 0.0 {
+            fade_out_from = Some(emitted_secs);
+        }
+        let fade_len = requested.max(0.0);
+        let fade_start = fade_out_from;
+
         for (i, s) in samples.iter_mut().enumerate() {
             let t = i as f32 / n;
-            let fi = if fade { t } else { 1.0 };
-            *s = (*s * (current_vol + (target_vol - current_vol) * t) * fi).clamp(-1.0, 1.0);
+            // Where this sample sits on the track's output timeline.
+            let at = emitted_secs + frames * (i as f64 / count.max(1) as f64);
+            let mut g = current_vol + (target_vol - current_vol) * t;
+            if fade_in > 0.0 && at < fade_in {
+                g *= (at / fade_in) as f32;
+            }
+            if let (Some(from), true) = (fade_start, fade_len > 0.0) {
+                g *= (1.0 - ((at - from) / fade_len).clamp(0.0, 1.0)) as f32;
+            }
+            *s = (*s * g).clamp(-1.0, 1.0);
         }
         current_vol = target_vol;
+        emitted_secs += frames;
 
         if !stream_sender.send(samples) { break; }
+
+        // The handover is complete once the ramp has run its course.
+        if let (Some(from), true) = (fade_start, fade_len > 0.0) {
+            if emitted_secs - from >= fade_len { break; }
+        }
 
         let denom = sample_rate as f64 * (n_channels as f64).max(1.0);
         let heard_pos = start_offset

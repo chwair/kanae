@@ -44,6 +44,10 @@ pub enum LibraryNode {
 }
 
 fn default_true() -> bool { true }
+fn default_crossfade_secs() -> f64 { 4.0 }
+/// Bounds the UI and playback both clamp to.
+pub const CROSSFADE_MIN_SECS: f64 = 1.0;
+pub const CROSSFADE_MAX_SECS: f64 = 12.0;
 
 /// Settings that control scanning behaviour.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -68,6 +72,15 @@ pub struct LibrarySettings {
     /// When true, publish Discord Rich Presence. On by default.
     #[serde(default = "default_true")]
     pub discord_rpc: bool,
+    /// When true, draw the spectrum visualizer in the GUI. On by default.
+    #[serde(default = "default_true")]
+    pub visualizer: bool,
+    /// When true, overlap the end of a track with the start of the next.
+    #[serde(default)]
+    pub crossfade: bool,
+    /// Length of that overlap in seconds.
+    #[serde(default = "default_crossfade_secs")]
+    pub crossfade_secs: f64,
     /// Album sort order: "artist" (default), "album", "year_desc", "year_asc".
     /// Empty string means the default.
     #[serde(default)]
@@ -85,6 +98,9 @@ impl Default for LibrarySettings {
             lrc_limit_disabled: false,
             romanize_lyrics:   false,
             discord_rpc:       true,
+            visualizer:        true,
+            crossfade:         false,
+            crossfade_secs:    default_crossfade_secs(),
             album_sort:        String::new(),
         }
     }

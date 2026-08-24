@@ -28,7 +28,27 @@ ApplicationWindow {
     readonly property color clrAccent:  "#bfbfbf"
 
     property bool coverOnSide: false
+    property bool queueOpen: false
     property bool _resizing: false
+    // Spectrum visualizer toggle, mirrored from settings.json (on by default).
+    readonly property bool visualizerOn: {
+        try { return JSON.parse(library.settings_json.toString()).visualizer !== false }
+        catch (e) { return true }
+    }
+    // Crossfade config, mirrored from settings.json and pushed to the player
+    // (which keeps its own copy so the audio thread never touches the library).
+    readonly property bool _crossfadeOn: {
+        try { return JSON.parse(library.settings_json.toString()).crossfade === true }
+        catch (e) { return false }
+    }
+    readonly property real _crossfadeSecs: {
+        try {
+            var v = JSON.parse(library.settings_json.toString()).crossfade_secs
+            return (typeof v === "number" && v > 0) ? v : 4.0
+        } catch (e) { return 4.0 }
+    }
+    on_CrossfadeOnChanged:   player.setCrossfadeConfig(_crossfadeOn, _crossfadeSecs)
+    on_CrossfadeSecsChanged: player.setCrossfadeConfig(_crossfadeOn, _crossfadeSecs)
     Timer { id: resizeEndTimer; interval: 50; onTriggered: window._resizing = false }
     onWidthChanged:  { _resizing = true; resizeEndTimer.restart() }
     onHeightChanged: { _resizing = true; resizeEndTimer.restart() }
@@ -64,7 +84,9 @@ ApplicationWindow {
             arr.push({
                 title:    (player.track_titles[i]  || "").toString(),
                 artist:   (player.track_artists[i] || "").toString(),
-                duration: (player.track_names[i]   || "").toString()
+                duration: (player.track_names[i]   || "").toString(),
+                // Empty for CD tracks, which cannot be queued.
+                path:     (player.track_paths[i]   || "").toString()
             })
         }
         return arr
@@ -213,6 +235,11 @@ ApplicationWindow {
             repeat: true; running: true; onTriggered: { player.pollLoad(); library.pollScan() } }
     // Lyric results only arrive while a fetch is in flight.
     Timer { interval: 300; repeat: true; running: player.lyrics_loading; onTriggered: player.pollLyrics() }
+    // Spectrum bars: ~60 fps while playing for a responsive read. Paused/idle
+    // the bars are gated to 0 in QML, so there's no need to keep sampling.
+    Timer { interval: 16; repeat: true
+            running: player.is_playing && player.total_tracks > 0 && window.visualizerOn
+            onTriggered: player.updateVisualizer() }
 
     DropArea {
         anchors.fill: parent; keys: ["text/uri-list"]
@@ -238,6 +265,11 @@ ApplicationWindow {
         if (!(player.current_track >= 0 && player.current_track < player.total_tracks - 1)) return
         var wp = player.is_playing; player.nextTrack(); if (wp) player.playPause()
     }
+    // Relative seek clamped to the track bounds.
+    function seekBy(secs) {
+        if (player.total_tracks <= 0 || player.current_track < 0) return
+        player.seek(Math.max(0, Math.min(player.total_time, player.current_time + secs)))
+    }
     function volumeBy(delta) {
         var v = Math.max(0, Math.min(1, volSlider.value + delta))
         volSlider.value = v; player.setVolumeLevel(v)
@@ -250,12 +282,15 @@ ApplicationWindow {
     // Disabled while the first-run "where's your music" field has focus so
     // typing a path doesn't trigger playback/volume shortcuts.
     property bool _shortcutsEnabled: !musicDirInput.activeFocus
-    Shortcut { sequence: "Space"; enabled: window._shortcutsEnabled; onActivated: togglePlayPause() }
-    Shortcut { sequence: "Left";  enabled: window._shortcutsEnabled; onActivated: prevTrackOrRestart() }
-    Shortcut { sequence: "Right"; enabled: window._shortcutsEnabled; onActivated: nextTrackShortcut() }
-    Shortcut { sequence: "Up";    enabled: window._shortcutsEnabled; onActivated: volumeBy(0.05) }
-    Shortcut { sequence: "Down";  enabled: window._shortcutsEnabled; onActivated: volumeBy(-0.05) }
-    Shortcut { sequence: "M";     enabled: window._shortcutsEnabled; onActivated: toggleMute() }
+    Shortcut { sequence: "Space";       enabled: window._shortcutsEnabled; onActivated: togglePlayPause() }
+    // Arrows seek; Shift+Arrows change track.
+    Shortcut { sequence: "Left";        enabled: window._shortcutsEnabled; onActivated: seekBy(-5) }
+    Shortcut { sequence: "Right";       enabled: window._shortcutsEnabled; onActivated: seekBy(5) }
+    Shortcut { sequence: "Shift+Left";  enabled: window._shortcutsEnabled; onActivated: prevTrackOrRestart() }
+    Shortcut { sequence: "Shift+Right"; enabled: window._shortcutsEnabled; onActivated: nextTrackShortcut() }
+    Shortcut { sequence: "Up";          enabled: window._shortcutsEnabled; onActivated: volumeBy(0.05) }
+    Shortcut { sequence: "Down";        enabled: window._shortcutsEnabled; onActivated: volumeBy(-0.05) }
+    Shortcut { sequence: "M";           enabled: window._shortcutsEnabled; onActivated: toggleMute() }
     Shortcut { sequence: "Ctrl+Left";  onActivated: goBack() }
     Shortcut { sequence: "Ctrl+Right"; onActivated: goForward() }
     Shortcut { sequence: "Ctrl+,"; onActivated: settingsWindow.show() }
@@ -622,6 +657,77 @@ ApplicationWindow {
                         }
                     }
 
+                    // ── Interface ─────────────────────────────────────────
+                    SettingsCard {
+                        heading: "Interface"
+                        RowLayout {
+                            Layout.fillWidth: true; spacing: 12
+                            Column {
+                                Layout.fillWidth: true; spacing: 3
+                                Text { text: "Spectrum visualizer"; color: clrText; font.pixelSize: 12; font.family: "Segoe UI" }
+                                Text { text: "Show animated bars under the lyrics"; color: clrText2; font.pixelSize: 10; font.family: "Segoe UI" }
+                            }
+                            PillToggle {
+                                checked: settingsWindow.settingsObj.visualizer !== false
+                                onToggled: library.setVisualizer(!(settingsWindow.settingsObj.visualizer !== false))
+                            }
+                        }
+                    }
+
+                    // ── Playback ──────────────────────────────────────────
+                    SettingsCard {
+                        heading: "Playback"
+                        RowLayout {
+                            Layout.fillWidth: true; spacing: 12
+                            Column {
+                                Layout.fillWidth: true; spacing: 3
+                                Text { text: "Crossfade"; color: clrText; font.pixelSize: 12; font.family: "Segoe UI" }
+                                Text { text: "Overlap the end of a track with the next one"
+                                    color: clrText2; font.pixelSize: 10; font.family: "Segoe UI" }
+                            }
+                            PillToggle {
+                                checked: settingsWindow.settingsObj.crossfade === true
+                                onToggled: {
+                                    var v = !(settingsWindow.settingsObj.crossfade === true)
+                                    library.setCrossfade(v)
+                                    player.setCrossfadeConfig(v, window._crossfadeSecs)
+                                }
+                            }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true; spacing: 12
+                            opacity: settingsWindow.settingsObj.crossfade === true ? 1.0 : 0.4
+                            Behavior on opacity { NumberAnimation { duration: 130 } }
+                            Text { text: "Duration"; color: clrText2; font.pixelSize: 11; font.family: "Segoe UI" }
+                            Slider {
+                                id: xfSlider
+                                Layout.fillWidth: true
+                                enabled: settingsWindow.settingsObj.crossfade === true
+                                from: 1; to: 12; stepSize: 0.5
+                                implicitHeight: 20; padding: 0
+                                value: window._crossfadeSecs
+                                onMoved: {
+                                    library.setCrossfadeSecs(value)
+                                    player.setCrossfadeConfig(settingsWindow.settingsObj.crossfade === true, value)
+                                }
+                                background: Item { implicitHeight: 20
+                                    Rectangle { anchors.verticalCenter: parent.verticalCenter
+                                        width: parent.width; height: 3; radius: 1; color: clrSurf2
+                                        Rectangle { width: parent.width * xfSlider.visualPosition; height: parent.height
+                                            radius: 1; color: clrAccent } } }
+                                handle: Rectangle {
+                                    x: xfSlider.visualPosition * xfSlider.availableWidth - width / 2
+                                    y: xfSlider.availableHeight / 2 - height / 2
+                                    width: 11; height: 11; radius: 5.5
+                                    color: xfSlider.pressed ? "#ffffff" : clrAccent }
+                            }
+                            Text { text: xfSlider.value.toFixed(1) + "s"; color: clrText
+                                font.pixelSize: 11; font.family: "Consolas, monospace"
+                                horizontalAlignment: Text.AlignRight
+                                Layout.preferredWidth: 34 }
+                        }
+                    }
+
                     // ── Integrations ──────────────────────────────────────
                     SettingsCard {
                         heading: "Integrations"
@@ -964,6 +1070,64 @@ ApplicationWindow {
                                 visible: player.lyrics_loading
                                 animating: player.lyrics_loading
                                 text: "Loading lyrics..."
+                            }
+                        }
+                    }
+
+                    // ── Spectrum visualizer ───────────────────────────────
+                    // Sits at the bottom of the sidebar, just under the lyrics.
+                    // Bars read player.vis_bands (0..1 strings) refreshed at
+                    // ~60 fps by vizTimer; is_playing gates each bar to 0 so
+                    // they fall away smoothly on pause.
+                    Rectangle{Layout.fillWidth:true;Layout.preferredHeight:(player.is_playing&&window.visualizerOn)?1:0;color:clrBorder;visible:Layout.preferredHeight>0
+                        Behavior on Layout.preferredHeight{NumberAnimation{duration:180;easing.type:Easing.OutCubic}}}
+                    Item {
+                        id: vizArea
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: (player.is_playing && window.visualizerOn) ? 34 : 0
+                        visible: Layout.preferredHeight > 0
+                        clip: true
+                        Behavior on Layout.preferredHeight { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+
+                        // Bars keep a roughly constant width, so a wider sidebar
+                        // gets more of them rather than fatter ones. Rust clamps
+                        // the count to 8..64; mirror that here so the Repeater
+                        // never asks for bands the backend won't produce.
+                        readonly property real _gap: 3
+                        readonly property real _barTarget: 5
+                        readonly property int n: Math.max(8, Math.min(64,
+                            Math.floor((width - 24 + _gap) / (_barTarget + _gap))))
+                        readonly property real _barW: Math.max(2, (width - 24 - (n - 1) * _gap) / n)
+                        property var bands: player.vis_bands
+
+                        // Tell the backend how many bands to compute.
+                        onNChanged: player.vis_band_count = n
+                        Component.onCompleted: player.vis_band_count = n
+                        Row {
+                            anchors.centerIn: parent
+                            height: 24
+                            spacing: vizArea._gap
+                            Repeater {
+                                model: vizArea.n
+                                delegate: Item {
+                                    width: vizArea._barW; height: 24
+                                    required property int index
+                                    readonly property real v: {
+                                        var b = vizArea.bands
+                                        return (player.is_playing && index < b.length) ? parseFloat(b[index]) : 0
+                                    }
+                                    Rectangle {
+                                        anchors.bottom: parent.bottom
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        width: parent.width; radius: 1
+                                        height: 2 + parent.v * 22
+                                        color: clrText2
+                                        opacity: 0.3 + parent.v * 0.6
+                                        // Rust already emits smooth 60fps gravity motion; this only
+                                        // de-steps between property updates, so keep it to ~1 frame.
+                                        Behavior on height { NumberAnimation { duration: 20; easing.type: Easing.Linear } }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1323,7 +1487,7 @@ ApplicationWindow {
                                             if (mouse.button === Qt.RightButton) {
                                                 if (modelData.kind !== "cd") {
                                                     var mp = gridItemHov.mapToItem(rootBg, mouse.x, mouse.y)
-                                                    itemCtxMenu.openAt(modelData.path, modelData.kind, mp.x, mp.y)
+                                                    itemCtxMenu.openAt(modelData.path, modelData.kind, mp.x, mp.y, modelData.id)
                                                 }
                                                 return
                                             }
@@ -1340,7 +1504,7 @@ ApplicationWindow {
                                         onPressAndHold: {
                                             if (modelData.kind !== "cd") {
                                                 var mp = gridItemHov.mapToItem(rootBg, gridItemHov.mouseX, gridItemHov.mouseY)
-                                                itemCtxMenu.openAt(modelData.path, modelData.kind, mp.x, mp.y)
+                                                itemCtxMenu.openAt(modelData.path, modelData.kind, mp.x, mp.y, modelData.id)
                                             }
                                         }
                                     }
@@ -1403,7 +1567,7 @@ ApplicationWindow {
                                         acceptedButtons:Qt.LeftButton|Qt.RightButton;cursorShape:Qt.PointingHandCursor
                                         onClicked: function(mouse) {
                                             if(mouse.button===Qt.RightButton){
-                                                if(modelData.kind!=="cd"){var mp=listItemHov.mapToItem(rootBg,mouse.x,mouse.y);itemCtxMenu.openAt(modelData.path,modelData.kind,mp.x,mp.y)}
+                                                if(modelData.kind!=="cd"){var mp=listItemHov.mapToItem(rootBg,mouse.x,mouse.y);itemCtxMenu.openAt(modelData.path,modelData.kind,mp.x,mp.y,modelData.id)}
                                                 return
                                             }
                                             if(modelData.kind==="cd"){if(player.is_file_mode)player.loadDisc();window._canGoForwardToAlbum=false;window._showingCdView=true;window._browseDir="";window._browseAlbumName="";window._fileMode=false;window._view="album"}
@@ -1463,11 +1627,280 @@ ApplicationWindow {
                                     }
                                     Text{text:modelData.duration;color:isCurrent?"#888":"#3a3a3a";font.pixelSize:11;font.family:"Consolas, monospace";Behavior on color{ColorAnimation{duration:110}}}
                                 }
-                                MouseArea{id:rowMs;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor;onClicked:window.playBrowsedTrack(index)}
+                                MouseArea{id:rowMs;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor
+                                    acceptedButtons:Qt.LeftButton|Qt.RightButton
+                                    onClicked:function(mouse){
+                                        if(mouse.button===Qt.RightButton){
+                                            // CD tracks have no path, so nothing to queue.
+                                            var p=modelData.path||""
+                                            if(p!==""){var mp=rowMs.mapToItem(rootBg,mouse.x,mouse.y);itemCtxMenu.openAt(p,"track",mp.x,mp.y,"")}
+                                            return
+                                        }
+                                        window.playBrowsedTrack(index)
+                                    }}
                             }
                             ScrollBar.vertical:ScrollBar{id:vScrollBar;policy:ScrollBar.AsNeeded
                                 contentItem:Rectangle{implicitWidth:4;radius:2;color:clrMuted;visible:vScrollBar.size<1.0;opacity:vScrollBar.active?0.85:0.3;Behavior on opacity{NumberAnimation{duration:200}}}
                                 background:Rectangle{color:"transparent"}}
+                        }
+                    }
+                }
+
+                // ── Queue pane (far right, toggled from under the seek bar) ──
+                // Rows are dragged vertically to reorder; the drop index is the
+                // row the delegate's centre has travelled to, and the reorder is
+                // applied in Rust so the TUI sees the same list.
+                Item {
+                    id: queuePane
+                    // Width is animated rather than toggling visibility, so the
+                    // pane slides in and out from the right edge.
+                    property real openW: Math.min(240, Math.round(window.width * 0.4))
+                    property real paneW: window.queueOpen ? openW : 0
+                    Behavior on paneW { NumberAnimation { duration: 190; easing.type: Easing.OutCubic } }
+                    visible: paneW > 1
+                    // Pinned to the animated width: SplitView writes preferredWidth
+                    // when its handle is dragged, which would break the binding and
+                    // kill the slide. min == max also makes the handle inert.
+                    SplitView.preferredWidth: paneW
+                    SplitView.minimumWidth: paneW
+                    SplitView.maximumWidth: paneW
+                    clip: true
+
+                    readonly property var rows: {
+                        try { return JSON.parse(player.queue_json.toString()) } catch (e) { return [] }
+                    }
+                    readonly property int rowH: 44
+
+                    // Fixed-width content pinned to the pane's right edge. The pane's
+                    // own width animates, so laying the content out against it would
+                    // reflow every frame of the slide and visibly squash the wrapped
+                    // "queue is empty" text. Holding the content at its open width and
+                    // letting the pane clip turns the same animation into a clean slide.
+                    ColumnLayout {
+                        id: queueContent
+                        width: queuePane.openW
+                        height: parent.height
+                        x: parent.width - queuePane.openW
+                        spacing: 0
+
+                        Rectangle {
+                            Layout.fillWidth: true; Layout.preferredHeight: 34
+                            color: clrSurface
+                            Rectangle { anchors.bottom:parent.bottom; anchors.left:parent.left; anchors.right:parent.right; height:1; color:clrBorder }
+                            RowLayout {
+                                anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 8; spacing: 6
+                                MatIcon { name: "list"; size: 12; color: clrText2 }
+                                Text { text: "Queue"; color: clrText; font.pixelSize: 11; font.bold: true; font.family: "Segoe UI" }
+                                Text { text: player.queue_len > 0 ? player.queue_len.toString() : ""
+                                    color: clrText2; font.pixelSize: 10; font.family: "Segoe UI" }
+                                Item { Layout.fillWidth: true }
+                                Rectangle {
+                                    width: 46; height: 20; radius: 3
+                                    visible: player.queue_len > 0
+                                    color: qClrMa.containsMouse ? clrSurf2 : "transparent"
+                                    border.color: qClrMa.containsMouse ? clrBorder : "transparent"
+                                    Text { anchors.centerIn: parent; text: "Clear"; color: clrText2; font.pixelSize: 10; font.family: "Segoe UI" }
+                                    MouseArea { id: qClrMa; anchors.fill: parent; hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor; onClicked: player.queueClear() }
+                                }
+                            }
+                        }
+
+                        Item {
+                            Layout.fillWidth: true; Layout.fillHeight: true
+
+                            Text {
+                                anchors.centerIn: parent; width: parent.width - 24
+                                visible: queuePane.rows.length === 0
+                                text: "Queue is empty.\nRight-click a song or album to add it."
+                                horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap
+                                color: clrText2; font.pixelSize: 10; font.family: "Segoe UI"
+                            }
+
+                            ListView {
+                                id: queueList
+                                anchors.fill: parent; clip: true
+                                model: queuePane.rows
+                                spacing: 0
+                                boundsBehavior: Flickable.StopAtBounds
+                                // Reorder state. Rows are never mutated mid-drag —
+                                // the model only changes on release — so each row's
+                                // offset is a plain binding on these three values and
+                                // the untouched rows animate aside to open a gap.
+                                property int  dragIndex: -1
+                                property int  dropIndex: -1
+                                property real dragOffset: 0
+                                interactive: dragIndex < 0
+
+                                // Pointer tracking for the drag. Positions are kept in
+                                // the list's own content space, never relative to the
+                                // row: the row moves as it is dragged, so a row-local
+                                // delta would feed straight back into its own offset.
+                                // Content space also means an autoscroll step moves the
+                                // row exactly as if the pointer had travelled.
+                                property real dragPressY: 0   // content-space y at press
+                                property real dragViewY:  0   // viewport y of the pointer
+
+                                function updateDrag() {
+                                    var from = dragIndex
+                                    if (from < 0) return
+                                    var dy = (dragViewY + contentY) - dragPressY
+                                    var up = -from * queuePane.rowH
+                                    var dn = (count - 1 - from) * queuePane.rowH
+                                    dragOffset = Math.max(up, Math.min(dn, dy))
+                                    dropIndex = Math.max(0, Math.min(count - 1,
+                                        from + Math.round(dragOffset / queuePane.rowH)))
+                                }
+
+                                // Drag past either end to scroll the queue along.
+                                Timer {
+                                    id: qAutoScroll
+                                    interval: 16; repeat: true
+                                    running: queueList.dragIndex >= 0 && step !== 0
+                                    property real step: 0
+                                    onTriggered: {
+                                        var maxY = Math.max(0, queueList.contentHeight - queueList.height)
+                                        var next = Math.max(0, Math.min(maxY, queueList.contentY + step))
+                                        if (next === queueList.contentY) return
+                                        queueList.contentY = next
+                                        queueList.updateDrag()
+                                    }
+                                }
+
+                                // The delegate is a fixed slot the ListView positions;
+                                // the visible row is a child that floats inside it, so
+                                // dragging never fights the view's own layout.
+                                delegate: Item {
+                                    id: qSlot
+                                    width: queueList.width; height: queuePane.rowH
+                                    required property int index
+                                    required property var modelData
+                                    readonly property bool held: queueList.dragIndex === index
+                                    z: held ? 2 : 1
+
+                                    Rectangle {
+                                        id: qRow
+                                        width: parent.width; height: parent.height
+                                        readonly property int index: qSlot.index
+                                        readonly property var modelData: qSlot.modelData
+                                        readonly property bool held: qSlot.held
+
+                                        // The dragged row tracks the pointer; the rows
+                                        // between it and the drop slot step aside by one
+                                        // row to show where it will land.
+                                        y: {
+                                            var from = queueList.dragIndex
+                                            if (from < 0) return 0
+                                            if (qSlot.index === from) return queueList.dragOffset
+                                            var to = queueList.dropIndex
+                                            if (from < to && qSlot.index > from && qSlot.index <= to) return -queuePane.rowH
+                                            if (from > to && qSlot.index >= to && qSlot.index < from) return queuePane.rowH
+                                            return 0
+                                        }
+                                        Behavior on y {
+                                            enabled: !qRow.held
+                                            NumberAnimation { duration: 130; easing.type: Easing.OutCubic }
+                                        }
+
+                                        color: held ? clrSurf2 : (qRowMa.containsMouse ? "#141414" : "transparent")
+                                        Behavior on color { ColorAnimation { duration: 110 } }
+                                        // Lift the dragged row off the list.
+                                        border.color: held ? clrBorder : "transparent"
+                                        border.width: 1
+                                        radius: held ? 3 : 0
+                                        Rectangle { anchors.bottom:parent.bottom; anchors.left:parent.left; anchors.right:parent.right
+                                            height:1; color:clrBorder; opacity:0.5; visible:!qRow.held }
+
+                                        RowLayout {
+                                            anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 6; spacing: 8
+                                            // Grip: drawn rather than an icon, the bundled
+                                            // symbol font is subset and has no drag glyph.
+                                            Column {
+                                                Layout.preferredWidth: 8; spacing: 2
+                                                Repeater { model: 3
+                                                    Rectangle { width: 8; height: 1
+                                                    color: qRow.held ? clrAccent : (qRowMa.containsMouse ? clrText2 : "#3a3a3a")
+                                                    Behavior on color { ColorAnimation { duration: 90 } } } }
+                                            }
+                                            Column {
+                                                Layout.fillWidth: true; spacing: 1
+                                                ScrollText { width: parent.width; text: qRow.modelData.title; textColor: clrText2; pixelSize: 12 }
+                                                Text { width: parent.width; visible: qRow.modelData.artist !== ""
+                                                    text: qRow.modelData.artist; color: "#3a3a3a"; font.pixelSize: 9
+                                                    font.family: "Segoe UI"; elide: Text.ElideRight }
+                                            }
+                                            Text { text: qRow.modelData.duration; color: "#3a3a3a"; font.pixelSize: 10
+                                                font.family: "Consolas, monospace" }
+                                            Item {
+                                                width: 18; height: 18
+                                                MatIcon { anchors.centerIn: parent; name: "close"; size: 11
+                                                    color: qRmMa.containsMouse ? clrText : "#3a3a3a" }
+                                                MouseArea { id: qRmMa; anchors.fill: parent; hoverEnabled: true
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    onClicked: player.queueRemove(qRow.index) }
+                                            }
+                                        }
+
+                                        MouseArea {
+                                            id: qRowMa
+                                            anchors.fill: parent; anchors.rightMargin: 26
+                                            hoverEnabled: true
+                                            cursorShape: qSlot.held ? Qt.ClosedHandCursor : Qt.PointingHandCursor
+                                            // Only past a few pixels does this become a
+                                            // drag, so a plain click still plays the row.
+                                            property bool armed: false
+
+                                            function endDrag() {
+                                                queueList.dragIndex = -1
+                                                queueList.dropIndex = -1
+                                                queueList.dragOffset = 0
+                                                qAutoScroll.step = 0
+                                                armed = false
+                                            }
+
+                                            onPressed: function(mouse) {
+                                                queueList.dragViewY  = mapToItem(queueList, mouse.x, mouse.y).y
+                                                queueList.dragPressY = queueList.dragViewY + queueList.contentY
+                                                armed = false
+                                            }
+                                            onPositionChanged: function(mouse) {
+                                                if (!pressed) return
+                                                queueList.dragViewY = mapToItem(queueList, mouse.x, mouse.y).y
+                                                if (!armed) {
+                                                    var moved = (queueList.dragViewY + queueList.contentY) - queueList.dragPressY
+                                                    if (Math.abs(moved) < 4) return
+                                                    armed = true
+                                                    queueList.dragIndex = qSlot.index
+                                                }
+                                                queueList.updateDrag()
+                                                // Ramp the autoscroll up as the pointer
+                                                // pushes further past the edge.
+                                                var edge = 26
+                                                var y = queueList.dragViewY
+                                                if (y < edge)                        qAutoScroll.step = -Math.min(14, (edge - y) * 0.45)
+                                                else if (y > queueList.height - edge) qAutoScroll.step =  Math.min(14, (y - (queueList.height - edge)) * 0.45)
+                                                else                                  qAutoScroll.step = 0
+                                            }
+                                            onReleased: {
+                                                if (!armed) { player.queuePlayAt(qSlot.index); return }
+                                                var from = queueList.dragIndex
+                                                var to   = queueList.dropIndex
+                                                endDrag()
+                                                if (to >= 0 && to !== from) player.queueMove(from, to)
+                                            }
+                                            onCanceled: endDrag()
+                                        }
+                                    }
+                                }
+
+                                ScrollBar.vertical: ScrollBar {
+                                    id: qScrollBar; policy: ScrollBar.AsNeeded
+                                    contentItem: Rectangle { implicitWidth:4; radius:2; color:clrMuted
+                                        visible:qScrollBar.size<1.0; opacity:qScrollBar.active?0.85:0.3
+                                        Behavior on opacity{NumberAnimation{duration:200}} }
+                                    background: Rectangle { color: "transparent" }
+                                }
+                            }
                         }
                     }
                 }
@@ -1557,8 +1990,42 @@ ApplicationWindow {
                         }
                     }
                 }
-                MatIcon{size:16;color:clrText2
-                    name:volSlider.value<=0.001?"volume-mute":(volSlider.value<0.5?"volume-low":"volume")}
+                // Shuffle / repeat / queue, left of the volume control.
+                Item{width:26;height:26
+                    MatIcon{anchors.centerIn:parent;name:"shuffle";size:16
+                        color:player.shuffle?clrAccent:(shufMa.containsMouse?clrText:clrText2)
+                        Behavior on color{ColorAnimation{duration:90}}}
+                    MouseArea{id:shufMa;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor
+                        onClicked:player.toggleShuffle()}
+                }
+                Item{width:26;height:26
+                    // repeat_mode: 0 off, 1 all, 2 one.
+                    MatIcon{anchors.centerIn:parent;size:16
+                        name:player.repeat_mode===2?"repeat-one":"repeat"
+                        color:player.repeat_mode>0?clrAccent:(repMa.containsMouse?clrText:clrText2)
+                        Behavior on color{ColorAnimation{duration:90}}}
+                    MouseArea{id:repMa;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor
+                        onClicked:player.cycleRepeat()}
+                }
+                Item{width:26;height:26
+                    MatIcon{anchors.centerIn:parent;name:"queue";size:16
+                        color:window.queueOpen||queueBtnMa.containsMouse?clrText:clrText2
+                        Behavior on color{ColorAnimation{duration:90}}}
+                    // Marker so a queue built while the pane is shut is still visible.
+                    Rectangle{visible:!window.queueOpen&&player.queue_len>0
+                        anchors.right:parent.right;anchors.top:parent.top;anchors.rightMargin:3;anchors.topMargin:3
+                        width:5;height:5;radius:2.5;color:clrAccent}
+                    MouseArea{id:queueBtnMa;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor
+                        onClicked:window.queueOpen=!window.queueOpen}
+                }
+                Item{width:26;height:26
+                    MatIcon{anchors.centerIn:parent;size:16
+                        color:volIconMa.containsMouse?clrText:clrText2
+                        Behavior on color{ColorAnimation{duration:90}}
+                        name:volSlider.value<=0.001?"volume-mute":(volSlider.value<0.5?"volume-low":"volume")}
+                    MouseArea{id:volIconMa;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor
+                        onClicked:window.toggleMute()}
+                }
                 Slider{id:volSlider;Layout.preferredWidth:88;implicitHeight:30;padding:0;from:0;to:1;value:1.0
                     Component.onCompleted:player.setVolumeLevel(1.0);onMoved:player.setVolumeLevel(value)
                     background:Item{implicitHeight:30;Rectangle{anchors.verticalCenter:parent.verticalCenter;width:parent.width;height:3;radius:1;color:clrSurf2
@@ -1579,19 +2046,27 @@ ApplicationWindow {
             color: clrSurf2; border.color: clrBorder; border.width: 1
             height: ctxMenuCol.implicitHeight + 8
             property string targetPath: ""
+            property string targetId: ""
+            property string targetKind: ""
             property var menuItems: []
 
-            function openAt(path, kind, mx, my) {
+            function openAt(path, kind, mx, my, id) {
                 targetPath = path
+                targetId   = id || ""
+                targetKind = kind
                 var sj; try { sj = JSON.parse(library.settings_json.toString()) } catch(e) { sj = {} }
                 var pinned  = (sj.pinned_paths    || []).some(function(p){ return p === path })
                 var merged  = (sj.merged_folders  || []).some(function(p){ return p === path })
                 var ign     = (sj.ignored_folders || []).some(function(p){ return p === path })
-                var items = []
-                items.push(pinned ? {label: "Unpin",   action: "unpin"} : {label: "Pin",    action: "pin"})
-                if (kind === "folder") {
-                    items.push(merged ? {label: "Unmerge",  action: "merge_remove"}  : {label: "Merge",  action: "merge"})
-                    items.push(ign   ? {label: "Unignore", action: "ignore_remove"} : {label: "Ignore", action: "ignore"})
+                var items = [{label: "Add to queue", action: "queue"}]
+                // A single track only offers queueing; pin/merge/ignore are
+                // folder-and-album concepts.
+                if (kind !== "track") {
+                    items.push(pinned ? {label: "Unpin",   action: "unpin"} : {label: "Pin",    action: "pin"})
+                    if (kind === "folder") {
+                        items.push(merged ? {label: "Unmerge",  action: "merge_remove"}  : {label: "Merge",  action: "merge"})
+                        items.push(ign   ? {label: "Unignore", action: "ignore_remove"} : {label: "Ignore", action: "ignore"})
+                    }
                 }
                 menuItems = items
                 var h = items.length * 28 + 8
@@ -1614,7 +2089,20 @@ ApplicationWindow {
                         Text { anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 12
                             text: modelData.label; color: clrText; font.pixelSize: 12; font.family: "Segoe UI" }
                         MouseArea { id: ctxRowMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                            onClicked: { itemCtxMenu.visible = false; library.setFolderOption(itemCtxMenu.targetPath, modelData.action) }
+                            onClicked: {
+                                itemCtxMenu.visible = false
+                                if (modelData.action === "queue") {
+                                    // An album resolves through its id (several albums
+                                    // can share a directory); a folder queues by path.
+                                    if (itemCtxMenu.targetKind === "album" && itemCtxMenu.targetId !== "")
+                                        player.enqueuePaths(library.albumTrackPaths(itemCtxMenu.targetId))
+                                    else
+                                        player.enqueuePaths([itemCtxMenu.targetPath])
+                                    window.queueOpen = true
+                                } else {
+                                    library.setFolderOption(itemCtxMenu.targetPath, modelData.action)
+                                }
+                            }
                         }
                     }
                 }
@@ -1697,7 +2185,8 @@ ApplicationWindow {
     }
 
     Timer{id:smtcInitTimer;interval:500;repeat:false;running:false;onTriggered:player.initSmtc()}
-    Component.onCompleted:{player.scanDrives();player.setVolumeLevel(1.0);smtcInitTimer.start();library.init()}
+    Component.onCompleted:{player.scanDrives();player.setVolumeLevel(1.0);smtcInitTimer.start();library.init()
+        player.setCrossfadeConfig(window._crossfadeOn,window._crossfadeSecs)}
 
     function formatTime(s){if(s<0)s=0;var m=Math.floor(s/60);var sec=Math.floor(s%60);return(m<10?"0":"")+m+":"+(sec<10?"0":"")+sec}
 }

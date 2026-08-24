@@ -64,6 +64,7 @@ pub mod library_bridge {
         #[qinvokable] #[cxx_name = "removeSearchPath"] fn remove_search_path(self: Pin<&mut Self>, path: QString);
         #[qinvokable] #[cxx_name = "setMergeAll"]      fn set_merge_all(self: Pin<&mut Self>, value: bool);
         #[qinvokable] #[cxx_name = "browseAlbum"]      fn browse_album(self: Pin<&mut Self>, dir: QString);
+        #[qinvokable] #[cxx_name = "albumTrackPaths"]  fn album_track_paths(self: Pin<&mut Self>, id: QString) -> QStringList;
         #[qinvokable] #[cxx_name = "navigateToRoot"]   fn navigate_to_root(self: Pin<&mut Self>);
         #[qinvokable]                                   fn init(self: Pin<&mut Self>);
         #[qinvokable] #[cxx_name = "purgeLrcCache"]        fn purge_lrc_cache(self: Pin<&mut Self>);
@@ -71,6 +72,9 @@ pub mod library_bridge {
         #[qinvokable] #[cxx_name = "setLrcLimitDisabled"]  fn set_lrc_limit_disabled(self: Pin<&mut Self>, value: bool);
         #[qinvokable] #[cxx_name = "setRomanizeLyrics"]    fn set_romanize_lyrics(self: Pin<&mut Self>, value: bool);
         #[qinvokable] #[cxx_name = "setDiscordRpc"]        fn set_discord_rpc(self: Pin<&mut Self>, value: bool);
+        #[qinvokable] #[cxx_name = "setVisualizer"]        fn set_visualizer(self: Pin<&mut Self>, value: bool);
+        #[qinvokable] #[cxx_name = "setCrossfade"]         fn set_crossfade(self: Pin<&mut Self>, value: bool);
+        #[qinvokable] #[cxx_name = "setCrossfadeSecs"]     fn set_crossfade_secs(self: Pin<&mut Self>, value: f64);
         #[qinvokable] #[cxx_name = "setAlbumSort"]         fn set_album_sort(self: Pin<&mut Self>, value: QString);
     }
 }
@@ -387,6 +391,22 @@ impl library_bridge::LibraryController {
         self.as_mut().set_album_tracks_json(QString::from(json.as_str()));
     }
 
+    /// An album's track paths in play order, for queueing it without having to
+    /// browse into it first.
+    pub fn album_track_paths(self: Pin<&mut Self>, id: QString) -> QStringList {
+        let album_id = id.to_string();
+        let state = self.state.lock().unwrap();
+        let mut out = QStringList::default();
+        if let Some(result) = &state.scan_result {
+            if let Some(album) = result.albums.iter().find(|a| a.id == album_id) {
+                for p in &album.track_paths {
+                    out.append(QString::from(p.to_string_lossy().as_ref()));
+                }
+            }
+        }
+        out
+    }
+
     pub fn set_music_dir(mut self: Pin<&mut Self>, path: QString) {
         let p = std::path::PathBuf::from(path.to_string());
         let json = {
@@ -512,6 +532,37 @@ impl library_bridge::LibraryController {
         let json = {
             let mut st = self.state.lock().unwrap();
             st.settings.discord_rpc = value;
+            library_cache::save_settings(&st.settings);
+            serde_json::to_string(&st.settings).unwrap_or_default()
+        };
+        self.as_mut().set_settings_json(QString::from(json.as_str()));
+    }
+
+    pub fn set_visualizer(mut self: Pin<&mut Self>, value: bool) {
+        let json = {
+            let mut st = self.state.lock().unwrap();
+            st.settings.visualizer = value;
+            library_cache::save_settings(&st.settings);
+            serde_json::to_string(&st.settings).unwrap_or_default()
+        };
+        self.as_mut().set_settings_json(QString::from(json.as_str()));
+    }
+
+    pub fn set_crossfade(mut self: Pin<&mut Self>, value: bool) {
+        let json = {
+            let mut st = self.state.lock().unwrap();
+            st.settings.crossfade = value;
+            library_cache::save_settings(&st.settings);
+            serde_json::to_string(&st.settings).unwrap_or_default()
+        };
+        self.as_mut().set_settings_json(QString::from(json.as_str()));
+    }
+
+    pub fn set_crossfade_secs(mut self: Pin<&mut Self>, value: f64) {
+        let json = {
+            let mut st = self.state.lock().unwrap();
+            st.settings.crossfade_secs =
+                value.clamp(crate::library::CROSSFADE_MIN_SECS, crate::library::CROSSFADE_MAX_SECS);
             library_cache::save_settings(&st.settings);
             serde_json::to_string(&st.settings).unwrap_or_default()
         };

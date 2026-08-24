@@ -42,6 +42,10 @@ Text {
         "volume-low":    "\ue04d",
         "volume-mute":   "\ue04f",
         "eject":         "\ue8fb",
-        "album":         "\ue019"
+        "album":         "\ue019",
+        "queue":         "\ue03d",
+        "shuffle":       "\ue043",
+        "repeat":        "\ue040",
+        "repeat-one":    "\ue041"
     })
 }
