@@ -17,7 +17,7 @@
 - Windows, Mac and Linux support
 
 ## Install
-Grab a build from the [releases page](https://github.com/chwair/kanae/releases). Each release ships three variants per platform:
+Each release ships three variants per platform:
 
 | Variant | Windows | macOS | Linux |
 |---|---|---|---|
