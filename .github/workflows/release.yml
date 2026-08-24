@@ -87,7 +87,15 @@ jobs:
             --no-compiler-runtime `
             --qmldir qml `
             dist\kanae.exe
-          makensis /DVERSION=$env:VERSION /DVARIANT=${{ matrix.variant }} scripts\installer.nsi
+          # VERSION is a tag name ("v1.2.3") or "dev"; the exe's file properties
+          # need a four-part number
+          $num = "0.0.0.0"
+          if ($env:VERSION -match '^v?(\d+(?:\.\d+){0,3})$') {
+            $parts = $Matches[1].Split('.')
+            $num = (($parts + @('0') * 4)[0..3]) -join '.'
+          }
+          makensis /DVERSION=$env:VERSION /DVERSION_NUM=$num `
+            /DVARIANT=${{ matrix.variant }} scripts\installer.nsi
 
       # tui only
       - name: Package executable (tui)
