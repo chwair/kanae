@@ -64,6 +64,29 @@ fn collect_dir(dir: &Path) -> Vec<LocalTrack> {
     files.iter().map(|f| read_file_metadata(f)).collect()
 }
 
+/// The album a file belongs to, as the sibling audio files in its directory
+/// that share its album tag, plus the file's index within them.
+///
+/// Falls back to the file on its own when it has no album siblings, so an
+/// untagged loose file still plays.
+pub fn album_context_for(path: &Path) -> (Vec<LocalTrack>, i32) {
+    let this = read_file_metadata(path);
+    let Some(dir) = path.parent() else { return (vec![this], 0) };
+
+    let siblings = collect_files_from_paths(&[dir.to_string_lossy().into_owned()]);
+    // Directories can hold several albums; keep only the matching one. An empty
+    // album tag means the track is a standalone single.
+    let album: Vec<_> = if this.album.is_empty() {
+        Vec::new()
+    } else {
+        siblings.into_iter().filter(|t| t.album == this.album).collect()
+    };
+    match album.iter().position(|t| t.path == this.path) {
+        Some(i) if album.len() > 1 => (album, i as i32),
+        _ => (vec![this], 0),
+    }
+}
+
 pub fn read_file_metadata(path: &Path) -> LocalTrack {
     use symphonia::core::{
         formats::{probe::Hint, FormatOptions, TrackType},

@@ -810,7 +810,7 @@ impl TuiPlayerState {
     /// Loaded in its album rather than on its own, so the track list shows the
     /// real album with the song selected instead of a one-track pseudo-album.
     fn play_queue_entry(&mut self, entry: crate::queue::QueueEntry) {
-        let (tracks, index) = crate::player::album_context_for(&entry.path);
+        let (tracks, index) = crate::file_player::album_context_for(&entry.path);
         let first = &tracks[0];
         let meta = if tracks.len() == 1 {
             FileAlbumMeta {
