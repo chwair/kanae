@@ -8,25 +8,16 @@ on:
 permissions:
   contents: write
 
-# Don't pile up overlapping builds for the same ref.
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  # For tag pushes this is e.g. "v1.2.3"; for manual runs it falls back to "dev".
   VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'dev' }}
-  # Pinned Qt 6.8 LTS (patch-pinned for reproducible builds). qtshadertools is
-  # required by QtQuick.Shapes; qtdeclarative (Qt Quick) ships in the base install.
-  QT_VERSION: '6.8.3'
+  QT_VERSION: '6.8.*'
   QT_MODULES: 'qtshadertools'
 
-# Each platform job builds three variants:
-#   • hybrid — GUI + TUI in one binary (TUI when run in a terminal, GUI otherwise)
-#   • gui    — GUI only, packaged as an installer / .app / AppImage
-#   • tui    — TUI only, shipped as a single-file executable
 jobs:
-  # ─────────────────────────────────────────────────────────────── Windows ──
   windows:
     runs-on: windows-latest
     strategy:
@@ -68,12 +59,13 @@ jobs:
         run: |
           $q = (where.exe qmake 2>$null | Select-Object -First 1).Trim()
           "QMAKE=$q" >> $env:GITHUB_ENV
+          "QT_PLUGIN_PATH=$(Split-Path $q -Parent)\..\..\plugins" >> $env:GITHUB_ENV
+          "QML_IMPORT_PATH=$(Split-Path $q -Parent)\..\..\qml" >> $env:GITHUB_ENV
 
       - name: Build
         shell: pwsh
         run: cargo build --release ${{ matrix.cargo_flags }}
 
-      # makensis is not guaranteed on the runner image; install it explicitly.
       - name: Install NSIS
         if: matrix.needs_qt
         shell: pwsh
@@ -81,7 +73,7 @@ jobs:
           choco install nsis --no-progress -y
           echo "C:\Program Files (x86)\NSIS" >> $env:GITHUB_PATH
 
-      # ── GUI / Hybrid: windeployqt6 → NSIS installer ────────────────────────
+      # gui & hybrid
       - name: Package installer (gui/hybrid)
         if: matrix.needs_qt
         shell: pwsh
@@ -97,7 +89,7 @@ jobs:
             dist\kanae.exe
           makensis /DVERSION=$env:VERSION /DVARIANT=${{ matrix.variant }} scripts\installer.nsi
 
-      # ── TUI: single-file executable ────────────────────────────────────────
+      # tui only
       - name: Package executable (tui)
         if: matrix.variant == 'tui'
         shell: pwsh
@@ -110,7 +102,7 @@ jobs:
           path: |
             kanae-${{ matrix.variant }}-windows-x64-${{ env.VERSION }}.exe
 
-  # ──────────────────────────────────────────────────────────────── macOS ──
+
   macos:
     runs-on: macos-latest
     strategy:
@@ -150,10 +142,8 @@ jobs:
       - name: Build
         run: cargo build --release ${{ matrix.cargo_flags }}
 
-      # ── GUI / Hybrid: .app bundle (macdeployqt + ad-hoc codesign) ──────────
-      # Ad-hoc signing is mandatory on Apple Silicon: macdeployqt rewrites the
-      # binary's load commands which invalidates any prior signature, and an
-      # unsigned arm64 binary is killed by the OS on launch ("is damaged").
+
+      # gui & hybrid
       - name: Package .app (gui/hybrid)
         if: matrix.needs_qt
         run: |
@@ -165,15 +155,13 @@ jobs:
           chmod +x "$APP/Contents/MacOS/kanae"
           printf 'APPL????' > "$APP/Contents/PkgInfo"
 
-          # Info.plist — written flush-left so the XML declaration has no leading
-          # whitespace (a leading space before <?xml makes the plist malformed).
           cat > "$APP/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
             <key>CFBundleExecutable</key><string>kanae</string>
-            <key>CFBundleIdentifier</key><string>com.kanae.player</string>
+            <key>CFBundleIdentifier</key><string>com.chair.kanae</string>
             <key>CFBundleName</key><string>Kanae</string>
             <key>CFBundleDisplayName</key><string>Kanae</string>
             <key>CFBundlePackageType</key><string>APPL</string>
@@ -186,19 +174,17 @@ jobs:
           </plist>
           PLIST
 
-          # Validate the plist before we go any further.
           plutil -lint "$APP/Contents/Info.plist"
 
           macdeployqt "$APP" -qmldir=qml
 
-          # Re-sign everything ad-hoc, inside-out, after macdeployqt's edits.
           codesign --force --deep --sign - --timestamp=none "$APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
 
           ditto -c -k --sequesterRsrc --keepParent \
             "$APP" "kanae-${{ matrix.variant }}-macos-${ARCH}-${VERSION}.zip"
 
-      # ── TUI: single-file executable (ad-hoc signed so it runs on arm64) ────
+      # tui only
       - name: Package executable (tui)
         if: matrix.variant == 'tui'
         run: |
@@ -214,7 +200,7 @@ jobs:
             kanae-${{ matrix.variant }}-macos-*-${{ env.VERSION }}.zip
             kanae-tui-macos-*-${{ env.VERSION }}
 
-  # ──────────────────────────────────────────────────────────────── Linux ──
+  # linux
   linux:
     runs-on: ubuntu-22.04
     strategy:
@@ -234,14 +220,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # ALSA is needed by rodio, and D-Bus by souvlaki (MPRIS media controls) —
-      # both are unconditional dependencies, so every variant needs them.
       - name: Install system dependencies (common)
         run: |
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libdbus-1-dev pkg-config
 
-      # GLib/Wayland (Qt), fuse2 + patchelf (AppImage tooling).
       - name: Install system dependencies (gui/hybrid)
         if: matrix.needs_qt
         run: |
@@ -272,7 +255,7 @@ jobs:
       - name: Build
         run: cargo build --release ${{ matrix.cargo_flags }}
 
-      # ── GUI / Hybrid: self-contained AppImage (bundles Qt + all .so deps) ──
+      # gui & hybrid
       - name: Package AppImage (gui/hybrid)
         if: matrix.needs_qt
         run: |
@@ -296,7 +279,6 @@ jobs:
           Categories=AudioVideo;Player;
           EOF
 
-          # Minimal placeholder icon (no external assets needed).
           python3 - <<'PYEOF'
           import struct, zlib
           def make_png(w, h, r, g, b):
@@ -312,8 +294,6 @@ jobs:
               f.write(make_png(256, 256, 30, 30, 60))
           PYEOF
 
-          # The QML is compiled into the binary (qrc), so point the Qt plugin at
-          # the sources and force-include the modules it can't infer statically.
           export QML_SOURCES_PATHS="$PWD/qml"
           export EXTRA_QT_MODULES="qml;quick;quickcontrols2;quicktemplates2;quicklayouts;quickshapes;network"
           export QMAKE_EXECUTABLE="$QMAKE"
@@ -324,7 +304,7 @@ jobs:
 
           mv Kanae*.AppImage "kanae-${{ matrix.variant }}-linux-x86_64-${VERSION}.AppImage"
 
-      # ── TUI: single-file executable ───────────────────────────────────────
+      # tui only
       - name: Package executable (tui)
         if: matrix.variant == 'tui'
         run: cp target/release/kanae "kanae-tui-linux-x86_64-${VERSION}"
@@ -337,7 +317,7 @@ jobs:
             kanae-${{ matrix.variant }}-linux-x86_64-${{ env.VERSION }}.AppImage
             kanae-tui-linux-x86_64-${{ env.VERSION }}
 
-  # ─────────────────────────────────────────────────────────────── Release ──
+  # final release job
   release:
     needs: [windows, macos, linux]
     runs-on: ubuntu-latest
