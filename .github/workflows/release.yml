@@ -139,6 +139,15 @@ jobs:
         if: matrix.needs_qt
         run: echo "QMAKE=$(which qmake)" >> "$GITHUB_ENV"
 
+      # agl.framework was removed from the macos sdk in xcode 26, but qt's prl
+      # metadata still lists it, and qt-build-utils forwards it to the linker
+      - name: Strip AGL from Qt link metadata
+        if: matrix.needs_qt
+        run: |
+          QT_LIBS="$(qmake -query QT_INSTALL_LIBS)"
+          find "$QT_LIBS" -name '*.prl' -print0 \
+            | xargs -0 sed -i '' -e 's/-framework AGL//g'
+
       - name: Build
         run: cargo build --release ${{ matrix.cargo_flags }}
 
