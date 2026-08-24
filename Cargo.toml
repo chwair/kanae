@@ -55,7 +55,7 @@ ratatui-image = { version = "10",  default-features = false, features = ["crosst
 kakasi = "0.1.0"
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = ["winuser", "processthreadsapi", "fileapi", "winioctl", "ioapiset", "handleapi", "wincon"] }
+winapi = { version = "0.3", features = ["winuser", "processthreadsapi", "fileapi", "winioctl", "ioapiset", "handleapi", "wincon", "consoleapi", "processenv", "winbase", "winnt"] }
 winreg = "0.52"
 
 [target.'cfg(target_os = "macos")'.dependencies]

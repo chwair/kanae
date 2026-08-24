@@ -88,10 +88,68 @@ fn launched_from_terminal() -> bool {
 fn detach_own_console() {
     unsafe {
         let mut pids = [0u32; 2];
-        if winapi::um::wincon::GetConsoleProcessList(pids.as_mut_ptr(), 2) <= 1 {
-            winapi::um::wincon::FreeConsole();
+        if winapi::um::wincon::GetConsoleProcessList(pids.as_mut_ptr(), 2) > 1 {
+            return;
+        }
+        let was_console = console_backed_std_handles();
+        winapi::um::wincon::FreeConsole();
+        redirect_std_to_nul(was_console);
+    }
+}
+
+/// Point the console-backed standard handles at the NUL device. FreeConsole
+/// leaves them pointing at the console it just closed; writing to one of those
+/// fails, and print!/eprintln! panic when the write fails, so the first log
+/// line after the GUI comes up would kill the process. (A windows-subsystem
+/// build has null std handles, which std silently discards writes to — this
+/// restores the same behaviour for a detached console build.) Handles the
+/// parent redirected to a file or pipe are left alone, so `kanae > log.txt`
+/// still collects logs.
+#[cfg(all(feature = "gui", feature = "tui", windows))]
+unsafe fn redirect_std_to_nul(was_console: [bool; 3]) {
+    use winapi::um::fileapi::{CreateFileW, OPEN_EXISTING};
+    use winapi::um::handleapi::INVALID_HANDLE_VALUE;
+    use winapi::um::processenv::SetStdHandle;
+    use winapi::um::winbase::{STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
+    use winapi::um::winnt::{FILE_SHARE_READ, FILE_SHARE_WRITE, GENERIC_READ, GENERIC_WRITE};
+
+    let nul: Vec<u16> = "NUL\0".encode_utf16().collect();
+    let ids = [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE];
+    for (i, id) in ids.into_iter().enumerate() {
+        if !was_console[i] {
+            continue;
+        }
+        // one handle per slot, so closing one later can't affect the others
+        let h = CreateFileW(
+            nul.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null_mut(),
+            OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        );
+        if h != INVALID_HANDLE_VALUE {
+            SetStdHandle(id, h);
         }
     }
+}
+
+/// Which of stdin/stdout/stderr are backed by the console we are about to free.
+#[cfg(all(feature = "gui", feature = "tui", windows))]
+unsafe fn console_backed_std_handles() -> [bool; 3] {
+    use winapi::um::consoleapi::GetConsoleMode;
+    use winapi::um::processenv::GetStdHandle;
+    use winapi::um::winbase::{STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
+
+    let ids = [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE];
+    let mut out = [false; 3];
+    for (i, id) in ids.into_iter().enumerate() {
+        let h = GetStdHandle(id);
+        let mut mode = 0u32;
+        out[i] = !h.is_null() && GetConsoleMode(h, &mut mode) != 0;
+    }
+    out
 }
 
 fn main() {

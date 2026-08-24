@@ -92,6 +92,7 @@ VIAddVersionKey  "LegalCopyright"  ""
 
 !include "MUI2.nsh"
 !include "FileFunc.nsh"
+!include "WinMessages.nsh"
 
 ; MUI paints the header and the welcome/finish pages with these
 !define MUI_BGCOLOR                   "${CLR_BG}"
@@ -181,6 +182,53 @@ Function un.DarkFrame
   !insertmacro _DarkFrame
 FunctionEnd
 
+; ── System PATH (hybrid only) ────────────────────────────────────────────────
+; The hybrid build runs as a TUI when started from a terminal, so the install
+; dir goes on the machine PATH to make "kanae" work from cmd/PowerShell. The
+; GUI-only build has nothing to offer a shell, so it relies on App Paths alone.
+!if "${VARIANT}" == "hybrid"
+
+!include "WordFunc.nsh"
+!insertmacro WordAdd
+!insertmacro un.WordAdd
+
+!define ENVREG "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
+
+; $0 = current PATH, $1 = new PATH, $2 = length of current PATH.
+; NSIS strings are capped at 1024 chars, so a longer PATH comes back from
+; ReadRegStr truncated; writing that back would eat the tail of it.
+!macro _PathTooLong
+  StrLen $2 $0
+  IntCmp $2 1000 0 +3 0
+    DetailPrint "System PATH is too long to edit safely; skipping PATH update."
+    Return
+!macroend
+
+; nothing to do when the entry is already there (reinstall) or already gone
+!macro _CommitPath MSG
+  StrCmp $1 $0 +4
+    DetailPrint "${MSG}"
+    WriteRegExpandStr HKLM "${ENVREG}" "Path" "$1"
+    ; tell already-running shells and Explorer to reread the environment
+    SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
+!macroend
+
+Function AddToSystemPath
+  ReadRegStr $0 HKLM "${ENVREG}" "Path"
+  !insertmacro _PathTooLong
+  ${WordAdd} "$0" ";" "+$INSTDIR" $1
+  !insertmacro _CommitPath "Adding $INSTDIR to the system PATH"
+FunctionEnd
+
+Function un.RemoveFromSystemPath
+  ReadRegStr $0 HKLM "${ENVREG}" "Path"
+  !insertmacro _PathTooLong
+  ${un.WordAdd} "$0" ";" "-$INSTDIR" $1
+  !insertmacro _CommitPath "Removing $INSTDIR from the system PATH"
+FunctionEnd
+
+!endif
+
 ; ── Install ──────────────────────────────────────────────────────────────────
 Section "Kanae" SecMain
   SectionIn RO  ; required section
@@ -210,6 +258,11 @@ Section "Kanae" SecMain
   ; App Paths: lets "kanae" work from Win+R and the shell's path lookup
   WriteRegStr HKLM "${APPPATHS}" ""     "$INSTDIR\${APPEXE}"
   WriteRegStr HKLM "${APPPATHS}" "Path" "$INSTDIR"
+
+  ; PATH: lets "kanae" work from cmd/PowerShell, where the hybrid build's TUI is
+!if "${VARIANT}" == "hybrid"
+  Call AddToSystemPath
+!endif
 
   ; The file type Kanae hands to Windows, and the verb used to launch it.
   WriteRegStr HKLM "Software\Classes\${PROGID}" ""                 "Audio File"
@@ -254,6 +307,10 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\${APPNAME}\${APPNAME}.lnk"
   RMDir  "$SMPROGRAMS\${APPNAME}"
   Delete "$DESKTOP\${APPNAME}.lnk"
+
+!if "${VARIANT}" == "hybrid"
+  Call un.RemoveFromSystemPath
+!endif
 
   RMDir /r "$INSTDIR"
 
