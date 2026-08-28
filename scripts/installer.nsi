@@ -182,49 +182,75 @@ Function un.DarkFrame
   !insertmacro _DarkFrame
 FunctionEnd
 
-; ── System PATH (hybrid only) ────────────────────────────────────────────────
+; ── User PATH (hybrid only) ──────────────────────────────────────────────────
 ; The hybrid build runs as a TUI when started from a terminal, so the install
-; dir goes on the machine PATH to make "kanae" work from cmd/PowerShell. The
-; GUI-only build has nothing to offer a shell, so it relies on App Paths alone.
+; dir goes on the PATH to make "kanae" work from cmd/PowerShell. The GUI-only
+; build has nothing to offer a shell, so it relies on App Paths alone.
+;
+; This is the per-user PATH (HKCU\Environment), never the machine-wide one. The
+; installer elevates for its HKLM writes, so this is the HKCU of whoever the
+; elevation ran as: with over-the-shoulder elevation (different admin account)
+; the entry lands on that account's PATH, not the logged-in user's.
 !if "${VARIANT}" == "hybrid"
 
 !include "WordFunc.nsh"
 !insertmacro WordAdd
 !insertmacro un.WordAdd
 
-!define ENVREG "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
+!define ENVREG "Environment"
 
-; $0 = current PATH, $1 = new PATH, $2 = length of current PATH.
+; Reads the existing user PATH into $0, using $2 as scratch. A missing value is
+; not an error, it just means there is nothing to append to yet.
+;
 ; NSIS strings are capped at 1024 chars, so a longer PATH comes back from
-; ReadRegStr truncated; writing that back would eat the tail of it.
-!macro _PathTooLong
+; ReadRegStr truncated; writing that back would eat the tail of it. Bail out
+; instead and leave the PATH alone.
+!macro _ReadUserPath
+  ClearErrors
+  ReadRegStr $0 HKCU "${ENVREG}" "Path"
+  IfErrors 0 +2
+    StrCpy $0 ""
   StrLen $2 $0
-  IntCmp $2 1000 0 +3 0
-    DetailPrint "System PATH is too long to edit safely; skipping PATH update."
+  IntCmp $2 1000 0 lenok 0
+    DetailPrint "User PATH is too long to edit safely; skipping PATH update."
     Return
+  lenok:
 !macroend
 
-; nothing to do when the entry is already there (reinstall) or already gone
-!macro _CommitPath MSG
-  StrCmp $1 $0 +4
-    DetailPrint "${MSG}"
-    WriteRegExpandStr HKLM "${ENVREG}" "Path" "$1"
-    ; tell already-running shells and Explorer to reread the environment
-    SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
+; $1 holds the full new PATH: the old value with one entry added or removed,
+; never a value built from scratch
+!macro _WriteUserPath MSG
+  DetailPrint "${MSG}"
+  WriteRegExpandStr HKCU "${ENVREG}" "Path" "$1"
+  ; tell already-running shells and Explorer to reread the environment
+  SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
 !macroend
 
-Function AddToSystemPath
-  ReadRegStr $0 HKLM "${ENVREG}" "Path"
-  !insertmacro _PathTooLong
-  ${WordAdd} "$0" ";" "+$INSTDIR" $1
-  !insertmacro _CommitPath "Adding $INSTDIR to the system PATH"
+Function AddToUserPath
+  !insertmacro _ReadUserPath
+  StrCmp $0 "" 0 append
+    ; no user PATH exists yet, so the install dir becomes the whole value
+    StrCpy $1 "$INSTDIR"
+    Goto commit
+  append:
+    ; appends to what's already there; on a reinstall the entry is already
+    ; present, so WordAdd hands back the current PATH untouched
+    ${WordAdd} "$0" ";" "+$INSTDIR" $1
+  commit:
+  ; nothing to write when the entry was already there
+  StrCmp $1 $0 done
+  !insertmacro _WriteUserPath "Adding $INSTDIR to the user PATH"
+  done:
 FunctionEnd
 
-Function un.RemoveFromSystemPath
-  ReadRegStr $0 HKLM "${ENVREG}" "Path"
-  !insertmacro _PathTooLong
+Function un.RemoveFromUserPath
+  !insertmacro _ReadUserPath
+  StrCmp $0 "" done
   ${un.WordAdd} "$0" ";" "-$INSTDIR" $1
-  !insertmacro _CommitPath "Removing $INSTDIR from the system PATH"
+  ; nothing to write when the entry was already gone
+  StrCmp $1 $0 done
+  !insertmacro _WriteUserPath "Removing $INSTDIR from the user PATH"
+  done:
 FunctionEnd
 
 !endif
@@ -261,7 +287,7 @@ Section "Kanae" SecMain
 
   ; PATH: lets "kanae" work from cmd/PowerShell, where the hybrid build's TUI is
 !if "${VARIANT}" == "hybrid"
-  Call AddToSystemPath
+  Call AddToUserPath
 !endif
 
   ; The file type Kanae hands to Windows, and the verb used to launch it.
@@ -309,7 +335,7 @@ Section "Uninstall"
   Delete "$DESKTOP\${APPNAME}.lnk"
 
 !if "${VARIANT}" == "hybrid"
-  Call un.RemoveFromSystemPath
+  Call un.RemoveFromUserPath
 !endif
 
   RMDir /r "$INSTDIR"
