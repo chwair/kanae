@@ -9,6 +9,9 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const CLIENT_ID: &str = "1513290345322905781";
+/// Cloudflare worker that holds a 128×128 cover for an hour so Discord can fetch it.
+const COVER_UPLOAD_URL: &str = "https://cover.kanaefm.workers.dev/upload";
+/// Slightly under the host's one-hour expiry, so a cached URL never outlives the image.
 const COVER_CACHE_TTL: Duration = Duration::from_secs(58 * 60);
 const SEEK_THRESHOLD_SECS: f64 = 3.0;
 /// Backoff before each retry of a failed cover upload. Length caps the attempts.
@@ -36,15 +39,15 @@ pub struct DiscordPresence {
     connected:           bool,
     last_reconnect:      Instant,
     // Cover art upload + 1-hour cache
-    cached_cover_src:    String,
-    cached_cover_litter: String,
-    cover_cache:         HashMap<String, (String, Instant)>,
-    cover_slot:          Arc<Mutex<Option<CoverResult>>>,
+    cached_cover_src: String,
+    cached_cover_url: String,
+    cover_cache:      HashMap<String, (String, Instant)>,
+    cover_slot:       Arc<Mutex<Option<CoverResult>>>,
     /// Bumped per upload request; results carrying a stale gen are discarded.
-    cover_gen:           u64,
-    cover_inflight:      bool,
-    cover_attempts:      usize,
-    cover_retry_at:      Option<Instant>,
+    cover_gen:        u64,
+    cover_inflight:   bool,
+    cover_attempts:   usize,
+    cover_retry_at:   Option<Instant>,
     // Change detection — only call IPC when something actually changes
     last_title:          String,
     last_artist:         String,
@@ -63,7 +66,7 @@ impl DiscordPresence {
             connected:           false,
             last_reconnect:      Instant::now() - Duration::from_secs(30),
             cached_cover_src:    String::new(),
-            cached_cover_litter: String::new(),
+            cached_cover_url:    String::new(),
             cover_cache:         HashMap::new(),
             cover_slot:          Arc::new(Mutex::new(None)),
             cover_gen:           0,
@@ -128,9 +131,9 @@ impl DiscordPresence {
             return false;
         };
 
-        eprintln!("[discord] litterbox url: {:?}", url);
+        eprintln!("[discord] cover url: {:?}", url);
         self.cover_cache.insert(self.cached_cover_src.clone(), (url.clone(), Instant::now()));
-        self.cached_cover_litter = url;
+        self.cached_cover_url = url;
         self.cover_attempts = 0;
         self.cover_retry_at = None;
         true
@@ -160,23 +163,23 @@ impl DiscordPresence {
 
         let cover_src = normalize_cover_path(&info.cover_url);
         if cover_src != self.cached_cover_src {
-            self.cached_cover_src    = cover_src.clone();
-            self.cached_cover_litter = String::new();
-            self.cover_gen          += 1; // orphan any in-flight upload
-            self.cover_inflight      = false;
-            self.cover_attempts      = 0;
-            self.cover_retry_at      = None;
+            self.cached_cover_src = cover_src.clone();
+            self.cached_cover_url = String::new();
+            self.cover_gen       += 1; // orphan any in-flight upload
+            self.cover_inflight   = false;
+            self.cover_attempts   = 0;
+            self.cover_retry_at   = None;
             *self.cover_slot.lock().unwrap() = None;
             if !cover_src.is_empty() {
                 if let Some((cached_url, upload_time)) = self.cover_cache.get(&cover_src) {
                     if upload_time.elapsed() < COVER_CACHE_TTL {
                         eprintln!("[discord] cover cache hit: {}", cached_url);
-                        self.cached_cover_litter = cached_url.clone();
+                        self.cached_cover_url = cached_url.clone();
                     }
                 }
-                if self.cached_cover_litter.is_empty() { self.spawn_cover_upload(); }
+                if self.cached_cover_url.is_empty() { self.spawn_cover_upload(); }
             }
-        } else if self.cached_cover_litter.is_empty() && !self.cover_inflight {
+        } else if self.cached_cover_url.is_empty() && !self.cover_inflight {
             // Retry an earlier failure once its backoff expires.
             if self.cover_retry_at.is_some_and(|at| Instant::now() >= at) {
                 self.spawn_cover_upload();
@@ -200,7 +203,7 @@ impl DiscordPresence {
             || info.artist     != self.last_artist
             || info.album      != self.last_album
             || info.is_playing != self.last_is_playing
-            || self.cached_cover_litter != self.last_pushed_cover;
+            || self.cached_cover_url != self.last_pushed_cover;
 
         if !dirty { return; }
 
@@ -208,7 +211,7 @@ impl DiscordPresence {
         self.last_artist         = info.artist.clone();
         self.last_album          = info.album.clone();
         self.last_is_playing     = info.is_playing;
-        self.last_pushed_cover   = self.cached_cover_litter.clone();
+        self.last_pushed_cover   = self.cached_cover_url.clone();
         self.last_push_time      = Instant::now();
         self.last_pushed_position = info.position_secs;
 
@@ -247,9 +250,9 @@ impl DiscordPresence {
             activity = activity.timestamps(Timestamps::new().start(start).end(end));
         }
 
-        if !self.cached_cover_litter.is_empty() {
+        if !self.cached_cover_url.is_empty() {
             let tooltip = if info.album.is_empty() { None } else { Some(info.album.as_str()) };
-            let mut assets = Assets::new().large_image(self.cached_cover_litter.as_str(), tooltip);
+            let mut assets = Assets::new().large_image(self.cached_cover_url.as_str(), tooltip);
             // A small pause badge over the cover reinforces the paused state for
             // viewers. "paused" is an asset key registered in the Discord app's
             // Rich Presence art assets; if it isn't present Discord just ignores
@@ -285,7 +288,8 @@ fn normalize_cover_path(url: &str) -> String {
     url.to_string()
 }
 
-/// Load cover art (file path or HTTP URL), resize to 128×128, upload to litterbox (1 h).
+/// Load cover art (file path or HTTP URL), resize to 128×128, upload to the
+/// kanae image host, which serves it for one hour.
 fn upload_cover_art(path_or_url: &str) -> Option<String> {
     eprintln!("[discord] uploading cover: {}", path_or_url);
 
@@ -303,41 +307,13 @@ fn upload_cover_art(path_or_url: &str) -> Option<String> {
     resized.write_to(&mut cursor, image::ImageFormat::Png).ok()?;
     let png_bytes = cursor.into_inner();
 
-    let boundary = "KanaeDiscordBoundary42xYz";
-    let mut body: Vec<u8> = Vec::new();
-    multipart_field(&mut body, boundary, "reqtype", b"fileupload");
-    multipart_field(&mut body, boundary, "time",    b"1h");
-    multipart_file(&mut body, boundary, "fileToUpload", "cover.png", "image/png", &png_bytes);
-    body.extend_from_slice(format!("--{}--\r\n", boundary).as_bytes());
-
-    let ct   = format!("multipart/form-data; boundary={}", boundary);
-    let resp = ureq::post("https://litterbox.catbox.moe/resources/internals/api.php")
-        .header("Content-Type", &ct)
-        .send(body.as_slice())
+    let resp = ureq::post(COVER_UPLOAD_URL)
+        .header("Content-Type", "image/png")
+        .send(png_bytes.as_slice())
         .ok()?;
 
     let text = resp.into_body().read_to_string().ok()?;
     let url  = text.trim().to_string();
-    eprintln!("[discord] litterbox response: {:?}", url);
+    eprintln!("[discord] imghost response: {:?}", url);
     if url.starts_with("https://") { Some(url) } else { None }
-}
-
-fn multipart_field(body: &mut Vec<u8>, boundary: &str, name: &str, value: &[u8]) {
-    body.extend_from_slice(
-        format!("--{}\r\nContent-Disposition: form-data; name=\"{}\"\r\n\r\n", boundary, name).as_bytes(),
-    );
-    body.extend_from_slice(value);
-    body.extend_from_slice(b"\r\n");
-}
-
-fn multipart_file(body: &mut Vec<u8>, boundary: &str, name: &str, filename: &str, mime: &str, data: &[u8]) {
-    body.extend_from_slice(
-        format!(
-            "--{}\r\nContent-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\nContent-Type: {}\r\n\r\n",
-            boundary, name, filename, mime
-        )
-        .as_bytes(),
-    );
-    body.extend_from_slice(data);
-    body.extend_from_slice(b"\r\n");
 }

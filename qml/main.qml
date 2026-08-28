@@ -279,6 +279,27 @@ ApplicationWindow {
         else { var v = _volBeforeMute > 0.001 ? _volBeforeMute : 1.0; volSlider.value = v; player.setVolumeLevel(v) }
     }
 
+    // Pixels travelled per wheel notch. Flickable's built-in wheel step is a
+    // fraction of this, which is what made the lists feel sluggish.
+    property real _wheelStep: 130
+    property int  _wheelDuration: 260
+    // Scrolls `view` by the wheel event, easing via `anim` so repeated notches
+    // retarget one animation instead of fighting each other. Retargeting off
+    // anim.to (not contentY) is what lets a fast flick of the wheel accumulate.
+    function wheelScroll(view, anim, ev) {
+        // The top of a ListView is originY, not 0 -- it shifts as delegates are
+        // created or the model changes. Clamping against 0 is what allowed
+        // scrolling past the top of the list.
+        var minY = view.originY
+        var maxY = minY + Math.max(0, view.contentHeight - view.height)
+        if (maxY <= minY) return
+        view.cancelFlick()
+        var base = anim.running ? anim.to : view.contentY
+        var dy = (ev.angleDelta.y / 120) * window._wheelStep
+        anim.to = Math.max(minY, Math.min(maxY, base - dy))
+        anim.restart()
+    }
+
     // Disabled while the first-run "where's your music" field has focus so
     // typing a path doesn't trigger playback/volume shortcuts.
     property bool _shortcutsEnabled: !musicDirInput.activeFocus
@@ -524,9 +545,13 @@ ApplicationWindow {
             }
 
             Flickable {
+                id: swFlick
                 anchors.top: swTitleBar.bottom; anchors.topMargin: 0
                 anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
                 contentHeight: swCol.implicitHeight + 32; clip: true
+
+                NumberAnimation{id:swWheelAnim;target:swFlick;property:"contentY";duration:window._wheelDuration;easing.type:Easing.OutCubic;onFinished:target.returnToBounds()}
+                WheelHandler{acceptedDevices:PointerDevice.Mouse;onWheel:function(ev){window.wheelScroll(swFlick,swWheelAnim,ev)}}
 
                 ScrollBar.vertical: ScrollBar {
                     policy: ScrollBar.AsNeeded
@@ -1013,12 +1038,20 @@ ApplicationWindow {
                         property int activeIdx:{var t=player.current_time;var times=timesArr;var best=-1;for(var i=0;i<times.length;i++){if(times[i]<=t+0.05)best=i;else break};return best}
                         property bool userScrolled:false;property bool _autoScrolling:false
                         Timer{id:resyncGuardTimer;interval:800;repeat:false;onTriggered:lyricsArea._autoScrolling=false}
-                        function syncScroll(idx){if(idx<0||lyricsView.count===0)return;lyricsArea._autoScrolling=true;lyricsView.positionViewAtIndex(idx,ListView.Center);resyncGuardTimer.restart()}
+                        function syncScroll(idx){if(idx<0||lyricsView.count===0)return;lyricsWheelAnim.stop();lyricsArea._autoScrolling=true;lyricsView.positionViewAtIndex(idx,ListView.Center);resyncGuardTimer.restart()}
                         property var _lyricsWatch:player.lyric_lines
                         on_LyricsWatchChanged:{lyricsArea.userScrolled=false;syncScroll(lyricsArea.activeIdx)}
                         onActiveIdxChanged:{if(!userScrolled)syncScroll(activeIdx)}
                         ListView{id:lyricsView;anchors.fill:parent;clip:true;model:player.lyric_lines;spacing:0;flickDeceleration:600;maximumFlickVelocity:6000
-                            Behavior on contentY{NumberAnimation{duration:700;easing.type:Easing.InOutQuart}}
+                            // Only the auto-follow glides; wheel scrolling drives
+                            // contentY through lyricsWheelAnim instead, so it is
+                            // not dragged out to 700 ms per notch.
+                            Behavior on contentY{enabled:lyricsArea._autoScrolling;NumberAnimation{duration:700;easing.type:Easing.InOutQuart}}
+                            NumberAnimation{id:lyricsWheelAnim;target:lyricsView;property:"contentY";duration:window._wheelDuration;easing.type:Easing.OutCubic;onFinished:target.returnToBounds()}
+                            // Setting contentY directly emits no movement signals,
+                            // so the resync badge has to be armed here.
+                            WheelHandler{acceptedDevices:PointerDevice.Mouse
+                                onWheel:function(ev){lyricsArea.userScrolled=true;window.wheelScroll(lyricsView,lyricsWheelAnim,ev)}}
                             ScrollBar.vertical:ScrollBar{policy:ScrollBar.AlwaysOff}
                             onMovementStarted:{if(!lyricsArea._autoScrolling)lyricsArea.userScrolled=true}
                             header:Item{width:lyricsView.width;height:Math.max(0,lyricsView.height/2-24)}
@@ -1395,6 +1428,9 @@ ApplicationWindow {
                                 cellHeight: cellWidth + 60
                                 model: parent.nodes
 
+                                NumberAnimation{id:libGridWheelAnim;target:libGridView;property:"contentY";duration:window._wheelDuration;easing.type:Easing.OutCubic;onFinished:target.returnToBounds()}
+                                WheelHandler{acceptedDevices:PointerDevice.Mouse;onWheel:function(ev){window.wheelScroll(libGridView,libGridWheelAnim,ev)}}
+
                                 ScrollBar.vertical: ScrollBar {
                                     policy: ScrollBar.AsNeeded
                                     contentItem: Rectangle { implicitWidth:4;radius:2;color:clrMuted;opacity:parent.active?0.85:0.3 }
@@ -1518,6 +1554,8 @@ ApplicationWindow {
                                 visible: !parent.useGrid && parent.nodes.length > 0
                                 clip: true; spacing: 0
                                 model: parent.nodes
+                                NumberAnimation{id:libListWheelAnim;target:libListView;property:"contentY";duration:window._wheelDuration;easing.type:Easing.OutCubic;onFinished:target.returnToBounds()}
+                                WheelHandler{acceptedDevices:PointerDevice.Mouse;onWheel:function(ev){window.wheelScroll(libListView,libListWheelAnim,ev)}}
                                 ScrollBar.vertical: ScrollBar {
                                     policy: ScrollBar.AsNeeded
                                     contentItem: Rectangle { implicitWidth:4;radius:2;color:clrMuted;opacity:parent.active?0.85:0.3 }
@@ -1639,6 +1677,8 @@ ApplicationWindow {
                                         window.playBrowsedTrack(index)
                                     }}
                             }
+                            NumberAnimation{id:trackWheelAnim;target:trackList;property:"contentY";duration:window._wheelDuration;easing.type:Easing.OutCubic;onFinished:target.returnToBounds()}
+                            WheelHandler{acceptedDevices:PointerDevice.Mouse;onWheel:function(ev){window.wheelScroll(trackList,trackWheelAnim,ev)}}
                             ScrollBar.vertical:ScrollBar{id:vScrollBar;policy:ScrollBar.AsNeeded
                                 contentItem:Rectangle{implicitWidth:4;radius:2;color:clrMuted;visible:vScrollBar.size<1.0;opacity:vScrollBar.active?0.85:0.3;Behavior on opacity{NumberAnimation{duration:200}}}
                                 background:Rectangle{color:"transparent"}}
@@ -1652,19 +1692,53 @@ ApplicationWindow {
                 // applied in Rust so the TUI sees the same list.
                 Item {
                     id: queuePane
-                    // Width is animated rather than toggling visibility, so the
-                    // pane slides in and out from the right edge.
-                    property real openW: Math.min(240, Math.round(window.width * 0.4))
-                    property real paneW: window.queueOpen ? openW : 0
-                    Behavior on paneW { NumberAnimation { duration: 190; easing.type: Easing.OutCubic } }
+                    // Sized as a share of the window like the left sidebar, so it
+                    // tracks window resizes; dragging the handle rewrites the share.
+                    property real _ratio: 240.0/880.0
+                    readonly property real openMinW: 180
+                    readonly property real openMaxW: Math.min(420, Math.round(window.width*0.45))
+                    readonly property real openW:
+                        Math.max(openMinW, Math.min(openMaxW, Math.round(window.width*_ratio)))
+
+                    // The slide animates how *open* the pane is, not how wide it
+                    // is. Animating the width instead would tie the slide to
+                    // openW, so a handle drag would crawl to its new size over
+                    // the slide duration -- and the animation would be skipped
+                    // outright whenever the width binding happened to re-evaluate
+                    // before a guard flag could be raised.
+                    property real openFrac: window.queueOpen ? 1 : 0
+                    Behavior on openFrac { NumberAnimation { duration: 190; easing.type: Easing.OutCubic } }
+                    readonly property real paneW: openW * openFrac
                     visible: paneW > 1
-                    // Pinned to the animated width: SplitView writes preferredWidth
-                    // when its handle is dragged, which would break the binding and
-                    // kill the slide. min == max also makes the handle inert.
+
+                    // The handle is live only once the pane has finished sliding.
+                    readonly property bool _live: window.queueOpen && openFrac > 0.999
+                    Connections { target: window; function onQueueOpenChanged() {
+                        // A previous handle drag will have overwritten preferredWidth
+                        // with a plain value; rebind so the slide animation drives it.
+                        queuePane.SplitView.preferredWidth = Qt.binding(function(){ return queuePane.paneW })
+                    }}
+
+                    // Pinned while sliding (min == max makes the handle inert),
+                    // released to the real bounds once open.
                     SplitView.preferredWidth: paneW
-                    SplitView.minimumWidth: paneW
-                    SplitView.maximumWidth: paneW
+                    SplitView.minimumWidth: _live ? openMinW : paneW
+                    SplitView.maximumWidth: _live ? openMaxW : paneW
                     clip: true
+
+                    // Handle drags land here as width changes. Record the new share,
+                    // then rebind preferredWidth once the drag settles so the pane
+                    // goes back to following the window.
+                    Timer { id: queueDragEnd; interval: 60; onTriggered:
+                        queuePane.SplitView.preferredWidth = Qt.binding(function(){ return queuePane.paneW }) }
+                    onWidthChanged: {
+                        if (!_live || window._resizing) return
+                        var r = Math.max(openMinW/window.width,
+                                         Math.min(openMaxW/window.width, width/window.width))
+                        if (Math.abs(r - _ratio) < 0.0005) return
+                        _ratio = r
+                        queueDragEnd.restart()
+                    }
 
                     readonly property var rows: {
                         try { return JSON.parse(player.queue_json.toString()) } catch (e) { return [] }
@@ -1689,7 +1763,7 @@ ApplicationWindow {
                             Rectangle { anchors.bottom:parent.bottom; anchors.left:parent.left; anchors.right:parent.right; height:1; color:clrBorder }
                             RowLayout {
                                 anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 8; spacing: 6
-                                MatIcon { name: "list"; size: 12; color: clrText2 }
+                                MatIcon { name: "queue"; size: 12; color: clrText2 }
                                 Text { text: "Queue"; color: clrText; font.pixelSize: 11; font.bold: true; font.family: "Segoe UI" }
                                 Text { text: player.queue_len > 0 ? player.queue_len.toString() : ""
                                     color: clrText2; font.pixelSize: 10; font.family: "Segoe UI" }
@@ -1723,6 +1797,8 @@ ApplicationWindow {
                                 model: queuePane.rows
                                 spacing: 0
                                 boundsBehavior: Flickable.StopAtBounds
+                                NumberAnimation{id:queueWheelAnim;target:queueList;property:"contentY";duration:window._wheelDuration;easing.type:Easing.OutCubic;onFinished:target.returnToBounds()}
+                                WheelHandler{acceptedDevices:PointerDevice.Mouse;onWheel:function(ev){window.wheelScroll(queueList,queueWheelAnim,ev)}}
                                 // Reorder state. Rows are never mutated mid-drag —
                                 // the model only changes on release — so each row's
                                 // offset is a plain binding on these three values and
@@ -1923,50 +1999,84 @@ ApplicationWindow {
                         Rectangle{anchors.verticalCenter:parent.verticalCenter;width:parent.width;height:3;radius:1;color:clrSurf2
                             Rectangle{id:seekFill;width:parent.width*seekSlider.visualPosition;height:parent.height;radius:1;color:clrAccent
                                 Behavior on width{enabled:!seekSlider.pressed;NumberAnimation{duration:60;easing.type:Easing.OutSine}}
-                                Rectangle{anchors.top:parent.top;anchors.left:parent.left;anchors.right:parent.right;height:1;radius:1;color:"#ffffff";opacity:0.08}}}}
+                                Rectangle{anchors.top:parent.top;anchors.left:parent.left;anchors.right:parent.right;height:1;radius:1;color:"#ffffff";opacity:0.08}}
+                            // Ghost fill spanning playhead to previewed point.
+                            Rectangle{
+                                visible:seekSlider.previewOn&&!seekSlider.pressed
+                                x:Math.min(seekFill.width,seekSlider.previewX)
+                                width:Math.abs(seekSlider.previewX-seekFill.width)
+                                height:parent.height;radius:1;color:clrAccent;opacity:0.28
+                            }}}
                     handle:Rectangle{x:seekSlider.visualPosition*seekSlider.availableWidth-width/2;y:seekSlider.availableHeight/2-height/2
                         width:11;height:11;radius:5.5;color:seekSlider.pressed?"#ffffff":clrAccent;visible:player.total_tracks>0
                         opacity:seekSlider.hovered||seekSlider.pressed?1.0:0.0
                         Behavior on opacity{NumberAnimation{duration:130}}
                         Behavior on color{ColorAnimation{duration:80}}
                         Rectangle{anchors.fill:parent;anchors.margins:-1;radius:parent.radius+1;color:"transparent";border.color:"#ffffff";border.width:1;opacity:0.08}}
+
+                    // ── Hover scrub preview ──────────────────────────────
+                    // The handle tracks playback, not the cursor, so the time
+                    // under the pointer needs its own readout.
+                    HoverHandler{id:seekHover;acceptedDevices:PointerDevice.Mouse;cursorShape:Qt.PointingHandCursor}
+                    readonly property real hoverFrac:Math.max(0,Math.min(1,seekHover.point.position.x/Math.max(1,seekSlider.availableWidth)))
+                    // While dragging, follow the handle: the pointer can leave
+                    // the slider mid-drag and the preview should still lead it.
+                    readonly property real previewTime:pressed?value:hoverFrac*player.total_time
+                    readonly property bool previewOn:(seekHover.hovered||pressed)&&player.total_tracks>0&&player.total_time>0
+
+                    // Position being previewed, in pixels along the track.
+                    readonly property real previewX:(pressed?visualPosition:hoverFrac)*availableWidth
+
+                    Rectangle{
+                        id:seekTip
+                        visible:opacity>0.01
+                        opacity:seekSlider.previewOn?1.0:0.0
+                        // Rises slightly as it fades in rather than just appearing.
+                        y:-height-(seekSlider.previewOn?9:4)
+                        Behavior on opacity{NumberAnimation{duration:110}}
+                        Behavior on y{NumberAnimation{duration:140;easing.type:Easing.OutCubic}}
+                        z:100
+                        width:seekTipText.implicitWidth+16;height:21;radius:4
+                        color:clrSurf2;border.color:clrBorder;border.width:1
+                        // Clamped so the bubble stays over the track at both ends.
+                        x:Math.max(0,Math.min(seekSlider.width-width,seekSlider.previewX-width/2))
+                        // Matches the 1px top highlight used on the seek fill.
+                        Rectangle{anchors.top:parent.top;anchors.left:parent.left;anchors.right:parent.right
+                            anchors.margins:1;height:1;color:"#ffffff";opacity:0.06}
+                        Text{id:seekTipText;anchors.centerIn:parent;text:formatTime(seekSlider.previewTime)
+                            color:clrText;font.pixelSize:10;font.family:Qt.platform.os==="osx"?"Menlo":"Consolas"}
+                    }
                 }
                 Text{text:formatTime(player.total_time);color:clrText2;font.pixelSize:11;font.family:Qt.platform.os==="osx"?"Menlo":"Consolas";Layout.preferredWidth:timeMetrics.advanceWidth;horizontalAlignment:Text.AlignRight}
             }
 
             // ── Transport + volume ────────────────────────────────────────
             Rectangle{Layout.fillWidth:true;height:1;color:clrBorder}
-            RowLayout{Layout.fillWidth:true;Layout.leftMargin:14;Layout.rightMargin:14;Layout.topMargin:10;Layout.bottomMargin:12;spacing:2
-                Item{width:30;height:30;opacity:(player.current_track>0||player.current_time>4)?1.0:0.26;Behavior on opacity{NumberAnimation{duration:160}}
-                    MatIcon{anchors.centerIn:parent;name:"prev";size:14;color:clrText}
-                    MouseArea{anchors.fill:parent;enabled:player.current_track>0||player.current_time>4;cursorShape:enabled?Qt.PointingHandCursor:Qt.ArrowCursor
-                        onClicked:{if(player.current_time>4){player.seek(0)}else{var wp=player.is_playing;player.previousTrack();if(wp)player.playPause()}}}}
-                Rectangle{id:ppBtn;width:38;height:38;radius:4;color:ppMs.pressed?clrSurf2:ppMs.containsMouse?"#1c1c1c":clrSurface
-                    opacity:player.total_tracks>0&&player.current_track>=0?1.0:0.32;border.color:clrBorder;border.width:1
-                    Behavior on color{ColorAnimation{duration:90}}
-                    Behavior on opacity{NumberAnimation{duration:150}}
-                    MatIcon{anchors.centerIn:parent;size:14;color:clrText;name:player.is_playing?"pause":"play"}
-                    MouseArea{id:ppMs;anchors.fill:parent;hoverEnabled:true;enabled:player.total_tracks>0&&player.current_track>=0;cursorShape:enabled?Qt.PointingHandCursor:Qt.ArrowCursor;onClicked:player.playPause()}}
-                Item{width:30;height:30;opacity:player.current_track>=0&&player.current_track<player.total_tracks-1?1.0:0.26;Behavior on opacity{NumberAnimation{duration:160}}
-                    MatIcon{anchors.centerIn:parent;name:"next";size:14;color:clrText}
-                    MouseArea{anchors.fill:parent;enabled:player.current_track>=0&&player.current_track<player.total_tracks-1;cursorShape:enabled?Qt.PointingHandCursor:Qt.ArrowCursor
-                        onClicked:{var wp=player.is_playing;player.nextTrack();if(wp)player.playPause()}}}
-
-                // ── Now playing: centered title / artist; click → current song ──
+            Item{
+                Layout.fillWidth:true;Layout.leftMargin:14;Layout.rightMargin:14;Layout.topMargin:10;Layout.bottomMargin:12
+                Layout.preferredHeight:38
+                // ── Now playing: title / artist; click → current song ──
+                // Anchored rather than laid out: a RowLayout hands surplus width
+                // to its fillWidth children in proportion to their preferred size,
+                // which would leave the transport sitting between its neighbours
+                // instead of on the window's centre line.
                 Item{
-                    Layout.fillWidth:true; Layout.preferredHeight:38
+                    id:npSlot
+                    anchors.left:parent.left; anchors.right:transportRow.left; anchors.rightMargin:12
+                    anchors.verticalCenter:parent.verticalCenter
+                    height:38
                     Column{
                         anchors.verticalCenter:parent.verticalCenter
                         anchors.left:parent.left; anchors.right:parent.right
-                        anchors.leftMargin:12; anchors.rightMargin:12; spacing:2
+                        spacing:2
                         visible: player.total_tracks>0 && player.current_track>=0
                         ScrollText{
-                            width:parent.width; centered:true
+                            width:parent.width
                             text:(player.track_titles[player.current_track]||"").trim()
                             textColor:npMa.containsMouse?clrAccent:clrText; pixelSize:12; bold:true
                         }
                         ScrollText{
-                            width:parent.width; centered:true
+                            width:parent.width
                             text:{
                                 var rawArt=(player.track_artists[player.current_track]||"").trim()
                                 var artist=rawArt.length>0?rawArt:(player.album_artist||"").trim()
@@ -1990,7 +2100,34 @@ ApplicationWindow {
                         }
                     }
                 }
-                // Shuffle / repeat / queue, left of the volume control.
+
+                // ── Transport, centred ────────────────────────────────────
+                RowLayout{
+                    id:transportRow
+                    anchors.horizontalCenter:parent.horizontalCenter
+                    anchors.verticalCenter:parent.verticalCenter
+                    spacing:2
+                    Item{width:30;height:30;opacity:(player.current_track>0||player.current_time>4)?1.0:0.26;Behavior on opacity{NumberAnimation{duration:160}}
+                        MatIcon{anchors.centerIn:parent;name:"prev";size:14;color:clrText}
+                        MouseArea{anchors.fill:parent;enabled:player.current_track>0||player.current_time>4;cursorShape:enabled?Qt.PointingHandCursor:Qt.ArrowCursor
+                            onClicked:{if(player.current_time>4){player.seek(0)}else{var wp=player.is_playing;player.previousTrack();if(wp)player.playPause()}}}}
+                    Rectangle{id:ppBtn;width:38;height:38;radius:4;color:ppMs.pressed?clrSurf2:ppMs.containsMouse?"#1c1c1c":clrSurface
+                        opacity:player.total_tracks>0&&player.current_track>=0?1.0:0.32;border.color:clrBorder;border.width:1
+                        Behavior on color{ColorAnimation{duration:90}}
+                        Behavior on opacity{NumberAnimation{duration:150}}
+                        MatIcon{anchors.centerIn:parent;size:14;color:clrText;name:player.is_playing?"pause":"play"}
+                        MouseArea{id:ppMs;anchors.fill:parent;hoverEnabled:true;enabled:player.total_tracks>0&&player.current_track>=0;cursorShape:enabled?Qt.PointingHandCursor:Qt.ArrowCursor;onClicked:player.playPause()}}
+                    Item{width:30;height:30;opacity:player.current_track>=0&&player.current_track<player.total_tracks-1?1.0:0.26;Behavior on opacity{NumberAnimation{duration:160}}
+                        MatIcon{anchors.centerIn:parent;name:"next";size:14;color:clrText}
+                        MouseArea{anchors.fill:parent;enabled:player.current_track>=0&&player.current_track<player.total_tracks-1;cursorShape:enabled?Qt.PointingHandCursor:Qt.ArrowCursor
+                            onClicked:{var wp=player.is_playing;player.nextTrack();if(wp)player.playPause()}}}
+                }
+
+                // ── Shuffle / repeat / queue / volume, right-aligned ──────
+                RowLayout{
+                    id:rightControls
+                    anchors.right:parent.right; anchors.verticalCenter:parent.verticalCenter
+                    spacing:2
                 Item{width:26;height:26
                     MatIcon{anchors.centerIn:parent;name:"shuffle";size:16
                         color:player.shuffle?clrAccent:(shufMa.containsMouse?clrText:clrText2)
@@ -2035,6 +2172,7 @@ ApplicationWindow {
                         color:volSlider.pressed?"#ffffff":clrText2;opacity:volSlider.hovered||volSlider.pressed?1.0:0.0
                         Behavior on opacity{NumberAnimation{duration:130}}
                         Behavior on color{ColorAnimation{duration:80}}}}
+                }
             }
         }
 
