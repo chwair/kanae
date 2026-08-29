@@ -4,6 +4,11 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Tag/version to release, e.g. v1.2.3. Leave empty for a rolling "dev" build.'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -13,7 +18,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'dev' }}
+  # tag pushes use the tag; manual runs use the supplied version, or "dev"
+  VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || (inputs.version != '' && inputs.version || 'dev') }}
   QT_VERSION: '6.8.*'
   QT_MODULES: 'qtshadertools'
 
@@ -344,12 +350,15 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      # manual runs publish a rolling "dev" prerelease; tag pushes cut a real one
+      # every run lands as a draft so it can be checked before going public;
+      # untagged manual runs are additionally marked as a prerelease
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.VERSION }}
+          name: Kanae ${{ env.VERSION }}
           target_commitish: ${{ github.sha }}
-          prerelease: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          draft: true
+          prerelease: ${{ env.VERSION == 'dev' }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |

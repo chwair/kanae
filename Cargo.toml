@@ -62,7 +62,11 @@ winreg = "0.52"
 objc = "0.2"
 
 [profile.release]
-debug = true
+# debug info is left out and symbols stripped: on elf/mach-o it is embedded in
+# the binary rather than split into a side file like a windows .pdb, which made
+# the linux/macos builds several times larger than they needed to be
+debug = false
+strip = "symbols"
 lto = false
 
 [build-dependencies]

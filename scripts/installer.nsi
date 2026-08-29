@@ -199,20 +199,41 @@ FunctionEnd
 
 !define ENVREG "Environment"
 
-; Reads the existing user PATH into $0, using $2 as scratch. A missing value is
-; not an error, it just means there is nothing to append to yet.
+; Reads the existing user PATH into $0. Uses $2, $3 and $4 as scratch.
 ;
-; NSIS strings are capped at 1024 chars, so a longer PATH comes back from
-; ReadRegStr truncated; writing that back would eat the tail of it. Bail out
-; instead and leave the PATH alone.
+; NSIS strings are capped at 1024 chars and ReadRegStr reports "no such value"
+; and "value too long for the buffer" the same way: error flag set, $0 empty.
+; Those two cases must not be conflated, because the caller treats an empty $0
+; as "nothing to append to" and writes a fresh value. So enumerate the key first
+; to establish whether a Path value actually exists; if one does but the read
+; failed, it is too long for us to edit and the only safe move is to leave it
+; completely untouched.
 !macro _ReadUserPath
+  StrCpy $3 0
+  StrCpy $4 "0"           ; becomes "1" if a Path value exists in the key
+  enum_loop:
+    ClearErrors
+    EnumRegValue $2 HKCU "${ENVREG}" $3
+    IfErrors enum_done
+    StrCmp $2 "" enum_done
+    IntOp $3 $3 + 1
+    StrCmp $2 "Path" 0 enum_loop
+    StrCpy $4 "1"
+  enum_done:
+
   ClearErrors
   ReadRegStr $0 HKCU "${ENVREG}" "Path"
-  IfErrors 0 +2
-    StrCpy $0 ""
+  IfErrors 0 read_ok
+    StrCmp $4 "1" 0 +3
+      DetailPrint "User PATH is too long for this installer to edit; leaving it unchanged."
+      Return
+    StrCpy $0 ""          ; genuinely absent, safe to create
+    Goto lenok
+  read_ok:
+  ; a value sitting at the buffer limit was probably silently truncated
   StrLen $2 $0
   IntCmp $2 1000 0 lenok 0
-    DetailPrint "User PATH is too long to edit safely; skipping PATH update."
+    DetailPrint "User PATH is too long for this installer to edit; leaving it unchanged."
     Return
   lenok:
 !macroend
@@ -236,6 +257,11 @@ Function AddToUserPath
     ; appends to what's already there; on a reinstall the entry is already
     ; present, so WordAdd hands back the current PATH untouched
     ${WordAdd} "$0" ";" "+$INSTDIR" $1
+    ; adding can only ever grow the value, so a shorter result means something
+    ; went wrong and writing it back would drop entries
+    StrLen $2 $0
+    StrLen $3 $1
+    IntCmp $3 $2 commit done commit
   commit:
   ; nothing to write when the entry was already there
   StrCmp $1 $0 done
