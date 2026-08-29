@@ -1013,10 +1013,18 @@ ApplicationWindow {
                             MouseArea{anchors.fill:parent;cursorShape:Qt.PointingHandCursor;onClicked:coverOnSide=true}
                         }
                     }
-                    Rectangle{Layout.fillWidth:true;height:sidebarColumn._topSepH;color:clrBorder}
+                    // only meaningful while there is a cover above it; collapsed it would
+                    // sit directly under the title bar's own border and read as one thick line
+                    Rectangle{Layout.fillWidth:true;color:clrBorder
+                        height:sidebarColumn._curtainH>0?sidebarColumn._topSepH:0}
                     Item{id:metaBlock;Layout.fillWidth:true;Layout.preferredHeight:70;clip:true
                         Rectangle{id:thumbRect;x:sidebarColumn._slideX;y:0;height:70;width:sidebarColumn._thumbW;color:clrSurf2
-                            border.color:coverImg.status!==Image.Ready?clrBorder:"transparent";border.width:1;clip:true
+                            // collapsed the thumb is flush with the title bar line above and
+                            // the sidebar separator below, so only the right edge gets a line
+                            border.color:coverImg.status!==Image.Ready?clrBorder:"transparent"
+                            border.width:window.coverOnSide?0:1;clip:true
+                            Rectangle{anchors.right:parent.right;anchors.top:parent.top;anchors.bottom:parent.bottom
+                                width:1;color:clrBorder;visible:window.coverOnSide&&coverImg.status!==Image.Ready}
                             // Same source + sourceSize as coverImg so both share one cache entry.
                             Image{anchors.fill:parent;source:player.cover_art_path;fillMode:Image.Stretch;smooth:true;mipmap:true;visible:coverImg.status===Image.Ready
                                 asynchronous:true;sourceSize.width:1024;sourceSize.height:1024}
