@@ -48,6 +48,7 @@ pub mod library_bridge {
         #[qproperty(bool, can_go_forward)]
         #[qproperty(QString, pending_open_dir)]
         #[qproperty(QString, album_tracks_json)]
+        #[qproperty(QString, search_results)]
         type LibraryController = super::LibraryControllerRust;
 
         #[qinvokable] #[cxx_name = "startScan"]     fn start_scan(self: Pin<&mut Self>);
@@ -76,6 +77,7 @@ pub mod library_bridge {
         #[qinvokable] #[cxx_name = "setCrossfade"]         fn set_crossfade(self: Pin<&mut Self>, value: bool);
         #[qinvokable] #[cxx_name = "setCrossfadeSecs"]     fn set_crossfade_secs(self: Pin<&mut Self>, value: f64);
         #[qinvokable] #[cxx_name = "setAlbumSort"]         fn set_album_sort(self: Pin<&mut Self>, value: QString);
+        #[qinvokable] #[cxx_name = "searchLibrary"]        fn search_library(self: Pin<&mut Self>, query: QString);
     }
 }
 
@@ -93,6 +95,13 @@ struct LibraryState {
     fs_dirty:    Arc<AtomicBool>,
     /// Whether the live-change watcher thread has been started.
     watcher_started: bool,
+    /// Lowercased haystacks for the omnibar search, built on first query and
+    /// dropped whenever the scan result changes.
+    search_index: Option<Vec<SearchEntry>>,
+    /// Last query and the (uncapped) indices it matched, so typing another
+    /// character only has to re-score what already matched.
+    last_query: String,
+    last_hits:  Vec<usize>,
 }
 
 impl Default for LibraryState {
@@ -109,6 +118,9 @@ impl Default for LibraryState {
             picker_result: Arc::new(Mutex::new(None)),
             fs_dirty:    Arc::new(AtomicBool::new(false)),
             watcher_started: false,
+            search_index: None,
+            last_query: String::new(),
+            last_hits:  Vec::new(),
         }
     }
 }
@@ -124,6 +136,7 @@ pub struct LibraryControllerRust {
     can_go_forward:   bool,
     pending_open_dir: QString,
     album_tracks_json: QString,
+    search_results:   QString,
     state: Arc<Mutex<LibraryState>>,
 }
 
@@ -143,6 +156,7 @@ impl Default for LibraryControllerRust {
             can_go_forward: false,
             pending_open_dir: QString::from(""),
             album_tracks_json: QString::from("[]"),
+            search_results: QString::from("[]"),
             state: Arc::new(Mutex::new(LibraryState::default())),
         }
     }
@@ -364,7 +378,6 @@ impl library_bridge::LibraryController {
     }
 
     pub fn browse_album(mut self: Pin<&mut Self>, id: QString) {
-        use crate::file_player::read_file_metadata;
         let album_id = id.to_string();
         // Collect track paths from the scan result while holding the lock briefly.
         // Match on the stable album id so multiple albums/singles sharing a
@@ -379,12 +392,12 @@ impl library_bridge::LibraryController {
                 None => vec![],
             }
         };
-        let tracks: Vec<serde_json::Value> = track_paths.iter()
-            .map(|p| {
-                let meta = read_file_metadata(p);
+        let tracks: Vec<serde_json::Value> = crate::file_player::read_album_metadata(&track_paths)
+            .into_iter()
+            .map(|meta| {
                 let secs = meta.duration_secs as u64;
                 let dur = format!("{:02}:{:02}", secs / 60, secs % 60);
-                serde_json::json!({ "title": meta.title, "artist": meta.artist, "duration": dur, "path": p.to_string_lossy() })
+                serde_json::json!({ "title": meta.title, "artist": meta.artist, "duration": dur, "path": meta.path.to_string_lossy() })
             })
             .collect();
         let json = serde_json::to_string(&tracks).unwrap_or_else(|_| "[]".to_string());
@@ -597,13 +610,143 @@ impl library_bridge::LibraryController {
 
     fn refresh_nodes(mut self: Pin<&mut Self>) {
         let json = {
-            let st = self.state.lock().unwrap();
+            let mut st = self.state.lock().unwrap();
+            // the album set may have changed, so the search haystacks are stale
+            st.search_index = None;
+            st.last_query.clear();
+            st.last_hits.clear();
             let result = match st.scan_result { Some(ref r) => r, None => return };
             let dir = if st.nav_stack.is_empty() { None } else { Some(st.nav_stack[st.nav_idx].clone()) };
             build_nodes_json(dir.as_deref(), result, &st.settings)
         };
         self.as_mut().set_library_nodes(QString::from(json.as_str()));
     }
+
+    /// Filter the whole library by `query` and publish the matches as
+    /// `search_results` (same DTO shape the browser grid already renders).
+    /// Matching is case-insensitive and every whitespace-separated term must
+    /// appear somewhere in the album's text.
+    pub fn search_library(mut self: Pin<&mut Self>, query: QString) {
+        let q = query.to_string().to_lowercase();
+        let terms: Vec<&str> = q.split_whitespace().collect();
+        if terms.is_empty() {
+            {
+                let mut st = self.state.lock().unwrap();
+                st.last_query.clear();
+                st.last_hits.clear();
+            }
+            self.as_mut().set_search_results(QString::from("[]"));
+            return;
+        }
+
+        let json = {
+            let mut st = self.state.lock().unwrap();
+            if st.search_index.is_none() {
+                let index = match st.scan_result {
+                    Some(ref r) => build_search_index(r, &st.settings),
+                    None => Vec::new(),
+                };
+                st.search_index = Some(index);
+            }
+            // Taken out so the hit list can be stored back into `st` below.
+            let index = st.search_index.take().unwrap_or_default();
+
+            // Typing another character can only shrink the previous result set,
+            // so narrow it instead of walking the whole library again.
+            let narrow = !st.last_query.is_empty() && q.starts_with(&st.last_query);
+            let mut hits: Vec<(u8, usize)> = Vec::new();
+            if narrow {
+                for &i in &st.last_hits {
+                    if let Some(score) = index[i].score(&terms) { hits.push((score, i)); }
+                }
+            } else {
+                for (i, entry) in index.iter().enumerate() {
+                    if let Some(score) = entry.score(&terms) { hits.push((score, i)); }
+                }
+            }
+            st.last_query = q;
+            st.last_hits = hits.iter().map(|&(_, i)| i).collect();
+
+            hits.sort_by(|a, b| a.0.cmp(&b.0)
+                .then_with(|| index[a.1].name_lc.cmp(&index[b.1].name_lc))
+                .then_with(|| index[a.1].dto.id.cmp(&index[b.1].dto.id)));
+            hits.truncate(SEARCH_LIMIT);
+            let dtos: Vec<&LibraryNodeDto> = hits.iter().map(|&(_, i)| &index[i].dto).collect();
+            let json = serde_json::to_string(&dtos).unwrap_or_else(|_| "[]".to_string());
+            st.search_index = Some(index);
+            json
+        };
+        self.as_mut().set_search_results(QString::from(json.as_str()));
+    }
+}
+
+/// Most search hits the UI will publish at once.
+const SEARCH_LIMIT: usize = 300;
+
+/// One album flattened into lowercase haystacks so a keystroke costs only
+/// substring scans, no re-lowercasing of the whole library.
+struct SearchEntry {
+    dto:       LibraryNodeDto,
+    name_lc:   String,
+    artist_lc: String,
+    /// Track file stems and the containing folder name, joined by newlines.
+    extra_lc:  String,
+}
+
+impl SearchEntry {
+    /// `None` when any term is missing; otherwise a rank, lower is better.
+    fn score(&self, terms: &[&str]) -> Option<u8> {
+        let mut best = u8::MAX;
+        for &term in terms {
+            let rank = if self.name_lc.starts_with(term) { 0 }
+                else if self.name_lc.contains(term) { 1 }
+                else if self.artist_lc.starts_with(term) { 2 }
+                else if self.artist_lc.contains(term) { 3 }
+                else if self.dto.year == term { 4 }
+                else if self.extra_lc.contains(term) { 5 }
+                else { return None };
+            best = best.min(rank);
+        }
+        Some(best)
+    }
+}
+
+fn build_search_index(result: &LibraryScanResult, settings: &LibrarySettings) -> Vec<SearchEntry> {
+    let ignored = |p: &std::path::Path| settings.ignored_folders.iter().any(|ig| p.starts_with(ig) || p == ig);
+    result.albums.iter()
+        .filter(|a| !ignored(&a.dir))
+        .map(|album| {
+            let name = if album.album.is_empty() {
+                album.dir.file_name().and_then(|n| n.to_str()).unwrap_or("Unknown").to_string()
+            } else { album.album.clone() };
+            let mut extra = String::new();
+            if let Some(folder) = album.dir.file_name().and_then(|n| n.to_str()) {
+                extra.push_str(&folder.to_lowercase());
+                extra.push('\n');
+            }
+            for t in &album.track_paths {
+                if let Some(stem) = t.file_stem().and_then(|n| n.to_str()) {
+                    extra.push_str(&stem.to_lowercase());
+                    extra.push('\n');
+                }
+            }
+            SearchEntry {
+                name_lc:   name.to_lowercase(),
+                artist_lc: album.album_artist.to_lowercase(),
+                extra_lc:  extra,
+                dto: LibraryNodeDto {
+                    kind: "album".into(),
+                    path: album.dir.to_string_lossy().to_string(),
+                    id: album.id.clone(),
+                    name,
+                    album_artist: album.album_artist.clone(),
+                    year: album.year.clone(),
+                    cover_url: album.cover_url.clone().unwrap_or_default(),
+                    pinned: settings.pinned_paths.contains(&album.dir),
+                },
+            }
+        })
+        .collect()
 }
 
 fn build_nodes_json(cd: Option<&std::path::Path>, result: &LibraryScanResult, settings: &LibrarySettings) -> String {

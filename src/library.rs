@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::collections::HashMap;
 use rayon::prelude::*;
-use crate::file_player::{is_audio_file, read_file_metadata};
+use crate::file_player::{cover_for, is_audio_file, read_file_metadata_light};
 
 // ─── Public types ────────────────────────────────────────────────────────────
 
@@ -268,8 +268,15 @@ pub fn scan(
             let (albums, was_reused) = match reused {
                 Some(cached) => (cached, true),
                 None => {
-                    let tracks: Vec<_> = files.par_iter().map(|p| read_file_metadata(p)).collect();
-                    (group_into_albums(dir, &tracks), false)
+                    // Cover art is read separately below, so the per-track pass
+                    // skips it: every file of an album carries the same picture
+                    // and grouping keeps only one of them.
+                    let tracks: Vec<_> = files.par_iter().map(|p| read_file_metadata_light(p)).collect();
+                    let mut albums = group_into_albums(dir, &tracks);
+                    for a in &mut albums {
+                        a.cover_url = a.track_paths.iter().find_map(|p| cover_for(p));
+                    }
+                    (albums, false)
                 }
             };
 

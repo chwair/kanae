@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 
@@ -87,7 +88,12 @@ pub fn album_context_for(path: &Path) -> (Vec<LocalTrack>, i32) {
     }
 }
 
-pub fn read_file_metadata(path: &Path) -> LocalTrack {
+/// Track metadata without any cover-art work.
+///
+/// Symphonia handles the common formats on its own, so lofty is only opened
+/// when symphonia came back without a duration or a title. That keeps the
+/// usual case to a single parse per file instead of two.
+pub fn read_file_metadata_light(path: &Path) -> LocalTrack {
     use symphonia::core::{
         formats::{probe::Hint, FormatOptions, TrackType},
         io::MediaSourceStream,
@@ -95,13 +101,10 @@ pub fn read_file_metadata(path: &Path) -> LocalTrack {
         units::Timestamp,
     };
 
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Unknown").to_string();
     let mut track = LocalTrack {
         path: path.to_path_buf(),
-        title: path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Unknown")
-            .to_string(),
+        title: stem.clone(),
         ..Default::default()
     };
 
@@ -148,75 +151,26 @@ pub fn read_file_metadata(path: &Path) -> LocalTrack {
         track.album_artist = track.artist.clone();
     }
 
-    // ── Lofty: cover art only ────────────────────────────────────────────
-    if let Some(tagged) = lofty::probe::Probe::open(path)
-        .ok()
-        .and_then(|p| p.read().ok())
-    {
-        use lofty::prelude::{Accessor, AudioFile, TaggedFileExt};
-        if track.duration_secs == 0.0 {
-            track.duration_secs = tagged.properties().duration().as_secs_f64();
-        }
-
-        let tag = tagged.primary_tag().or_else(|| tagged.first_tag());
-        if let Some(tag) = tag {
-            // Fill any text fields that symphonia left empty.
-            if track.title == path.file_stem().and_then(|s| s.to_str()).unwrap_or("Unknown") {
-                if let Some(t) = tag.title()  { track.title  = t.into_owned(); }
-                if let Some(a) = tag.artist() { track.artist  = a.into_owned(); }
-                if let Some(al) = tag.album() { track.album   = al.into_owned(); }
-                if let Some(y)  = tag.year()  { track.year    = y.to_string(); }
-                use lofty::tag::ItemKey;
-                if track.album_artist.is_empty() {
-                    if let Some(aa) = tag.get_string(&ItemKey::AlbumArtist) {
-                        track.album_artist = aa.to_string();
+    // ── Lofty: only for what symphonia could not read ────────────────────
+    let needs_lofty = track.duration_secs == 0.0 || track.title == stem;
+    if needs_lofty {
+        if let Some(tagged) = lofty::probe::Probe::open(path).ok().and_then(|p| p.read().ok()) {
+            use lofty::prelude::{Accessor, AudioFile, TaggedFileExt};
+            if track.duration_secs == 0.0 {
+                track.duration_secs = tagged.properties().duration().as_secs_f64();
+            }
+            if track.title == stem {
+                if let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) {
+                    if let Some(t) = tag.title()  { track.title   = t.into_owned(); }
+                    if let Some(a) = tag.artist() { track.artist  = a.into_owned(); }
+                    if let Some(al) = tag.album() { track.album   = al.into_owned(); }
+                    if let Some(y)  = tag.year()  { track.year    = y.to_string(); }
+                    use lofty::tag::ItemKey;
+                    if track.album_artist.is_empty() {
+                        if let Some(aa) = tag.get_string(&ItemKey::AlbumArtist) {
+                            track.album_artist = aa.to_string();
+                        }
                     }
-                }
-            }
-
-            // Prefer CoverFront picture, fall back to first picture.
-            let cover_pic = {
-                use lofty::picture::PictureType;
-                tag.pictures()
-                    .iter()
-                    .find(|p| p.pic_type() == PictureType::CoverFront)
-                    .or_else(|| tag.pictures().first())
-            };
-            if let Some(pic) = cover_pic {
-                use lofty::picture::MimeType;
-                let ext = match pic.mime_type() {
-                    Some(MimeType::Png) => "png",
-                    _ => "jpg",
-                };
-                // Key the cache file by picture *content*, not source path, so the
-                // same art embedded in every track of an album (or shared across
-                // albums) dedupes to a single file instead of one copy per track.
-                let dest = crate::library_cache::cover_cache_dir().join(format!("kanae_cover_{:016x}.{}",
-                    {
-                        use std::collections::hash_map::DefaultHasher;
-                        use std::hash::{Hash, Hasher};
-                        let mut h = DefaultHasher::new();
-                        pic.data().hash(&mut h);
-                        h.finish()
-                    }, ext));
-                if dest.exists() || std::fs::write(&dest, pic.data()).is_ok() {
-                    let url_path = dest.to_string_lossy().replace('\\', "/");
-                    // Trim any leading slash so format!() produces exactly 3 slashes.
-                    track.cover_art_path = Some(format!("file:///{}", url_path.trim_start_matches('/')));
-                }
-            }
-        }
-    }
-
-    // Fallback: look for cover art image next to the file.
-    if track.cover_art_path.is_none() {
-        if let Some(dir) = path.parent() {
-            for name in &["cover.jpg", "cover.png", "folder.jpg", "folder.png", "front.jpg", "front.png"] {
-                let candidate = dir.join(name);
-                if candidate.exists() {
-                    let url_path = candidate.to_string_lossy().replace('\\', "/");
-                    track.cover_art_path = Some(format!("file:///{}", url_path.trim_start_matches('/')));
-                    break;
                 }
             }
         }
@@ -226,6 +180,130 @@ pub fn read_file_metadata(path: &Path) -> LocalTrack {
         track.album_artist = track.artist.clone();
     }
 
+    track
+}
+
+/// Cover art embedded in a file, written to the cover cache and returned as a
+/// `file://` url. None when the file carries no picture.
+pub fn embedded_cover(path: &Path) -> Option<String> {
+    use lofty::prelude::TaggedFileExt;
+    let tagged = lofty::probe::Probe::open(path).ok()?.read().ok()?;
+    let tag = tagged.primary_tag().or_else(|| tagged.first_tag())?;
+
+    // Prefer CoverFront picture, fall back to first picture.
+    use lofty::picture::PictureType;
+    let pic = tag.pictures().iter()
+        .find(|p| p.pic_type() == PictureType::CoverFront)
+        .or_else(|| tag.pictures().first())?;
+
+    use lofty::picture::MimeType;
+    let ext = match pic.mime_type() {
+        Some(MimeType::Png) => "png",
+        _ => "jpg",
+    };
+    // Key the cache file by picture *content*, not source path, so the same art
+    // embedded in every track of an album (or shared across albums) dedupes to
+    // a single file instead of one copy per track.
+    let hash = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        pic.data().hash(&mut h);
+        h.finish()
+    };
+    let dest = crate::library_cache::cover_cache_dir()
+        .join(format!("kanae_cover_{:016x}.{}", hash, ext));
+    if dest.exists() || std::fs::write(&dest, pic.data()).is_ok() {
+        let url_path = dest.to_string_lossy().replace('\\', "/");
+        // Trim any leading slash so format!() produces exactly 3 slashes.
+        Some(format!("file:///{}", url_path.trim_start_matches('/')))
+    } else {
+        None
+    }
+}
+
+/// Cover image sitting next to a file, as a `file://` url.
+pub fn folder_cover(dir: &Path) -> Option<String> {
+    for name in &["cover.jpg", "cover.png", "folder.jpg", "folder.png", "front.jpg", "front.png"] {
+        let candidate = dir.join(name);
+        if candidate.exists() {
+            let url_path = candidate.to_string_lossy().replace('\\', "/");
+            return Some(format!("file:///{}", url_path.trim_start_matches('/')));
+        }
+    }
+    None
+}
+
+/// Embedded art if the file has any, otherwise the containing folder's image.
+pub fn cover_for(path: &Path) -> Option<String> {
+    embedded_cover(path).or_else(|| path.parent().and_then(folder_cover))
+}
+
+/// Memoised metadata, keyed on the file's (mtime, size) so an edited file is
+/// re-read but an unchanged one is not.
+fn meta_cache() -> &'static std::sync::Mutex<HashMap<PathBuf, (u64, u64, LocalTrack)>> {
+    static CACHE: OnceLock<std::sync::Mutex<HashMap<PathBuf, (u64, u64, LocalTrack)>>> = OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// Dropped wholesale once it grows past this; a browse view only ever needs the
+/// albums the user actually visited.
+const META_CACHE_MAX: usize = 4096;
+
+fn file_stamp(path: &Path) -> (u64, u64) {
+    match std::fs::metadata(path) {
+        Ok(m) => {
+            let mtime = m.modified().ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            (mtime, m.len())
+        }
+        Err(_) => (0, 0),
+    }
+}
+
+/// Track rows for a browse listing: read in parallel, cover art skipped (the
+/// list only shows title / artist / duration) and cached so revisiting an album
+/// costs nothing.
+pub fn read_album_metadata(paths: &[PathBuf]) -> Vec<LocalTrack> {
+    use rayon::prelude::*;
+
+    let stamps: Vec<(u64, u64)> = paths.iter().map(|p| file_stamp(p)).collect();
+    let mut out: Vec<Option<LocalTrack>> = {
+        let cache = meta_cache().lock().unwrap();
+        paths.iter().zip(&stamps)
+            .map(|(p, st)| match cache.get(p) {
+                Some((mtime, len, t)) if (*mtime, *len) == *st => Some(t.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+
+    let fresh: Vec<(usize, LocalTrack)> = out.par_iter()
+        .enumerate()
+        .filter(|(_, slot)| slot.is_none())
+        .map(|(i, _)| (i, read_file_metadata_light(&paths[i])))
+        .collect();
+
+    if !fresh.is_empty() {
+        let mut cache = meta_cache().lock().unwrap();
+        if cache.len() + fresh.len() > META_CACHE_MAX { cache.clear(); }
+        for (i, track) in fresh {
+            cache.insert(paths[i].clone(), (stamps[i].0, stamps[i].1, track.clone()));
+            out[i] = Some(track);
+        }
+    }
+
+    out.into_iter().zip(paths)
+        .map(|(t, p)| t.unwrap_or_else(|| LocalTrack { path: p.clone(), ..Default::default() }))
+        .collect()
+}
+
+/// Full metadata for one track, cover art included.
+pub fn read_file_metadata(path: &Path) -> LocalTrack {
+    let mut track = read_file_metadata_light(path);
+    track.cover_art_path = cover_for(path);
     track
 }
 
@@ -416,3 +494,4 @@ pub fn play_local_file(
 
     playback_ended_arc.store(true, Ordering::Relaxed);
 }
+

@@ -95,6 +95,27 @@ ApplicationWindow {
     // Grid/list toggle for library browser
     property bool _libUseGrid: true
 
+    // ── Omnibar search ───────────────────────────────────────────
+    // _searchOpen drives the expand animation; results replace the library
+    // grid's model only while there is something typed.
+    property bool   _searchOpen:  false
+    property string _searchQuery: ""
+    readonly property bool _searchActive: _searchOpen && _searchQuery.length > 0
+
+    function openSearch() {
+        if (_view === "album") goBack()
+        _searchOpen = true
+        omniSearchInput.forceActiveFocus()
+    }
+    function closeSearch() {
+        _searchOpen = false
+        _searchQuery = ""
+        omniSearchInput.text = ""
+        library.searchLibrary("")
+        omniSearchInput.focus = false
+    }
+    on_ViewChanged: if (_view !== "library" && _searchOpen) closeSearch()
+
     // Navigation state for forward-to-album
     property string _prevBrowseDir: ""
     property string _prevBrowseAlbumName: ""
@@ -302,7 +323,7 @@ ApplicationWindow {
 
     // Disabled while the first-run "where's your music" field has focus so
     // typing a path doesn't trigger playback/volume shortcuts.
-    property bool _shortcutsEnabled: !musicDirInput.activeFocus
+    property bool _shortcutsEnabled: !musicDirInput.activeFocus && !omniSearchInput.activeFocus
     Shortcut { sequence: "Space";       enabled: window._shortcutsEnabled; onActivated: togglePlayPause() }
     // Arrows seek; Shift+Arrows change track.
     Shortcut { sequence: "Left";        enabled: window._shortcutsEnabled; onActivated: seekBy(-5) }
@@ -315,6 +336,7 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+Left";  onActivated: goBack() }
     Shortcut { sequence: "Ctrl+Right"; onActivated: goForward() }
     Shortcut { sequence: "Ctrl+,"; onActivated: settingsWindow.show() }
+    Shortcut { sequence: "Ctrl+F"; onActivated: window.openSearch() }
 
     property int _lyricsTrackIdx: player.current_track
     on_LyricsTrackIdxChanged: {
@@ -504,7 +526,7 @@ ApplicationWindow {
         }
 
         Rectangle {
-            anchors.fill: parent; color: "#0f0f0f"; radius: 6; clip: true
+            anchors.fill: parent; color: clrBg; radius: 6; clip: true
 
             // Title bar
             Rectangle {
@@ -513,7 +535,7 @@ ApplicationWindow {
                 height: 30; color: "transparent"; z: 10; radius: 6
                 // Square off the bottom corners
                 Rectangle { anchors.left:parent.left;anchors.right:parent.right;anchors.bottom:parent.bottom;height:parent.height/2;color:"transparent" }
-                Rectangle { anchors.bottom:parent.bottom;anchors.left:parent.left;anchors.right:parent.right;height:1;color:"#282828" }
+                Rectangle { anchors.bottom:parent.bottom;anchors.left:parent.left;anchors.right:parent.right;height:1;color:clrBorder }
 
                 MouseArea {
                     anchors.fill: parent; acceptedButtons: Qt.LeftButton
@@ -538,7 +560,7 @@ ApplicationWindow {
                     Behavior on color { ColorAnimation { duration: 100 } }
                     MatIcon {
                         anchors.centerIn: parent; name: "close"; size: 11
-                        color: swClsHov.containsMouse ? "#d07070" : "#686868"
+                        color: swClsHov.containsMouse ? "#d07070" : clrText2
                     }
                     MouseArea { id: swClsHov; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: settingsWindow.close() }
                 }
@@ -555,7 +577,7 @@ ApplicationWindow {
 
                 ScrollBar.vertical: ScrollBar {
                     policy: ScrollBar.AsNeeded
-                    contentItem: Rectangle { implicitWidth:4;radius:2;color:"#404040";opacity:parent.active?0.85:0.3 }
+                    contentItem: Rectangle { implicitWidth:4;radius:2;color:clrMuted;opacity:parent.active?0.85:0.3 }
                     background: Rectangle { color:"transparent" }
                 }
 
@@ -904,7 +926,7 @@ ApplicationWindow {
                     Rectangle{anchors.fill:parent;color:maxHov.containsMouse?clrSurf2:"transparent";Behavior on color{ColorAnimation{duration:100}}}
                     // Drawn empty square: the icon font is a FILL=1 subset, so the
                     // crop_square glyph renders as a solid block.
-                    Rectangle{anchors.centerIn:parent;width:8;height:8
+                    Rectangle{anchors.centerIn:parent;width:7;height:7
                         visible:window.visibility!==Window.Maximized
                         color:"transparent";border.width:1
                         border.color:maxHov.containsMouse?clrText:clrText2}
@@ -935,11 +957,44 @@ ApplicationWindow {
                 orientation: Qt.Horizontal
 
                 handle: Item {
+                    id: splitHandle
                     implicitWidth: 1; implicitHeight: 1
+                    // Which pane this divider sizes. The sidebar sits left of its
+                    // handle, the queue pane right of its own.
+                    readonly property bool forSidebar: x < queuePane.x
+                    readonly property Item pane: forSidebar ? sidebarColumn : queuePane
+
                     Rectangle {
                         anchors.centerIn:parent;width:1;height:parent.height
-                        color:SplitHandle.pressed?clrAccent:SplitHandle.hovered?clrMuted:clrBorder
+                        color:splitGrab.pressed?clrAccent:splitGrab.containsMouse?clrMuted:clrBorder
                         Behavior on color{ColorAnimation{duration:100}}
+                    }
+
+                    // The divider is 1px, which is a miserable drag target, so the
+                    // grab area overhangs it by 4px on each side. That means doing
+                    // the resize here rather than letting SplitView drive it: the
+                    // pane's own onWidthChanged still records the new share.
+                    MouseArea {
+                        id: splitGrab
+                        anchors.fill: parent
+                        anchors.leftMargin: -4; anchors.rightMargin: -4
+                        hoverEnabled: true
+                        cursorShape: Qt.SplitHCursor
+                        property real startScene: 0
+                        property real startW: 0
+                        onPressed: function(mouse) {
+                            startScene = mapToItem(null, mouse.x, 0).x
+                            startW = splitHandle.pane.width
+                        }
+                        onPositionChanged: function(mouse) {
+                            if (!pressed) return
+                            var pane = splitHandle.pane
+                            var dx = mapToItem(null, mouse.x, 0).x - startScene
+                            var w = splitHandle.forSidebar ? startW + dx : startW - dx
+                            pane.SplitView.preferredWidth = Math.round(Math.max(
+                                pane.SplitView.minimumWidth,
+                                Math.min(pane.SplitView.maximumWidth, w)))
+                        }
                     }
                 }
 
@@ -1194,7 +1249,8 @@ ApplicationWindow {
                                 color: backPathHov.containsMouse && (library.can_go_back || _view === "album") ? clrSurf2 : "transparent"
                                 opacity: library.can_go_back || _view === "album" ? 1 : 0.3
                                 Behavior on color { ColorAnimation { duration: 80 } }
-                                MatIcon { anchors.centerIn:parent; name:"chevron-left"; size:11; color:clrText2 }
+                                MatIcon { anchors.centerIn:parent; name:"chevron-left"; size:11
+                                    color: backPathHov.containsMouse ? clrText : clrText2 }
                                 MouseArea { id:backPathHov;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor
                                     onClicked: if(library.can_go_back || window._view === "album") window.goBack() }
                             }
@@ -1205,7 +1261,8 @@ ApplicationWindow {
                                 color: fwdPathHov.containsMouse && (library.can_go_forward || (_view === "library" && _canGoForwardToAlbum)) ? clrSurf2 : "transparent"
                                 opacity: library.can_go_forward || (_view === "library" && _canGoForwardToAlbum) ? 1 : 0.3
                                 Behavior on color { ColorAnimation { duration: 80 } }
-                                MatIcon { anchors.centerIn:parent; name:"chevron-right"; size:11; color:clrText2 }
+                                MatIcon { anchors.centerIn:parent; name:"chevron-right"; size:11
+                                    color: fwdPathHov.containsMouse ? clrText : clrText2 }
                                 MouseArea { id:fwdPathHov;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor
                                     onClicked: if(library.can_go_forward || (window._view === "library" && window._canGoForwardToAlbum)) window.goForward() }
                             }
@@ -1347,6 +1404,100 @@ ApplicationWindow {
                                     MouseArea{id:listToggleHov;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor;onClicked:window._libUseGrid=false}
                                 }
                             }
+
+                            // Search (far right) — collapsed state of the field below
+                            Rectangle {
+                                width:22;height:22;radius:3
+                                opacity: window._searchOpen ? 0 : 1
+                                color: searchToggleHov.containsMouse ? clrSurf2 : "transparent"
+                                Behavior on color { ColorAnimation { duration: 80 } }
+                                Behavior on opacity { NumberAnimation { duration: 90 } }
+                                MatIcon { anchors.centerIn:parent; name:"search"; size:12
+                                    color: searchToggleHov.containsMouse ? clrText : clrText2 }
+                                MouseArea{id:searchToggleHov;anchors.fill:parent;hoverEnabled:true
+                                    cursorShape:Qt.PointingHandCursor;onClicked:window.openSearch()}
+                            }
+                        }
+
+                        // Search field — grows out of the button to cover the whole bar
+                        Rectangle {
+                            id: omniSearch
+                            anchors.right: parent.right; anchors.top: parent.top
+                            height: parent.height - 1
+                            width: window._searchOpen ? parent.width : 32
+                            visible: window._searchOpen || width > 33
+                            color: clrSurface
+                            clip: true
+                            // Opening is the move the user is waiting on, so it is
+                            // quick and front-loaded; closing gets out of the way
+                            // faster still.
+                            Behavior on width {
+                                NumberAnimation {
+                                    duration: window._searchOpen ? 170 : 130
+                                    easing.type: window._searchOpen ? Easing.OutQuint : Easing.OutCubic
+                                }
+                            }
+
+                            // Swallows clicks meant for the field, which would
+                            // otherwise reach the path-bar buttons underneath.
+                            MouseArea {
+                                anchors.fill: parent
+                                enabled: window._searchOpen
+                                cursorShape: Qt.IBeamCursor
+                                onClicked: omniSearchInput.forceActiveFocus()
+                            }
+
+                            MatIcon {
+                                id: omniSearchIcon
+                                anchors.left: parent.left; anchors.leftMargin: 12
+                                anchors.verticalCenter: parent.verticalCenter
+                                name: "search"; size: 12; color: clrText2
+                            }
+
+                            TextInput {
+                                id: omniSearchInput
+                                anchors.left: omniSearchIcon.right; anchors.leftMargin: 8
+                                anchors.right: omniSearchClear.left; anchors.rightMargin: 8
+                                anchors.verticalCenter: parent.verticalCenter
+                                height: 20; clip: true
+                                color: clrText; font.pixelSize: 12; font.family: "Segoe UI"
+                                verticalAlignment: TextInput.AlignVCenter
+                                selectByMouse: true
+                                selectionColor: clrSurf2; selectedTextColor: clrText
+                                opacity: window._searchOpen ? 1 : 0
+                                Behavior on opacity { NumberAnimation { duration: 90 } }
+                                // Results come straight back from the in-memory
+                                // index, so every keystroke can query directly.
+                                onTextChanged: {
+                                    window._searchQuery = text
+                                    library.searchLibrary(text)
+                                    libGridView.contentY = 0
+                                    libListView.contentY = 0
+                                }
+                                Keys.onEscapePressed: window.closeSearch()
+
+                                Text {
+                                    anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
+                                    visible: omniSearchInput.text.length === 0
+                                    text: "Search albums, artists, tracks…"
+                                    color: clrText2; font.pixelSize: 12; font.family: "Segoe UI"; opacity: 0.6
+                                }
+                            }
+
+                            Rectangle {
+                                id: omniSearchClear
+                                anchors.right: parent.right; anchors.rightMargin: 10
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 22; height: 22; radius: 3
+                                opacity: window._searchOpen ? 1 : 0
+                                Behavior on opacity { NumberAnimation { duration: 90 } }
+                                color: omniClearHov.containsMouse ? clrSurf2 : "transparent"
+                                Behavior on color { ColorAnimation { duration: 80 } }
+                                MatIcon { anchors.centerIn: parent; name: "close"; size: 12
+                                    color: omniClearHov.containsMouse ? clrText : clrText2 }
+                                MouseArea { id: omniClearHov; anchors.fill: parent; hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor; onClicked: window.closeSearch() }
+                            }
                         }
                     }
 
@@ -1373,9 +1524,11 @@ ApplicationWindow {
                                         c.beginPath();c.arc(24,24,21,0,2*Math.PI);c.strokeStyle="#555";c.lineWidth=1.5;c.stroke()
                                         c.beginPath();c.arc(24,24,4,0,2*Math.PI);c.fillStyle="#555";c.fill() }
                                 }
-                                Text { anchors.horizontalCenter:parent.horizontalCenter; text:"No music found"
+                                Text { anchors.horizontalCenter:parent.horizontalCenter
+                                    text: window._searchActive ? "No matches" : "No music found"
                                     color:clrText2;font.pixelSize:13;font.family:"Segoe UI" }
                                 Row {
+                                    visible: !window._searchActive
                                     anchors.horizontalCenter:parent.horizontalCenter;spacing:8
                                     Rectangle {
                                         width:addFolderLbl.implicitWidth+20;height:26;radius:3
@@ -1403,6 +1556,9 @@ ApplicationWindow {
 
                             property bool useGrid: window._libUseGrid
                             property var nodes: {
+                                if (window._searchActive) {
+                                    try { return JSON.parse(library.search_results) } catch(e) { return [] }
+                                }
                                 try {
                                     var base = JSON.parse(library.library_nodes)
                                     var atRoot = library.current_path.toString() === "Library" || library.current_path.toString() === ""
@@ -1448,6 +1604,7 @@ ApplicationWindow {
                                 delegate: Item {
                                     width: libGridView.cellWidth; height: libGridView.cellHeight
                                     required property var modelData
+                                    required property int index
 
                                     // Hover tint
                                     Rectangle {
@@ -1457,7 +1614,9 @@ ApplicationWindow {
                                     }
 
                                     // Tile borders
-                                    Rectangle { anchors.right:parent.right; width:1; height:parent.height; color:clrBorder; z:1 }
+                                    // the last column's line would sit against the split handle
+                                    Rectangle { anchors.right:parent.right; width:1; height:parent.height; color:clrBorder; z:1
+                                        visible: (index + 1) % libGridView.numCols !== 0 }
                                     Rectangle { anchors.bottom:parent.bottom; height:1; width:parent.width; color:clrBorder; z:1 }
 
                                     // Cover art (square)
@@ -2013,7 +2172,7 @@ ApplicationWindow {
                                 visible:seekSlider.previewOn&&!seekSlider.pressed
                                 x:Math.min(seekFill.width,seekSlider.previewX)
                                 width:Math.abs(seekSlider.previewX-seekFill.width)
-                                height:parent.height;radius:1;color:clrAccent;opacity:0.28
+                                height:parent.height;color:clrAccent;opacity:0.28
                             }}}
                     handle:Rectangle{x:seekSlider.visualPosition*seekSlider.availableWidth-width/2;y:seekSlider.availableHeight/2-height/2
                         width:11;height:11;radius:5.5;color:seekSlider.pressed?"#ffffff":clrAccent;visible:player.total_tracks>0
@@ -2040,17 +2199,16 @@ ApplicationWindow {
                         visible:opacity>0.01
                         opacity:seekSlider.previewOn?1.0:0.0
                         // Rises slightly as it fades in rather than just appearing.
-                        y:-height-(seekSlider.previewOn?9:4)
+                        y:Math.round(-height-(seekSlider.previewOn?8:4))
                         Behavior on opacity{NumberAnimation{duration:110}}
                         Behavior on y{NumberAnimation{duration:140;easing.type:Easing.OutCubic}}
                         z:100
-                        width:seekTipText.implicitWidth+16;height:21;radius:4
-                        color:clrSurf2;border.color:clrBorder;border.width:1
+                        width:Math.round(seekTipText.implicitWidth)+16;height:20
+                        color:clrBg;border.color:clrBorder;border.width:1
                         // Clamped so the bubble stays over the track at both ends.
-                        x:Math.max(0,Math.min(seekSlider.width-width,seekSlider.previewX-width/2))
-                        // Matches the 1px top highlight used on the seek fill.
-                        Rectangle{anchors.top:parent.top;anchors.left:parent.left;anchors.right:parent.right
-                            anchors.margins:1;height:1;color:"#ffffff";opacity:0.06}
+                        // Rounded so the 1px border lands on whole pixels instead
+                        // of straddling two rows and reading as 2px.
+                        x:Math.round(Math.max(0,Math.min(seekSlider.width-width,seekSlider.previewX-width/2)))
                         Text{id:seekTipText;anchors.centerIn:parent;text:formatTime(seekSlider.previewTime)
                             color:clrText;font.pixelSize:10;font.family:Qt.platform.os==="osx"?"Menlo":"Consolas"}
                     }
@@ -2299,7 +2457,7 @@ ApplicationWindow {
                         Behavior on color{ColorAnimation{duration:100}}
                         Text{anchors.centerIn:parent;text:"\u2026";color:clrText2;font.pixelSize:14;font.family:"Segoe UI"}
                         MouseArea{id:browseHov;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor;onClicked:library.openFolderPicker()} }
-                    Rectangle { width:52;height:28;radius:3;color:confirmHov.containsMouse?clrSurface:"#1a1a1a";border.color:clrBorder;border.width:1
+                    Rectangle { width:52;height:28;radius:3;color:confirmHov.containsMouse?clrSurf2:clrSurface;border.color:clrBorder;border.width:1
                         Behavior on color{ColorAnimation{duration:100}}
                         Text{anchors.centerIn:parent;text:"OK";color:clrText;font.pixelSize:11;font.family:"Segoe UI"}
                         MouseArea{id:confirmHov;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor

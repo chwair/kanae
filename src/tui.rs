@@ -1291,16 +1291,17 @@ impl TuiLibraryState {
         self.browse_album_path = Some(id.to_string());
         let tracks = self.scan_result.as_ref()
             .and_then(|r| r.albums.iter().find(|a| a.id == id))
-            .map(|album| album.track_paths.iter().map(|p| {
-                let meta = crate::file_player::read_file_metadata(p);
-                let secs = meta.duration_secs as u64;
-                BrowseTrack {
-                    title:    meta.title,
-                    artist:   meta.artist,
-                    duration: format!("{:02}:{:02}", secs / 60, secs % 60),
-                    path:     p.clone(),
-                }
-            }).collect())
+            .map(|album| crate::file_player::read_album_metadata(&album.track_paths)
+                .into_iter()
+                .map(|meta| {
+                    let secs = meta.duration_secs as u64;
+                    BrowseTrack {
+                        title:    meta.title,
+                        artist:   meta.artist,
+                        duration: format!("{:02}:{:02}", secs / 60, secs % 60),
+                        path:     meta.path,
+                    }
+                }).collect())
             .unwrap_or_default();
         self.browse_tracks = tracks;
     }

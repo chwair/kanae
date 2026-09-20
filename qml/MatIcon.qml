@@ -22,6 +22,7 @@ Text {
     // Internal icon name → Material Symbols codepoint.
     readonly property var _glyphs: ({
         "settings":      "\ue8b8",
+        "search":        "\ue8b6",
         "close":         "\ue5cd",
         "minimize":      "\ue15b",
         "maximize":      "\ue3c6",
