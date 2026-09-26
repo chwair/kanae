@@ -97,6 +97,9 @@ pub struct AlbumMetadata {
 }
 
 const USER_AGENT: &str = "kanae-player/0.1.0 (https://github.com/user/kanae)";
+/// upper bound per request so a stalled connection can't leave a disc load
+/// (and the "Reading CD" state) hanging forever.
+const HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 fn retry<T, F: Fn() -> Option<T>>(attempts: u32, f: F) -> Option<T> {
     for i in 0..attempts {
@@ -118,19 +121,23 @@ pub fn lookup_metadata(toc: &Toc) -> Option<AlbumMetadata> {
     );
     eprintln!("[mb] looking up disc ID {}", disc_id);
 
+    // Some(None) is a definite miss (disc not in MusicBrainz); retrying a
+    // 404 would only hold the disc load up for a few more seconds.
     let response: MbResponse = retry(3, || {
         match ureq::get(&url)
+            .config().timeout_global(Some(HTTP_TIMEOUT)).build()
             .header("User-Agent", USER_AGENT)
             .header("Accept", "application/json")
             .call()
         {
             Ok(mut resp) => match resp.body_mut().read_json::<MbResponse>() {
-                Ok(r)  => Some(r),
+                Ok(r)  => Some(Some(r)),
                 Err(e) => { eprintln!("[mb] JSON parse error: {}", e); None }
             },
+            Err(ureq::Error::StatusCode(404)) => { eprintln!("[mb] disc ID not found"); Some(None) }
             Err(e) => { eprintln!("[mb] request error: {}", e); None }
         }
-    })?;
+    })??;
 
     let releases = response.releases?;
     eprintln!("[mb] {} release(s) found", releases.len());
@@ -226,7 +233,11 @@ fn fetch_cover_art(release_id: &str) -> Option<String> {
         release_id
     );
     retry(3, || {
-        match ureq::get(&url).header("User-Agent", USER_AGENT).call() {
+        match ureq::get(&url)
+            .config().timeout_global(Some(HTTP_TIMEOUT)).build()
+            .header("User-Agent", USER_AGENT)
+            .call()
+        {
             Ok(mut resp) => {
                 match resp.body_mut().read_to_vec() {
                     Ok(bytes) if !bytes.is_empty() => {

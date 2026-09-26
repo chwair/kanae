@@ -397,7 +397,7 @@ impl TuiPlayerState {
         if !self.is_file_mode {
             self.stop_playback();
         }
-        crate::cd_reader::eject_drive(&path);
+        crate::cd_reader::eject_drive_async(&path);
     }
 
     fn load_disc(&mut self) {
@@ -415,29 +415,12 @@ impl TuiPlayerState {
         let attempted_id = self.meta_attempt_disc_id.clone();
         let current_id = self.current_disc_id.clone();
         let handle = thread::spawn(move || {
-            let result = match crate::cd_reader::open_drive(&drive_path) {
-                Err(_) => PendingDiscResult::Unavailable { status: "Drive unavailable".into() },
-                Ok(reader) => match crate::cd_reader::read_toc(&reader) {
-                    Ok(toc) => {
-                        let tracks  = crate::cd_reader::get_track_info(&toc);
-                        let durations = tracks.iter()
-                            .map(|t| crate::cd_reader::format_duration(t.duration_seconds))
-                            .collect();
-                        let disc_id  = crate::musicbrainz::calculate_disc_id(&toc);
-                        // Look up once per disc: a newly inserted disc is always
-                        // queried; the same disc is re-queried only if neither
-                        // loaded nor previously attempted.
-                        let is_new_disc = disc_id != current_id;
-                        let metadata = if is_new_disc || (!meta_loaded && attempted_id != disc_id) {
-                            crate::musicbrainz::lookup_metadata(&toc)
-                        } else {
-                            None
-                        };
-                        PendingDiscResult::Loaded { tracks, durations, metadata, disc_id }
-                    }
-                    Err(_) => PendingDiscResult::Empty { status: "No disc inserted".into() },
-                },
-            };
+            // look up once per disc: a newly inserted disc is always queried;
+            // the same disc is re-queried only if neither loaded nor
+            // previously attempted.
+            let result = crate::cd_reader::probe_disc(&drive_path, |disc_id| {
+                disc_id != current_id || (!meta_loaded && attempted_id != disc_id)
+            });
             *result_slot.lock().unwrap() = Some(result);
         });
         self.disc_load_thread = Some(handle);
@@ -463,7 +446,8 @@ impl TuiPlayerState {
         self.loading_since = None;
 
         match result {
-            PendingDiscResult::Loaded { tracks, durations, metadata, disc_id } => {
+            PendingDiscResult::Busy => {}
+            PendingDiscResult::Loaded { tracks, durations, metadata, disc_id, .. } => {
                 // Periodic same-disc re-poll with no fresh metadata: keep the
                 // existing titles/artists instead of resetting to "Track NN".
                 let same_disc = metadata.is_none()
@@ -514,6 +498,7 @@ impl TuiPlayerState {
                 self.disc_status = String::new();
                 if self.current_track < 0 { self.current_track = -1; }
             }
+            PendingDiscResult::NotAudio  { status } |
             PendingDiscResult::Empty     { status } |
             PendingDiscResult::Unavailable { status } => {
                 self.disc_status  = status;

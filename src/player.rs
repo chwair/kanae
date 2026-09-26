@@ -3,7 +3,6 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use cd_da_reader::{CdReader, Toc};
 
 use crate::cd_reader::{self, DriveInfo, TrackInfo, PendingDiscResult};
 use crate::audio_player::{self, AudioController};
@@ -41,6 +40,16 @@ mod player_bridge {
         #[qproperty(i32, cd_disc_number)]
         #[qproperty(i32, cd_disc_count)]
         #[qproperty(bool, is_loading)]
+        /// an audio CD is in the selected drive, whatever mode the player is in.
+        #[qproperty(bool, cd_present)]
+        /// the drive is being read and it isn't known yet what is in it.
+        #[qproperty(bool, cd_scanning)]
+        /// disc metadata for the library tile; unlike album_* these keep
+        /// describing the CD while local files are playing.
+        #[qproperty(QString, cd_title)]
+        #[qproperty(QString, cd_artist)]
+        #[qproperty(QString, cd_year)]
+        #[qproperty(QString, cd_cover)]
         #[qproperty(QStringList, lyric_lines)]
         #[qproperty(QStringList, lyric_times)]
         #[qproperty(bool, lyrics_loading)]
@@ -257,8 +266,6 @@ struct QueueResume {
 pub struct PlayerState {
     drives: Vec<DriveInfo>,
     current_drive_path: Option<String>,
-    cd_reader: Option<CdReader>,
-    toc: Option<Toc>,
     tracks: Vec<TrackInfo>,
     playback_thread: Option<thread::JoinHandle<()>>,
     stop_playback: Arc<AtomicBool>,
@@ -271,6 +278,18 @@ pub struct PlayerState {
     disc_load_result: Arc<Mutex<Option<PendingDiscResult>>>,
     disc_load_thread: Option<thread::JoinHandle<()>>,
     disc_check_active: Arc<AtomicBool>,
+    /// a full load was asked for while a probe was in flight; its result is
+    /// stale (the drive or mode may have changed) and a new probe follows it.
+    probe_rerun: bool,
+    /// failed periodic reads of a disc that was there; one miss is ignored
+    /// since drives drop the odd TOC read without the disc going anywhere.
+    missed_reads: u32,
+    /// last probe found a data disc; re-reading it is quick and routine, so
+    /// it shouldn't bring the loading state back every tick.
+    not_audio: bool,
+    /// last MusicBrainz answer, keyed by disc id (None = not in the database),
+    /// so periodic checks and mode switches don't query again for the same disc.
+    meta_cache: Option<(String, Option<AlbumMetadata>)>,
     metadata_loaded: bool,
     current_disc_id: String,
     lyric_result: Arc<Mutex<Option<Option<Vec<crate::lrclib::LyricLine>>>>>,
@@ -337,8 +356,6 @@ impl Default for PlayerState {
         Self {
             drives: Vec::new(),
             current_drive_path: None,
-            cd_reader: None,
-            toc: None,
             tracks: Vec::new(),
             playback_thread: None,
             stop_playback: Arc::new(AtomicBool::new(false)),
@@ -351,6 +368,10 @@ impl Default for PlayerState {
             disc_load_result: Arc::new(Mutex::new(None)),
             disc_load_thread: None,
             disc_check_active: Arc::new(AtomicBool::new(false)),
+            probe_rerun: false,
+            missed_reads: 0,
+            not_audio: false,
+            meta_cache: None,
             metadata_loaded: false,
             current_disc_id: String::new(),
             lyric_result: Arc::new(Mutex::new(None)),
@@ -440,6 +461,12 @@ pub struct PlayerControllerRust {
     cd_disc_number: i32,
     cd_disc_count: i32,
     is_loading: bool,
+    cd_present: bool,
+    cd_scanning: bool,
+    cd_title: QString,
+    cd_artist: QString,
+    cd_year: QString,
+    cd_cover: QString,
     lyric_lines: QStringList,
     lyric_times: QStringList,
     lyrics_loading: bool,
@@ -477,6 +504,12 @@ impl Default for PlayerControllerRust {
             cd_disc_number: 0,
             cd_disc_count: 0,
             is_loading: false,
+            cd_present: false,
+            cd_scanning: false,
+            cd_title: QString::default(),
+            cd_artist: QString::default(),
+            cd_year: QString::default(),
+            cd_cover: QString::default(),
             lyric_lines: QStringList::default(),
             lyric_times: QStringList::default(),
             lyrics_loading: false,
@@ -494,12 +527,16 @@ impl Default for PlayerControllerRust {
 }
 
 impl player_bridge::PlayerController {
+    /// enumerate optical drives. only lists devices; what is in them is found
+    /// out by the background probe, so this never blocks on the drive.
     pub fn scan_drives(mut self: Pin<&mut Self>) {
         let drives = cd_reader::scan_drives();
-        
+
         if drives.is_empty() {
+            self.state.lock().unwrap().drives.clear();
             self.as_mut().set_drive_list(QStringList::default());
             self.as_mut().set_selected_drive_index(-1);
+            self.as_mut().publish_cd_info(None, false);
             // Don't wipe file-mode track state — the timer calls scan_drives
             // periodically and would otherwise clear the loaded track list.
             if !self.state.lock().unwrap().is_file_mode {
@@ -509,34 +546,28 @@ impl player_bridge::PlayerController {
             }
             return;
         }
-        
+
         let mut list = QStringList::default();
-        let mut auto_select_index = -1;
-        
-        for (i, drive) in drives.iter().enumerate() {
+        for drive in &drives {
             list.append(QString::from(&drive.display_name));
-            if drive.has_audio_cd && auto_select_index == -1 {
-                auto_select_index = i as i32;
+        }
+        let (index, file_mode) = {
+            let mut state = self.state.lock().unwrap();
+            let kept = state.current_drive_path.as_ref()
+                .and_then(|p| drives.iter().position(|d| &d.path == p));
+            let index = kept.unwrap_or(0);
+            // file mode still probes the drive for the library tile, so it
+            // needs a drive even though selecting one would stop playback.
+            if state.is_file_mode {
+                state.current_drive_path = Some(drives[index].path.clone());
             }
-        }
-        
-        if let Ok(mut state) = self.state.lock() {
             state.drives = drives;
-        }
-        
+            (index as i32, state.is_file_mode)
+        };
         self.as_mut().set_drive_list(list);
-
-        // Don't auto-select or interact with drives while local files are playing.
-        if self.state.lock().unwrap().is_file_mode {
-            return;
-        }
-
-        if auto_select_index >= 0 {
-            self.as_mut().set_selected_drive_index(auto_select_index);
-            self.select_drive(auto_select_index);
-        } else if !self.state.lock().unwrap().drives.is_empty() {
-            self.as_mut().set_selected_drive_index(0);
-            self.select_drive(0);
+        self.as_mut().set_selected_drive_index(index);
+        if !file_mode {
+            self.select_drive(index);
         }
     }
 
@@ -556,8 +587,6 @@ impl player_bridge::PlayerController {
         self.as_mut().stop_playback_internal();
         {
             let mut state = self.state.lock().unwrap();
-            state.cd_reader = None;
-            state.toc = None;
             state.tracks.clear();
             state.current_drive_path = Some(drive_path);
         }
@@ -566,63 +595,54 @@ impl player_bridge::PlayerController {
     }
 
     pub fn refresh_disc(mut self: Pin<&mut Self>) {
-        if *self.as_ref().is_loading() {
+        if self.state.lock().unwrap().current_drive_path.is_none() {
+            self.as_mut().set_total_tracks(0);
+            self.as_mut().set_drive_status(QString::from("No drive selected"));
             return;
         }
-        let (drive_path, result_slot) = {
-            let state = self.state.lock().unwrap();
-            let path = match state.current_drive_path.clone() {
-                Some(p) => p,
-                None => {
-                    drop(state);
-                    self.as_mut().set_total_tracks(0);
-                    self.as_mut().set_drive_status(QString::from("No drive selected"));
-                    return;
-                }
-            };
-            let slot = state.disc_load_result.clone();
-            *slot.lock().unwrap() = None;
-            drop(state);
-            // Drop existing reader so the thread can open an exclusive handle.
-            self.state.lock().unwrap().cd_reader = None;
-            (path, slot)
-        };
-        // Join any existing background thread BEFORE spawning a new one to
-        // guarantee only one thread holds the drive open at a time.
-        {
+        self.start_probe(true);
+    }
+
+    /// read the drive on a worker thread; poll_load picks the result up.
+    /// `full` marks a user-driven load: its result is applied even when the
+    /// disc looks unchanged, and it retries a MusicBrainz miss. never blocks:
+    /// if a probe is already running, a full load is queued behind it.
+    fn start_probe(mut self: Pin<&mut Self>, full: bool) {
+        let (file_mode, not_audio) = {
             let mut state = self.state.lock().unwrap();
-            state.disc_check_active.store(false, Ordering::Relaxed);
-            if let Some(old) = state.disc_load_thread.take() {
-                drop(state);
-                let _ = old.join();
+            let Some(path) = state.current_drive_path.clone() else { return };
+            if state.disc_check_active.load(Ordering::Relaxed) {
+                if full { state.probe_rerun = true; }
+            } else {
+                // only a finished thread can be left here (the flag is cleared
+                // after its result is taken), so joining it is instant.
+                if let Some(old) = state.disc_load_thread.take() {
+                    if old.is_finished() { let _ = old.join(); }
+                }
+                let slot = state.disc_load_result.clone();
+                *slot.lock().unwrap() = None;
+                let (cached_id, cached_known) = match state.meta_cache {
+                    Some((ref id, ref meta)) => (Some(id.clone()), meta.is_some()),
+                    None => (None, false),
+                };
+                let retry_miss = full && !cached_known;
+                let handle = thread::spawn(move || {
+                    let result = cd_reader::probe_disc(&path, |disc_id| {
+                        cached_id.as_deref() != Some(disc_id) || retry_miss
+                    });
+                    *slot.lock().unwrap() = Some(result);
+                });
+                state.disc_load_thread = Some(handle);
+                state.disc_check_active.store(true, Ordering::Relaxed);
             }
+            (state.is_file_mode, state.not_audio)
+        };
+
+        if full || (!*self.as_ref().cd_present() && !not_audio) {
+            self.as_mut().set_cd_scanning(true);
         }
-        let handle = thread::spawn(move || {
-            let result = match cd_reader::open_drive(&drive_path) {
-                Err(_) => PendingDiscResult::Unavailable {
-                    status: "Drive unavailable".to_string(),
-                },
-                Ok(reader) => match cd_reader::read_toc(&reader) {
-                    Ok(toc) => {
-                        let tracks = cd_reader::get_track_info(&toc);
-                        let durations = tracks
-                            .iter()
-                            .map(|t| cd_reader::format_duration(t.duration_seconds))
-                            .collect();
-                        let metadata = crate::musicbrainz::lookup_metadata(&toc);
-                        let disc_id = crate::musicbrainz::calculate_disc_id(&toc);
-                        PendingDiscResult::Loaded { tracks, durations, metadata, disc_id }
-                    }
-                    Err(_) => PendingDiscResult::Empty {
-                        status: "No disc inserted".to_string(),
-                    },
-                },
-            };
-            *result_slot.lock().unwrap() = Some(result);
-        });
-        self.state.lock().unwrap().disc_load_thread = Some(handle);
-        // Tell SMTC we're loading while the spinner shows.
-        {
+        if full && !file_mode {
+            // Tell SMTC we're loading while the spinner shows.
             let mut state = self.state.lock().unwrap();
             if let Some(ref mut h) = state.smtc_handle {
                 h.update(crate::smtc::SmtcUpdate::Metadata {
@@ -635,7 +655,22 @@ impl player_bridge::PlayerController {
                 h.update(crate::smtc::SmtcUpdate::Stopped);
             }
         }
-        self.as_mut().set_is_loading(true);
+        if full || (!file_mode && !not_audio && *self.as_ref().total_tracks() == 0) {
+            self.as_mut().set_is_loading(true);
+        }
+    }
+
+    /// publish what is in the drive for the library tile.
+    fn publish_cd_info(mut self: Pin<&mut Self>, meta: Option<&AlbumMetadata>, present: bool) {
+        let (title, artist, year, cover) = match meta {
+            Some(m) => (m.title.as_str(), m.artist.as_str(), m.year.as_str(), m.cover_art_url.as_deref().unwrap_or("")),
+            None => ("", "", "", ""),
+        };
+        self.as_mut().set_cd_title(QString::from(title));
+        self.as_mut().set_cd_artist(QString::from(artist));
+        self.as_mut().set_cd_year(QString::from(year));
+        self.as_mut().set_cd_cover(QString::from(cover));
+        self.as_mut().set_cd_present(present);
     }
 
     pub fn play_pause(mut self: Pin<&mut Self>) {
@@ -942,6 +977,8 @@ impl player_bridge::PlayerController {
     }
 
     pub fn seek(mut self: Pin<&mut Self>, seconds: f64) {
+        let __bt = std::time::Instant::now();
+        eprintln!("[diag] seek({:.2}) entered", seconds);
         let was_playing = *self.as_ref().is_playing();
         {
             let mut state = self.state.lock().unwrap();
@@ -954,6 +991,7 @@ impl player_bridge::PlayerController {
             // start_playback stops the current thread then restarts at the new offset.
             self.start_playback();
         }
+        eprintln!("[diag] seek({:.2}) done in {:?} (was_playing={})", seconds, __bt.elapsed(), was_playing);
     }
 
     /// Track selection from the UI. Choosing a track by hand supersedes the
@@ -1011,17 +1049,8 @@ impl player_bridge::PlayerController {
 
     fn start_playback(mut self: Pin<&mut Self>) {
         self.as_mut().stop_playback_internal();
-
-        // Also join any running background disc-check thread so it releases
-        // its exclusive drive handle before the playback thread opens its own.
-        {
-            let mut state = self.state.lock().unwrap();
-            state.disc_check_active.store(false, Ordering::Relaxed);
-            if let Some(old) = state.disc_load_thread.take() {
-                drop(state);
-                let _ = old.join();
-            }
-        }
+        // a disc probe may still be running; the playback thread waits for it
+        // to release the drive, so there is nothing to join here.
 
         let current_track = *self.as_ref().current_track();
 
@@ -1073,9 +1102,9 @@ impl player_bridge::PlayerController {
             return;
         }
 
-        // Extract needed data and release the CD reader handle so the thread can open its own
+        // extract what the playback thread needs; it opens the drive itself
         let (drive_path, track_number, stop_flag, start_offset, current_position, volume_arc, playback_ended_arc, playback_error_arc, heard_position_arc, vis_tap) = {
-            let mut state = self.state.lock().unwrap();
+            let state = self.state.lock().unwrap();
 
             let drive_path = match state.current_drive_path.clone() {
                 Some(p) => p,
@@ -1102,8 +1131,6 @@ impl player_bridge::PlayerController {
             let heard_position_arc = state.heard_position.clone();
             // Seed heard_position to the start offset so the seek bar is correct immediately.
             heard_position_arc.store(start_offset.to_bits(), Ordering::Relaxed);
-            // Release the shared CdReader; the playback thread will open its own.
-            state.cd_reader = None;
             (drive_path, track_number, stop_flag, start_offset, current_position, volume_arc, playback_ended_arc, playback_error_arc, heard_position_arc, state.vis_tap.clone())
         };
 
@@ -1355,18 +1382,9 @@ impl player_bridge::PlayerController {
         }
         let handle = self.state.lock().unwrap().playback_thread.take();
         if let Some(h) = handle {
+            let __jt = std::time::Instant::now();
             let _ = h.join();
-        }
-        // Re-open the CdReader now that the thread has released its exclusive handle.
-        {
-            let mut state = self.state.lock().unwrap();
-            if !state.is_file_mode && state.cd_reader.is_none() {
-                if let Some(path) = state.current_drive_path.clone() {
-                    if let Ok(reader) = cd_reader::open_drive(&path) {
-                        state.cd_reader = Some(reader);
-                    }
-                }
-            }
+            eprintln!("[diag]   join old playback thread {:?}", __jt.elapsed());
         }
         self.as_mut().set_is_playing(false);
     }
@@ -1544,6 +1562,7 @@ impl player_bridge::PlayerController {
                 self.as_mut().set_drive_status(QString::from("No disc inserted"));
                 self.as_mut().set_lyric_lines(QStringList::default());
                 self.as_mut().set_lyric_times(QStringList::default());
+                self.as_mut().publish_cd_info(None, false);
                 return;
             }
 
@@ -1610,73 +1629,18 @@ impl player_bridge::PlayerController {
         }
     }
 
-    pub fn check_drive(mut self: Pin<&mut Self>) {
-        if *self.as_ref().is_playing() || *self.as_ref().is_loading() {
+    pub fn check_drive(self: Pin<&mut Self>) {
+        if *self.as_ref().is_loading() {
             return;
         }
-        if self.state.lock().unwrap().is_file_mode {
+        // CD playback owns the drive; file playback doesn't touch it.
+        if *self.as_ref().is_playing() && !self.state.lock().unwrap().is_file_mode {
             return;
         }
         if self.state.lock().unwrap().disc_check_active.load(Ordering::Relaxed) {
             return;
         }
-        let maybe_path = self.state.lock().unwrap().current_drive_path.clone();
-        let current_path = match maybe_path {
-            Some(p) => p,
-            None => return,
-        };
-        let result_slot = {
-            let state = self.state.lock().unwrap();
-            let slot = state.disc_load_result.clone();
-            *slot.lock().unwrap() = None;
-            slot
-        };
-        // Drop the reader so the background thread can open an exclusive handle.
-        self.state.lock().unwrap().cd_reader = None;
-        let meta_already_loaded = self.state.lock().unwrap().metadata_loaded;
-        {
-            let mut state = self.state.lock().unwrap();
-            if let Some(old) = state.disc_load_thread.take() {
-                drop(state);
-                let _ = old.join();
-            }
-        }
-        let handle = thread::spawn(move || {
-            let result = match cd_reader::open_drive(&current_path) {
-                Err(_) => PendingDiscResult::Unavailable {
-                    status: "Drive unavailable".to_string(),
-                },
-                Ok(reader) => match cd_reader::read_toc(&reader) {
-                    Ok(toc) => {
-                        let tracks = cd_reader::get_track_info(&toc);
-                        let durations = tracks
-                            .iter()
-                            .map(|t| cd_reader::format_duration(t.duration_seconds))
-                            .collect();
-                        let metadata = if meta_already_loaded {
-                            None
-                        } else {
-                            crate::musicbrainz::lookup_metadata(&toc)
-                        };
-                        let disc_id = crate::musicbrainz::calculate_disc_id(&toc);
-                        PendingDiscResult::Loaded { tracks, durations, metadata, disc_id }
-                    }
-                    Err(_) => PendingDiscResult::Empty {
-                        status: "No disc inserted".to_string(),
-                    },
-                },
-            };
-            *result_slot.lock().unwrap() = Some(result);
-        });
-        {
-            let mut state = self.state.lock().unwrap();
-            state.disc_load_thread = Some(handle);
-            state.disc_check_active.store(true, Ordering::Relaxed);
-        }
-        let no_disc = *self.as_ref().total_tracks() == 0;
-        if no_disc {
-            self.as_mut().set_is_loading(true);
-        }
+        self.start_probe(false);
     }
 
     pub fn poll_load(mut self: Pin<&mut Self>) {
@@ -1686,31 +1650,62 @@ impl player_bridge::PlayerController {
             x
         };
         let Some(result) = result else { return };
-        let t = self.state.lock().unwrap().disc_load_thread.take();
-        if let Some(t) = t { let _ = t.join(); }
-        self.state.lock().unwrap().disc_check_active.store(false, Ordering::Relaxed);
+        let rerun = {
+            let mut state = self.state.lock().unwrap();
+            // the thread stores its result as its last act, so this is instant.
+            if let Some(t) = state.disc_load_thread.take() { let _ = t.join(); }
+            state.disc_check_active.store(false, Ordering::Relaxed);
+            // keep a lookup even if this result is dropped below.
+            if let PendingDiscResult::Loaded { ref disc_id, ref metadata, looked_up: true, .. } = result {
+                state.meta_cache = Some((disc_id.clone(), metadata.clone()));
+            }
+            std::mem::take(&mut state.probe_rerun)
+        };
+        let busy = matches!(result, PendingDiscResult::Busy);
+        if rerun || (busy && *self.as_ref().is_loading()) {
+            self.start_probe(true);
+            return;
+        }
         let was_user_load = *self.as_ref().is_loading();
         if was_user_load {
             self.as_mut().set_is_loading(false);
         }
+        if busy {
+            return;
+        }
+        self.as_mut().set_cd_scanning(false);
+        let file_mode = self.state.lock().unwrap().is_file_mode;
+        let is_not_audio = matches!(result, PendingDiscResult::NotAudio { .. });
         let had_track_count = *self.as_ref().total_tracks();
         let had_tracks = had_track_count > 0;
-        let drive_path = self.state.lock().unwrap().current_drive_path.clone();
         match result {
-            PendingDiscResult::Loaded { tracks, durations, metadata, disc_id } => {
+            PendingDiscResult::Busy => {}
+            PendingDiscResult::Loaded { tracks, durations, disc_id, .. } => {
+                let metadata = {
+                    let mut state = self.state.lock().unwrap();
+                    state.missed_reads = 0;
+                    state.not_audio = false;
+                    state.meta_cache.as_ref()
+                        .filter(|(id, _)| *id == disc_id)
+                        .and_then(|(_, m)| m.clone())
+                };
+                self.as_mut().publish_cd_info(metadata.as_ref(), true);
+                if file_mode {
+                    return;
+                }
+
                 let is_new_disc = !had_tracks;
                 let track_count = tracks.len() as i32;
 
-                self.state.lock().unwrap().current_disc_id = disc_id.clone();
+                let prev_disc_id = std::mem::replace(
+                    &mut self.state.lock().unwrap().current_disc_id,
+                    disc_id.clone(),
+                );
 
-                if !was_user_load && had_tracks && track_count == had_track_count {
+                if !was_user_load && had_tracks && track_count == had_track_count && prev_disc_id == disc_id {
                     let meta_ok = self.state.lock().unwrap().metadata_loaded;
                     if meta_ok || metadata.is_none() {
-                        let mut state = self.state.lock().unwrap();
-                        state.tracks = tracks;
-                        if let Some(ref path) = drive_path {
-                            state.cd_reader = cd_reader::open_drive(path).ok();
-                        }
+                        self.state.lock().unwrap().tracks = tracks;
                         return;
                     }
                 }
@@ -1782,14 +1777,7 @@ impl player_bridge::PlayerController {
                     }
                 }
 
-                {
-                    let mut state = self.state.lock().unwrap();
-                    state.tracks = tracks;
-                    state.toc = None;
-                    if let Some(ref path) = drive_path {
-                        state.cd_reader = cd_reader::open_drive(path).ok();
-                    }
-                }
+                self.state.lock().unwrap().tracks = tracks;
                 self.as_mut().set_track_names(dur_list);
                 self.as_mut().set_track_titles(title_list);
                 self.as_mut().set_track_artists(artist_list);
@@ -1803,17 +1791,50 @@ impl player_bridge::PlayerController {
                     self.as_mut().set_total_time(0.0);
                 }
             }
-            PendingDiscResult::Empty { status } | PendingDiscResult::Unavailable { status } => {
-                // Try to restore the reader handle for the next check cycle.
-                if let Some(ref path) = drive_path {
-                    if let Ok(r) = cd_reader::open_drive(path) {
-                        self.state.lock().unwrap().cd_reader = Some(r);
+            PendingDiscResult::NotAudio { status }
+            | PendingDiscResult::Empty { status }
+            | PendingDiscResult::Unavailable { status } => {
+                let had_cd = *self.as_ref().cd_present();
+                {
+                    let mut state = self.state.lock().unwrap();
+                    state.not_audio = is_not_audio;
+                    if had_cd && !is_not_audio && !was_user_load && state.missed_reads == 0 {
+                        state.missed_reads = 1;
+                        return;
+                    }
+                    state.missed_reads = 0;
+                }
+                self.as_mut().publish_cd_info(None, false);
+                self.as_mut().set_drive_status(QString::from(status.as_str()));
+                // playback reports its own disc errors; a stray probe result
+                // must not pull the track list out from under it.
+                if file_mode || *self.as_ref().is_playing() {
+                    return;
+                }
+                if !had_tracks && !was_user_load {
+                    // nothing on this drive: look at the next one on the
+                    // following tick, so a disc in any drive gets picked up.
+                    let next = {
+                        let mut state = self.state.lock().unwrap();
+                        let n = state.drives.len();
+                        let cur = state.current_drive_path.as_ref()
+                            .and_then(|p| state.drives.iter().position(|d| &d.path == p));
+                        match cur {
+                            Some(i) if n > 1 => {
+                                let j = (i + 1) % n;
+                                state.current_drive_path = Some(state.drives[j].path.clone());
+                                Some(j as i32)
+                            }
+                            _ => None,
+                        }
+                    };
+                    if let Some(j) = next {
+                        self.as_mut().set_selected_drive_index(j);
                     }
                 }
                 if had_tracks {
                     {
                         let mut state = self.state.lock().unwrap();
-                        state.toc = None;
                         state.tracks.clear();
                         state.playback_start_offset = 0.0;
                         state.current_position.store(0u64, Ordering::Relaxed);
@@ -1857,7 +1878,6 @@ impl player_bridge::PlayerController {
                         }
                     }
                 }
-                self.as_mut().set_drive_status(QString::from(status.as_str()));
             }
         }
     }
@@ -2213,7 +2233,7 @@ impl player_bridge::PlayerController {
             self.as_mut().stop_playback_internal();
             let drive_path = self.state.lock().unwrap().current_drive_path.clone();
             if let Some(path) = drive_path {
-                cd_reader::eject_drive(&path);
+                cd_reader::eject_drive_async(&path);
             }
         }
     }
@@ -2232,7 +2252,7 @@ impl player_bridge::PlayerController {
         if !is_file {
             self.as_mut().stop_playback_internal();
         }
-        cd_reader::eject_drive(&path);
+        cd_reader::eject_drive_async(&path);
     }
 
     fn load_local_tracks(self: Pin<&mut Self>, input_paths: Vec<String>, is_single: bool) {

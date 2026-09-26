@@ -23,6 +23,26 @@ struct ChannelSource {
     /// sample rather than per chunk so it tracks what is being *heard*, which
     /// the seek bar and the visualizer both key off.
     samples_emitted: Arc<AtomicU64>,
+    /// Playback gain, read here rather than at decode time. Scaling decoded
+    /// chunks before they enter the channel puts the whole buffer's worth of
+    /// audio (~400 ms) between a slider move and the change being heard.
+    volume: Arc<AtomicU64>,
+    /// Gain actually applied, chased toward `volume` a sample at a time so a
+    /// jump in the slider never lands as a step discontinuity (a click).
+    gain: f32,
+}
+
+/// Per-sample smoothing coefficient: closes most of a volume jump in ~10 ms at
+/// 48 kHz, fast enough to feel immediate and slow enough to stay inaudible.
+const VOL_SMOOTH: f32 = 0.002;
+
+impl ChannelSource {
+    #[inline]
+    fn shaped(&mut self, s: f32) -> f32 {
+        let target = f64::from_bits(self.volume.load(Ordering::Relaxed)) as f32;
+        self.gain += (target - self.gain) * VOL_SMOOTH;
+        (s * self.gain).clamp(-1.0, 1.0)
+    }
 }
 
 impl Iterator for ChannelSource {
@@ -36,7 +56,7 @@ impl Iterator for ChannelSource {
         // Fast path: still draining the current chunk.
         if let Some(s) = self.current.next() {
             self.samples_emitted.fetch_add(1, Ordering::Relaxed);
-            return Some(s);
+            return Some(self.shaped(s));
         }
         // Current chunk exhausted — fetch the next without blocking
         // (the audio callback must never block).
@@ -46,7 +66,7 @@ impl Iterator for ChannelSource {
                 match self.current.next() {
                     Some(s) => {
                         self.samples_emitted.fetch_add(1, Ordering::Relaxed);
-                        Some(s)
+                        Some(self.shaped(s))
                     }
                     None => Some(0.0),
                 }
@@ -131,15 +151,22 @@ impl AudioController {
     ///
     /// `buffer_packets` sets the channel capacity; 30 gives ~780 ms of MP3
     /// headroom and is more than enough for any supported format.
+    ///
+    /// `volume` is read by the source itself, one sample ahead of the device,
+    /// so the buffer depth does not become volume latency.
     pub fn begin_stream(
         &self,
         sample_rate: u32,
         channels: u16,
         stop_flag: Arc<AtomicBool>,
         buffer_packets: usize,
+        volume: Arc<AtomicU64>,
     ) -> (StreamSender, Arc<AtomicU64>) {
         let (tx, rx) = sync_channel(buffer_packets);
         let samples_emitted = Arc::new(AtomicU64::new(0));
+        // Start at the current level: ramping up from silence would turn every
+        // track start into an unasked-for fade-in.
+        let gain = f64::from_bits(volume.load(Ordering::Relaxed)) as f32;
         let source = ChannelSource {
             receiver: rx,
             sample_rate: NonZeroU32::new(sample_rate.max(1)).unwrap(),
@@ -147,6 +174,8 @@ impl AudioController {
             current: Vec::new().into_iter(),
             done: false,
             samples_emitted: samples_emitted.clone(),
+            volume,
+            gain,
         };
         self.player.append(source);
         (StreamSender { sender: tx, stop_flag }, samples_emitted)

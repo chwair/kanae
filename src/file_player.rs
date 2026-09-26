@@ -334,6 +334,7 @@ pub fn play_local_file(
         units::Time,
     };
 
+    let __bt = std::time::Instant::now();
     let audio_controller = match AudioController::new() {
         Ok(c)  => c,
         Err(e) => { eprintln!("[file] audio init: {}", e); playback_ended_arc.store(true, Ordering::Relaxed); return; }
@@ -388,15 +389,15 @@ pub fn play_local_file(
         });
     }
 
-    let mut current_vol = f64::from_bits(volume_arc.load(Ordering::Relaxed)) as f32;
     // Output seconds emitted so far, used to place both fade ramps.
     let mut emitted_secs = 0.0f64;
     // Where the fade-out was triggered, once it has been.
     let mut fade_out_from: Option<f64> = None;
     let fade_in = if start_offset < 0.05 { fade_in_secs.max(0.0) } else { 0.0 };
 
+    // Volume is applied by the stream itself, at the device end of the buffer.
     let (stream_sender, samples_emitted_arc) = audio_controller.begin_stream(
-        sample_rate, n_channels as u16, stop_flag.clone(), 4,
+        sample_rate, n_channels as u16, stop_flag.clone(), 4, volume_arc,
     );
 
     // Bind the visualizer to the device's consumed-sample counter so it reads
@@ -405,6 +406,8 @@ pub fn play_local_file(
         tap.attach(samples_emitted_arc.clone(), n_channels as u16);
     }
 
+    eprintln!("[diag]   new thread ready (sink+probe+seek) {:?}", __bt.elapsed());
+    let mut __first_audio = false;
     loop {
         if stop_flag.load(Ordering::Relaxed) { break; }
 
@@ -434,9 +437,7 @@ pub fn play_local_file(
         // independent of the playback volume.
         if let Ok(mut tap) = vis_tap.lock() { tap.push(&samples, n_channels as u16); }
 
-        let target_vol = f64::from_bits(volume_arc.load(Ordering::Relaxed)) as f32;
         let count  = samples.len();
-        let n      = count as f32;
         let frames = count as f64 / (sample_rate as f64 * (n_channels as f64).max(1.0));
 
         // Pick up a crossfade handover requested since the last packet.
@@ -447,23 +448,29 @@ pub fn play_local_file(
         let fade_len = requested.max(0.0);
         let fade_start = fade_out_from;
 
-        for (i, s) in samples.iter_mut().enumerate() {
-            let t = i as f32 / n;
-            // Where this sample sits on the track's output timeline.
-            let at = emitted_secs + frames * (i as f64 / count.max(1) as f64);
-            let mut g = current_vol + (target_vol - current_vol) * t;
-            if fade_in > 0.0 && at < fade_in {
-                g *= (at / fade_in) as f32;
+        // Only the crossfade ramps are applied here: they are positions on the
+        // track's own timeline, so they have to ride along with the samples.
+        if fade_in > 0.0 || fade_len > 0.0 {
+            for (i, s) in samples.iter_mut().enumerate() {
+                // Where this sample sits on the track's output timeline.
+                let at = emitted_secs + frames * (i as f64 / count.max(1) as f64);
+                let mut g = 1.0f32;
+                if fade_in > 0.0 && at < fade_in {
+                    g *= (at / fade_in) as f32;
+                }
+                if let (Some(from), true) = (fade_start, fade_len > 0.0) {
+                    g *= (1.0 - ((at - from) / fade_len).clamp(0.0, 1.0)) as f32;
+                }
+                *s *= g;
             }
-            if let (Some(from), true) = (fade_start, fade_len > 0.0) {
-                g *= (1.0 - ((at - from) / fade_len).clamp(0.0, 1.0)) as f32;
-            }
-            *s = (*s * g).clamp(-1.0, 1.0);
         }
-        current_vol = target_vol;
         emitted_secs += frames;
 
         if !stream_sender.send(samples) { break; }
+        if !__first_audio && samples_emitted_arc.load(Ordering::Relaxed) > 0 {
+            __first_audio = true;
+            eprintln!("[diag]   device is playing the new position {:?} after thread start", __bt.elapsed());
+        }
 
         // The handover is complete once the ramp has run its course.
         if let (Some(from), true) = (fade_start, fade_len > 0.0) {

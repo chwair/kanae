@@ -248,7 +248,7 @@ ApplicationWindow {
     // 100 ms position updates are only needed while audio is actually playing;
     // when paused/idle the tick just drains SMTC commands, so 300 ms is plenty.
     Timer { interval: player.is_playing ? 100 : 300; repeat: true; running: true; onTriggered: player.updatePosition() }
-    Timer { interval: player.total_tracks > 0 ? 1000 : 3000; repeat: true
+    Timer { interval: player.total_tracks > 0 && !player.is_file_mode ? 1000 : 3000; repeat: true
             running: !player.is_loading
             onTriggered: { if (player.drive_list.length === 0) player.scanDrives(); else player.checkDrive() } }
     // Fast polling only matters while a disc load or library scan is in flight.
@@ -417,12 +417,35 @@ ApplicationWindow {
         else { cdLoadingDelay.stop(); _cdLoading = false }
     }
     Timer { id: cdLoadingDelay; interval: 1000; onTriggered: window._cdLoading = true }
+    // same 1s debounce for the library tile, which also tracks disc reads done
+    // while local files play (the album view spinner must ignore those).
+    property bool _cdTileLoading: false
+    readonly property bool _cdTileLoadingRaw: _cdLoadingRaw || player.cd_scanning
+    on_CdTileLoadingRawChanged: {
+        if (_cdTileLoadingRaw) cdTileLoadingDelay.restart()
+        else { cdTileLoadingDelay.stop(); _cdTileLoading = false }
+    }
+    Timer { id: cdTileLoadingDelay; interval: 1000; onTriggered: window._cdTileLoading = true }
     readonly property bool _cdLoaded:  player.total_tracks > 0 && !player.is_file_mode
     // "CD" badge label; shows the disc position within a multi-CD release
     // (from MusicBrainz), e.g. "CD 2/3".
     readonly property string _cdBadgeLabel:
         _cdLoaded && player.cd_disc_count > 1 && player.cd_disc_number > 0
         ? "CD " + player.cd_disc_number + "/" + player.cd_disc_count : "CD"
+
+    // the arc spinner used across the app (library scan, "Reading CD..."),
+    // sized to its item: 26 px gives the usual 10 px radius
+    component Spinner: Shape {
+        id: spn
+        property bool running: visible
+        property real stroke: 2
+        readonly property real c: Math.min(width, height) / 2
+        RotationAnimator on rotation { from: 0; to: 360; duration: 800; loops: Animation.Infinite; running: spn.running }
+        ShapePath {
+            strokeColor: clrText2; strokeWidth: spn.stroke; fillColor: "transparent"; capStyle: ShapePath.RoundCap
+            PathAngleArc { centerX: spn.c; centerY: spn.c; radiusX: spn.c - 3; radiusY: spn.c - 3; startAngle: -90; sweepAngle: 250 }
+        }
+    }
 
     // ── Settings building blocks ──────────────────────────────────────────
     // Grouped "card" container with an optional heading + caption.
@@ -1562,16 +1585,16 @@ ApplicationWindow {
                                 try {
                                     var base = JSON.parse(library.library_nodes)
                                     var atRoot = library.current_path.toString() === "Library" || library.current_path.toString() === ""
-                                    if (atRoot && player.drive_list.length > 0) {
-                                        var cdLoaded  = window._cdLoaded
-                                        var cdLoading = window._cdLoading
+                                    // only an audio CD (or a drive still being read) gets a tile;
+                                    // the cd_* properties describe the disc even in file mode.
+                                    var cdLoading = window._cdTileLoading
+                                    if (atRoot && player.drive_list.length > 0 && (player.cd_present || cdLoading)) {
                                         var cdNode = {
                                             kind: "cd", path: "__cd__", id: "__cd__",
-                                            name: cdLoaded ? (player.album_title || "Audio CD") : "Audio CD",
-                                            album_artist: cdLoaded ? (player.album_artist || "")
-                                                        : (cdLoading ? "" : "No disc"),
-                                            year: cdLoaded ? (player.album_year || "") : "",
-                                            cover_url: cdLoaded ? (player.cover_art_path || "") : "",
+                                            name: player.cd_title || "Audio CD",
+                                            album_artist: cdLoading ? "" : player.cd_artist,
+                                            year: cdLoading ? "" : player.cd_year,
+                                            cover_url: cdLoading ? "" : player.cd_cover,
                                             pinned: false,
                                             loading: cdLoading
                                         }
@@ -1628,7 +1651,7 @@ ApplicationWindow {
                                             // No mipmap: at 320 px the texture is already ~1:1 with the
                                             // tile (cells are 150–300 px), so mipmaps would only add VRAM.
                                             anchors.fill: parent; fillMode: Image.Stretch; smooth: true
-                                            source: modelData.cover_url || ""; visible: status === Image.Ready
+                                            source: modelData.cover_url || ""; visible: status === Image.Ready && modelData.loading !== true
                                             // Decode off the UI thread at thumbnail size — full-size
                                             // covers otherwise cost several MB of texture per tile.
                                             asynchronous: true
@@ -1636,7 +1659,7 @@ ApplicationWindow {
                                         }
                                         Canvas {
                                             anchors.centerIn: parent; width:40;height:40;opacity:0.35
-                                            visible: modelData.kind === "folder" || modelData.cover_url === ""
+                                            visible: (modelData.kind === "folder" || modelData.cover_url === "") && modelData.loading !== true
                                             onPaint: {
                                                 var c=getContext("2d");c.clearRect(0,0,40,40)
                                                 if(modelData.kind==="folder"){
@@ -1648,6 +1671,10 @@ ApplicationWindow {
                                                 }
                                             }
                                             property string kk: modelData.kind; onKkChanged: requestPaint()
+                                        }
+                                        Spinner {
+                                            anchors.centerIn: parent; width: 26; height: 26
+                                            visible: modelData.loading === true
                                         }
                                     }
 
@@ -1740,7 +1767,8 @@ ApplicationWindow {
                                             width:32;height:32;radius:3;color:clrSurf2;clip:true
                                             Image{anchors.fill:parent;fillMode:Image.Stretch;smooth:true;mipmap:true;source:modelData.cover_url||"";visible:status===Image.Ready
                                                 asynchronous:true;sourceSize.width:64;sourceSize.height:64}
-                                            Canvas{anchors.centerIn:parent;width:16;height:16;opacity:0.6;visible:modelData.kind==="folder"||modelData.cover_url===""
+                                            Spinner{anchors.centerIn:parent;width:16;height:16;stroke:1.5;visible:modelData.loading===true}
+                                            Canvas{anchors.centerIn:parent;width:16;height:16;opacity:0.6;visible:(modelData.kind==="folder"||modelData.cover_url==="")&&modelData.loading!==true
                                                 onPaint:{var c=getContext("2d");c.clearRect(0,0,16,16);if(modelData.kind==="folder"){c.fillStyle="#555";c.fillRect(0,3,16,11)}else{c.beginPath();c.arc(8,8,6,0,2*Math.PI);c.strokeStyle="#555";c.lineWidth=1.5;c.stroke()}}
                                                 property string kk:modelData.kind;onKkChanged:requestPaint()}
                                         }
@@ -2161,7 +2189,7 @@ ApplicationWindow {
                 Text{text:formatTime(player.current_time);color:clrText;font.pixelSize:11;font.family:Qt.platform.os==="osx"?"Menlo":"Consolas";Layout.preferredWidth:timeMetrics.advanceWidth;horizontalAlignment:Text.AlignLeft}
                 Slider{id:seekSlider;Layout.fillWidth:true
                     implicitHeight:20;padding:0;from:0;to:Math.max(player.total_time,1);value:pressed?value:player.current_time
-                    enabled:player.total_tracks>0;onPressedChanged:{if(!pressed)player.seek(value)}
+                    enabled:player.total_tracks>0;onPressedChanged:{if(!pressed){var __t=Date.now();console.log("[diag-qml] released, seeking to",value,"current_time was",player.current_time);player.seek(value);console.log("[diag-qml] seek() returned after",Date.now()-__t,"ms; current_time now",player.current_time)}}
                     background:Item{implicitHeight:20
                         Rectangle{anchors.verticalCenter:parent.verticalCenter;width:parent.width;height:3;radius:1;color:clrSurf2
                             Rectangle{id:seekFill;width:parent.width*seekSlider.visualPosition;height:parent.height;radius:1;color:clrAccent
