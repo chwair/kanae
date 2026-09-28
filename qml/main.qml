@@ -2189,7 +2189,7 @@ ApplicationWindow {
                 Text{text:formatTime(player.current_time);color:clrText;font.pixelSize:11;font.family:Qt.platform.os==="osx"?"Menlo":"Consolas";Layout.preferredWidth:timeMetrics.advanceWidth;horizontalAlignment:Text.AlignLeft}
                 Slider{id:seekSlider;Layout.fillWidth:true
                     implicitHeight:20;padding:0;from:0;to:Math.max(player.total_time,1);value:pressed?value:player.current_time
-                    enabled:player.total_tracks>0;onPressedChanged:{if(!pressed){var __t=Date.now();console.log("[diag-qml] released, seeking to",value,"current_time was",player.current_time);player.seek(value);console.log("[diag-qml] seek() returned after",Date.now()-__t,"ms; current_time now",player.current_time)}}
+                    enabled:player.total_tracks>0;onPressedChanged:{if(!pressed)player.seek(value)}
                     background:Item{implicitHeight:20
                         Rectangle{anchors.verticalCenter:parent.verticalCenter;width:parent.width;height:3;radius:1;color:clrSurf2
                             Rectangle{id:seekFill;width:parent.width*seekSlider.visualPosition;height:parent.height;radius:1;color:clrAccent

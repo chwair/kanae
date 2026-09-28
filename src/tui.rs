@@ -254,6 +254,7 @@ struct TuiPlayerState {
     playback_ended:     Arc<AtomicBool>,
     playback_error:     Arc<AtomicBool>,
     volume:             Arc<AtomicU64>,
+    seek_signal:        Arc<crate::audio_player::SeekSignal>,
     playback_thread:    Option<thread::JoinHandle<()>>,
 
     // Metadata
@@ -309,6 +310,7 @@ impl Default for TuiPlayerState {
             playback_ended:      Arc::new(AtomicBool::new(false)),
             playback_error:      Arc::new(AtomicBool::new(false)),
             volume:              Arc::new(AtomicU64::new((1.0_f64).to_bits())),
+            seek_signal:         Arc::new(crate::audio_player::SeekSignal::default()),
             playback_thread:     None,
             album_title:         "Unknown Album".into(),
             album_artist:        "Unknown Artist".into(),
@@ -644,12 +646,15 @@ impl TuiPlayerState {
             let heard       = self.heard_position.clone();
             let pos         = self.current_position.clone();
             let ended       = self.playback_ended.clone();
+            let seek        = self.seek_signal.clone();
+            let seek_gen    = seek.generation();
             // The TUI has no visualizer; hand the player a throwaway tap.
             let vis_tap = std::sync::Arc::new(std::sync::Mutex::new(crate::audio_player::VisTap::new()));
             let handle = thread::spawn(move || {
                 // The TUI has no crossfade: no fade-in, and a handover flag that is never set.
                 crate::file_player::play_local_file(file_path, offset, stop_flag, vol, heard, pos, ended,
-                                                    vis_tap, 0.0, std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)));
+                                                    vis_tap, 0.0, std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                                                    seek, seek_gen);
             });
             self.playback_thread = Some(handle);
             self.is_playing = true;
@@ -764,7 +769,14 @@ impl TuiPlayerState {
         self.playback_start_offset = secs;
         self.heard_position.store(secs.to_bits(), Ordering::Relaxed);
         self.current_position.store(secs.to_bits(), Ordering::Relaxed);
-        if was_playing { self.start_playback(); }
+        // a running file stream seeks in place instead of reopening the device
+        let alive = self.playback_thread.as_ref().map_or(false, |h| !h.is_finished())
+            && !self.playback_ended.load(Ordering::Relaxed);
+        if was_playing && self.is_file_mode && alive {
+            self.seek_signal.request(secs);
+        } else if was_playing {
+            self.start_playback();
+        }
     }
 
     // ── Queue ───────────────────────────────────────────────────────────────

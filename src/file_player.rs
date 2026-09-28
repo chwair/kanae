@@ -324,17 +324,20 @@ pub fn play_local_file(
     // the bits of an f64 giving how long to ramp down to silence, after which the
     // stream ends. Zero means "play to the end normally".
     fade_out_secs: Arc<AtomicU64>,
+    // seeks while playing arrive here rather than restarting the thread;
+    // seek_gen is the generation start_offset already accounts for.
+    seek: Arc<crate::audio_player::SeekSignal>,
+    seek_gen: u64,
 ) {
     use crate::audio_player::AudioController;
     use symphonia::core::{
-        codecs::{audio::AudioDecoderOptions, CodecParameters},
-        formats::{probe::Hint, FormatOptions, SeekMode, SeekTo, TrackType},
+        codecs::{audio::{AudioDecoder, AudioDecoderOptions}, CodecParameters},
+        formats::{probe::Hint, FormatOptions, FormatReader, SeekMode, SeekTo, TrackType},
         io::MediaSourceStream,
         meta::MetadataOptions,
         units::Time,
     };
 
-    let __bt = std::time::Instant::now();
     let audio_controller = match AudioController::new() {
         Ok(c)  => c,
         Err(e) => { eprintln!("[file] audio init: {}", e); playback_ended_arc.store(true, Ordering::Relaxed); return; }
@@ -382,23 +385,43 @@ pub fn play_local_file(
         Err(e) => { eprintln!("[file] decoder: {}", e); playback_ended_arc.store(true, Ordering::Relaxed); return; }
     };
 
-    if start_offset > 0.1 {
-        let _ = format.seek(SeekMode::Accurate, SeekTo::Time {
-            time: Time::try_from_secs_f64(start_offset).unwrap_or(Time::ZERO),
+    // an accurate seek lands on the packet holding the target, so decoded audio
+    // before the target is dropped here to make the seek sample-exact.
+    let seek_to = |format: &mut Box<dyn FormatReader>, decoder: &mut Box<dyn AudioDecoder>, secs: f64| -> Result<f64, String> {
+        let seeked = format.seek(SeekMode::Accurate, SeekTo::Time {
+            time: Time::try_from_secs_f64(secs.max(0.0)).unwrap_or(Time::ZERO),
             track_id: Some(track_id),
-        });
+        }).map_err(|e| e.to_string())?;
+        decoder.reset();
+        Ok(time_base
+            .and_then(|tb| tb.calc_time(seeked.required_ts))
+            .map(|t| t.as_secs_f64())
+            .unwrap_or(secs))
+    };
+
+    // track position the stream's consumed-sample counter is relative to.
+    let mut base_secs = start_offset;
+    let mut skip_until: Option<f64> = None;
+    if start_offset > 0.1 {
+        match seek_to(&mut format, &mut decoder, start_offset) {
+            Ok(t)  => skip_until = Some(t),
+            Err(e) => eprintln!("[file] seek: {}", e),
+        }
     }
 
     // Output seconds emitted so far, used to place both fade ramps.
     let mut emitted_secs = 0.0f64;
     // Where the fade-out was triggered, once it has been.
     let mut fade_out_from: Option<f64> = None;
-    let fade_in = if start_offset < 0.05 { fade_in_secs.max(0.0) } else { 0.0 };
+    let mut fade_in = if start_offset < 0.05 { fade_in_secs.max(0.0) } else { 0.0 };
 
     // Volume is applied by the stream itself, at the device end of the buffer.
-    let (stream_sender, samples_emitted_arc) = audio_controller.begin_stream(
-        sample_rate, n_channels as u16, stop_flag.clone(), 4, volume_arc,
+    let mut my_gen = seek_gen;
+    let (stream_sender, samples_emitted_arc, emitted_gen_arc) = audio_controller.begin_stream(
+        sample_rate, n_channels as u16, stop_flag.clone(), 4, volume_arc, seek.clone(), my_gen,
     );
+    // samples sent since the last seek, to tell when the tail has been heard.
+    let mut sent: u64 = 0;
 
     // Bind the visualizer to the device's consumed-sample counter so it reads
     // the window being heard, not the one being decoded.
@@ -406,20 +429,59 @@ pub fn play_local_file(
         tap.attach(samples_emitted_arc.clone(), n_channels as u16);
     }
 
-    eprintln!("[diag]   new thread ready (sink+probe+seek) {:?}", __bt.elapsed());
-    let mut __first_audio = false;
+    let denom = sample_rate as f64 * (n_channels as f64).max(1.0);
+    // the counter restarts at every seek; until the device has switched over it
+    // still counts the old position, so it is only trusted once it matches. a
+    // seek requested but not yet picked up must not be overwritten either.
+    let publish_heard = |base: f64, gen: u64| {
+        if emitted_gen_arc.load(Ordering::Acquire) != gen || seek.generation() != gen { return None; }
+        let played = samples_emitted_arc.load(Ordering::Relaxed);
+        heard_position_arc.store((base + played as f64 / denom).to_bits(), Ordering::Relaxed);
+        Some(played)
+    };
+
     loop {
         if stop_flag.load(Ordering::Relaxed) { break; }
 
+        let gen = seek.generation();
+        if gen != my_gen {
+            my_gen = gen;
+            let target = seek.target();
+            match seek_to(&mut format, &mut decoder, target) {
+                Ok(t) => { skip_until = Some(t); base_secs = target; }
+                // past the end, most likely: let the track finish
+                Err(e) => { eprintln!("[file] seek: {}", e); break; }
+            }
+            sent = 0;
+            // a seek lands mid-track, so a crossfade ramp-in no longer applies
+            fade_in = 0.0;
+            if let Ok(mut tap) = vis_tap.lock() {
+                tap.attach(samples_emitted_arc.clone(), n_channels as u16);
+            }
+        }
+
         let packet = match format.next_packet() {
             Ok(Some(p)) => p,
-            Ok(None)    => break, // end of stream
+            Ok(None) => {
+                // keep the stream open until the tail has been heard, so a seek
+                // back from the last moments of the track still works.
+                let mut drained = false;
+                while !stop_flag.load(Ordering::Relaxed) && seek.generation() == my_gen {
+                    if publish_heard(base_secs, my_gen).map_or(false, |p| p >= sent) {
+                        drained = true;
+                        break;
+                    }
+                    thread::sleep(std::time::Duration::from_millis(10));
+                }
+                if drained || stop_flag.load(Ordering::Relaxed) { break; }
+                continue;
+            }
             Err(symphonia::core::errors::Error::ResetRequired) => { decoder.reset(); continue; }
             Err(e) => { eprintln!("[file] packet: {}", e); break; }
         };
         if packet.track_id != track_id { continue; }
 
-        let chunk_start = time_base
+        let mut chunk_start = time_base
             .and_then(|tb| tb.calc_time(packet.pts))
             .map(|t| t.as_secs_f64())
             .unwrap_or_else(|| packet.pts.get() as f64 / sample_rate as f64);
@@ -432,6 +494,15 @@ pub fn play_local_file(
 
         let mut samples: Vec<f32> = Vec::new();
         decoded.copy_to_vec_interleaved(&mut samples);
+
+        if let Some(target) = skip_until {
+            let ch = n_channels.max(1);
+            let skip = ((target - chunk_start) * sample_rate as f64).round().max(0.0) as usize * ch;
+            if skip >= samples.len() { continue; }
+            samples.drain(..skip);
+            chunk_start = target;
+            skip_until = None;
+        }
 
         // Feed the visualizer here, BEFORE volume scaling, so the spectrum is
         // independent of the playback volume.
@@ -466,21 +537,15 @@ pub fn play_local_file(
         }
         emitted_secs += frames;
 
-        if !stream_sender.send(samples) { break; }
-        if !__first_audio && samples_emitted_arc.load(Ordering::Relaxed) > 0 {
-            __first_audio = true;
-            eprintln!("[diag]   device is playing the new position {:?} after thread start", __bt.elapsed());
-        }
+        if !stream_sender.send(my_gen, samples) { break; }
+        sent += count as u64;
 
         // The handover is complete once the ramp has run its course.
         if let (Some(from), true) = (fade_start, fade_len > 0.0) {
             if emitted_secs - from >= fade_len { break; }
         }
 
-        let denom = sample_rate as f64 * (n_channels as f64).max(1.0);
-        let heard_pos = start_offset
-            + samples_emitted_arc.load(Ordering::Relaxed) as f64 / denom;
-        heard_position_arc.store(heard_pos.to_bits(), Ordering::Relaxed);
+        publish_heard(base_secs, my_gen);
         current_position.store(chunk_start.to_bits(), Ordering::Relaxed);
     }
 
@@ -492,10 +557,7 @@ pub fn play_local_file(
     stream_sender.finish();
     while !audio_controller.is_empty() {
         if stop_flag.load(Ordering::Relaxed) { audio_controller.stop(); return; }
-        let denom = sample_rate as f64 * (n_channels as f64).max(1.0);
-        let heard_pos = start_offset
-            + samples_emitted_arc.load(Ordering::Relaxed) as f64 / denom;
-        heard_position_arc.store(heard_pos.to_bits(), Ordering::Relaxed);
+        publish_heard(base_secs, my_gen);
         thread::sleep(std::time::Duration::from_millis(50));
     }
 

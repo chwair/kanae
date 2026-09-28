@@ -336,6 +336,8 @@ pub struct PlayerState {
     crossfade_secs: f64,
     /// Handed to the running track so the player can tell it to ramp out.
     fade_out_secs: Arc<AtomicU64>,
+    /// Handed to the running file track so a seek can jump its stream in place.
+    seek_signal: Arc<audio_player::SeekSignal>,
     /// The outgoing track during a crossfade. It owns orphaned copies of the
     /// progress atomics, so it can finish without disturbing the new track.
     fading_thread: Option<thread::JoinHandle<()>>,
@@ -399,6 +401,7 @@ impl Default for PlayerState {
             crossfade: settings.crossfade,
             crossfade_secs: settings.crossfade_secs,
             fade_out_secs: Arc::new(AtomicU64::new(0)),
+            seek_signal: Arc::new(audio_player::SeekSignal::default()),
             fading_thread: None,
             fading_stop: None,
             crossfade_armed: false,
@@ -928,6 +931,7 @@ impl player_bridge::PlayerController {
             state.playback_ended   = Arc::new(AtomicBool::new(false));
             state.heard_position   = Arc::new(AtomicU64::new(0));
             state.current_position = Arc::new(AtomicU64::new(0));
+            state.seek_signal      = Arc::new(audio_player::SeekSignal::default());
             state.vis_tap = Arc::new(Mutex::new(audio_player::VisTap::new()));
             state.pending_fade_in = true;
             state.crossfade_armed = true;
@@ -977,21 +981,29 @@ impl player_bridge::PlayerController {
     }
 
     pub fn seek(mut self: Pin<&mut Self>, seconds: f64) {
-        let __bt = std::time::Instant::now();
-        eprintln!("[diag] seek({:.2}) entered", seconds);
         let was_playing = *self.as_ref().is_playing();
-        {
+        // a running file stream seeks in place: restarting it would reopen the
+        // audio device, which is slow to start and cuts the old audio mid-wave.
+        let in_place = {
             let mut state = self.state.lock().unwrap();
             state.playback_start_offset = seconds;
+            let alive = state.playback_thread.as_ref().map_or(false, |h| !h.is_finished())
+                && !state.playback_ended.load(Ordering::Relaxed);
+            let in_place = was_playing && state.is_file_mode && alive;
+            if in_place {
+                state.seek_signal.request(seconds);
+                state.crossfade_armed = false;
+                state.last_progress_push_sec = -1;
+            }
             state.current_position.store(seconds.to_bits(), Ordering::Relaxed);
             state.heard_position.store(seconds.to_bits(), Ordering::Relaxed);
-        }
+            in_place
+        };
         self.as_mut().set_current_time(seconds);
-        if was_playing {
+        if was_playing && !in_place {
             // start_playback stops the current thread then restarts at the new offset.
             self.start_playback();
         }
-        eprintln!("[diag] seek({:.2}) done in {:?} (was_playing={})", seconds, __bt.elapsed(), was_playing);
     }
 
     /// Track selection from the UI. Choosing a track by hand supersedes the
@@ -1072,6 +1084,12 @@ impl player_bridge::PlayerController {
                  state.current_position.clone(), state.volume.clone(),
                  state.playback_ended.clone(), state.heard_position.clone(), state.vis_tap.clone())
             };
+            // read here rather than on the new thread, so a seek landing before
+            // it starts is still picked up.
+            let (seek_signal, seek_gen) = {
+                let state = self.state.lock().unwrap();
+                (state.seek_signal.clone(), state.seek_signal.generation())
+            };
             // A crossfaded start ramps in over the same span the outgoing track
             // ramps out; `fade_out_secs` is how the player later asks *this*
             // track to hand over in turn.
@@ -1086,7 +1104,7 @@ impl player_bridge::PlayerController {
             let handle = thread::spawn(move || {
                 crate::file_player::play_local_file(file_path, start_offset, stop_flag, volume_arc,
                                 heard_position_arc, current_position, playback_ended_arc, vis_tap,
-                                fade_in, fade_out_arc);
+                                fade_in, fade_out_arc, seek_signal, seek_gen);
             });
             self.state.lock().unwrap().playback_thread = Some(handle);
             self.as_mut().set_is_playing(true);
@@ -1382,9 +1400,7 @@ impl player_bridge::PlayerController {
         }
         let handle = self.state.lock().unwrap().playback_thread.take();
         if let Some(h) = handle {
-            let __jt = std::time::Instant::now();
             let _ = h.join();
-            eprintln!("[diag]   join old playback thread {:?}", __jt.elapsed());
         }
         self.as_mut().set_is_playing(false);
     }

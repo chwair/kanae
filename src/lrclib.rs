@@ -97,151 +97,209 @@ pub fn fetch_synced_lyrics(
         return None;
     }
 
-    let url = format!(
-        "https://lrclib.net/api/search?track_name={}&artist_name={}",
+    // each query is only tried when the previous ones produced no acceptable match
+    let mut queries = vec![format!(
+        "track_name={}&artist_name={}",
         url_encode(track_name),
         url_encode(artist_name),
-    );
-
-    eprintln!("[lrclib] GET {}", url);
-
-    let response = match ureq::get(&url)
-        .header("User-Agent", USER_AGENT)
-        .call()
-    {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("[lrclib] request failed: {}", e);
-            return None;
-        }
-    };
-
-    let results: Vec<SearchResult> = match response.into_body().read_json() {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("[lrclib] failed to parse response: {}", e);
-            return None;
-        }
-    };
-
-    eprintln!("[lrclib] {} result(s) returned", results.len());
-
-    let mut results = results;
-
-    // Fallback: if the structured search returned nothing, retry with a more precise query.
-    if results.is_empty() {
-        if !album_name.is_empty() {
-            let fallback_url = format!(
-                "https://lrclib.net/api/search?track_name={}&album_name={}",
-                url_encode(track_name),
-                url_encode(album_name),
-            );
-            eprintln!("[lrclib] no results — retrying with album search: GET {}", fallback_url);
-            results = match ureq::get(&fallback_url)
-                .header("User-Agent", USER_AGENT)
-                .call()
-            {
-                Ok(r) => r.into_body().read_json().unwrap_or_default(),
-                Err(e) => { eprintln!("[lrclib] album search fallback request failed: {}", e); vec![] }
-            };
-            eprintln!("[lrclib] album search fallback: {} result(s) returned", results.len());
-        } else if !artist_name.is_empty() {
-            // No album name available — fall back to a free-text query.
-            let q = format!("{} {}", track_name, artist_name);
-            let fallback_url = format!(
-                "https://lrclib.net/api/search?q={}",
-                url_encode(&q),
-            );
-            eprintln!("[lrclib] no results — retrying with fallback query: GET {}", fallback_url);
-            results = match ureq::get(&fallback_url)
-                .header("User-Agent", USER_AGENT)
-                .call()
-            {
-                Ok(r) => r.into_body().read_json().unwrap_or_default(),
-                Err(e) => { eprintln!("[lrclib] fallback request failed: {}", e); vec![] }
-            };
-            eprintln!("[lrclib] fallback: {} result(s) returned", results.len());
-        }
+    )];
+    if !album_name.is_empty() {
+        queries.push(format!("track_name={}&album_name={}", url_encode(track_name), url_encode(album_name)));
+    }
+    if !artist_name.is_empty() {
+        queries.push(format!("q={}", url_encode(&format!("{} {}", track_name, artist_name))));
     }
 
-    let candidates: Vec<&SearchResult> = results
+    for query in &queries {
+        let results = search(query);
+        let Some((best, score)) = pick_best(&results, track_name, artist_name, duration_secs) else {
+            continue;
+        };
+
+        eprintln!(
+            "[lrclib] best match: \"{}\" by \"{}\" (duration: {:?}s, score: {:.2})",
+            best.track_name.as_deref().unwrap_or("?"),
+            best.artist_name.as_deref().unwrap_or("?"),
+            best.duration,
+            score,
+        );
+
+        let Some(lrc) = best.synced_lyrics.as_deref() else { continue };
+        let lines = parse_lrc(lrc);
+        if lines.is_empty() {
+            eprintln!("[lrclib] matched entry has no parseable LRC lines");
+            continue;
+        }
+        eprintln!("[lrclib] {} lyric line(s) parsed (id {})", lines.len(), best.id);
+        return Some((best.id, lrc.to_string(), lines));
+    }
+
+    eprintln!("[lrclib] no acceptable synced lyrics for \"{}\" / \"{}\"", track_name, artist_name);
+    None
+}
+
+fn search(query: &str) -> Vec<SearchResult> {
+    let url = format!("https://lrclib.net/api/search?{}", query);
+    eprintln!("[lrclib] GET {}", url);
+    let results: Vec<SearchResult> = match ureq::get(&url).header("User-Agent", USER_AGENT).call() {
+        Ok(r) => match r.into_body().read_json() {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[lrclib] failed to parse response: {}", e);
+                vec![]
+            }
+        },
+        Err(e) => {
+            eprintln!("[lrclib] request failed: {}", e);
+            vec![]
+        }
+    };
+    eprintln!("[lrclib] {} result(s) returned", results.len());
+    results
+}
+
+fn pick_best<'a>(
+    results: &'a [SearchResult],
+    track_name: &str,
+    artist_name: &str,
+    duration: f64,
+) -> Option<(&'a SearchResult, f64)> {
+    results
         .iter()
         .filter(|r| {
             !r.instrumental.unwrap_or(false)
-                && r.synced_lyrics
-                    .as_deref()
-                    .map(|s| !s.trim().is_empty())
-                    .unwrap_or(false)
+                && r.synced_lyrics.as_deref().is_some_and(|s| !s.trim().is_empty())
         })
-        .collect();
+        .filter_map(|r| {
+            let score = score_result(
+                r.track_name.as_deref(),
+                r.artist_name.as_deref(),
+                r.duration,
+                track_name,
+                artist_name,
+                duration,
+            );
+            if score.is_none() {
+                eprintln!(
+                    "[lrclib] rejected \"{}\" by \"{}\" (duration: {:?}s)",
+                    r.track_name.as_deref().unwrap_or("?"),
+                    r.artist_name.as_deref().unwrap_or("?"),
+                    r.duration,
+                );
+            }
+            score.map(|s| (r, s))
+        })
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+}
 
-    eprintln!("[lrclib] {} candidate(s) with synced lyrics", candidates.len());
+// a different length almost always means a different song or edit, and even the
+// right song would have its timestamps out of sync
+const MAX_DURATION_DIFF: f64 = 10.0;
+const MIN_TITLE_SCORE: f64 = 0.6;
+const MIN_ARTIST_SCORE: f64 = 0.5;
 
-    if candidates.is_empty() {
-        eprintln!("[lrclib] no synced lyrics found for \"{}\" / \"{}\"", track_name, artist_name);
+/// returns None when the candidate is not plausibly the same song, otherwise a
+/// score used to rank the plausible ones
+fn score_result(
+    cand_track: Option<&str>,
+    cand_artist: Option<&str>,
+    cand_duration: Option<f64>,
+    track_name: &str,
+    artist_name: &str,
+    duration: f64,
+) -> Option<f64> {
+    let dur_diff = match cand_duration {
+        Some(d) if duration > 0.0 && d > 0.0 => Some((d - duration).abs()),
+        _ => None,
+    };
+    if dur_diff.is_some_and(|d| d > MAX_DURATION_DIFF) {
         return None;
     }
 
-    // Similarity is only used to choose between multiple candidates — a single
-    // result is always accepted regardless of how well it matches.
-    let best = if candidates.len() == 1 {
-        candidates[0]
-    } else {
-        candidates.iter().max_by(|a, b| {
-            let sa = score_result(a, track_name, artist_name, duration_secs);
-            let sb = score_result(b, track_name, artist_name, duration_secs);
-            sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
-        })?
-    };
-
-    eprintln!(
-        "[lrclib] {} match: \"{}\" by \"{}\" (duration: {:?}s)",
-        if candidates.len() == 1 { "only" } else { "best" },
-        best.track_name.as_deref().unwrap_or("?"),
-        best.artist_name.as_deref().unwrap_or("?"),
-        best.duration,
-    );
-
-    let lrc = best.synced_lyrics.as_deref()?;
-    let lines = parse_lrc(lrc);
-    if lines.is_empty() {
-        eprintln!("[lrclib] matched entry has no parseable LRC lines");
-        None
-    } else {
-        eprintln!("[lrclib] {} lyric line(s) parsed (id {})", lines.len(), best.id);
-        Some((best.id, lrc.to_string(), lines))
+    let title_score = title_similarity(cand_track?, track_name);
+    if title_score < MIN_TITLE_SCORE {
+        return None;
     }
-}
-
-fn score_result(r: &SearchResult, track_name: &str, artist_name: &str, duration: f64) -> f64 {
-    let title_score = r
-        .track_name
-        .as_deref()
-        .map(|t| similarity(&t.to_lowercase(), &track_name.to_lowercase()))
-        .unwrap_or(0.0);
 
     let artist_score = if artist_name.is_empty() {
         0.5
     } else {
-        r.artist_name
-            .as_deref()
-            .map(|a| similarity(&a.to_lowercase(), &artist_name.to_lowercase()))
-            .unwrap_or(0.0)
+        let cand_artist = cand_artist.unwrap_or("");
+        let score = artist_similarity(cand_artist, artist_name);
+        if score < MIN_ARTIST_SCORE {
+            // names in different scripts (e.g. romaji vs kana) can't be compared, so
+            // only there a near exact title and duration may stand in for the artist
+            let comparable = has_non_latin(cand_artist) == has_non_latin(artist_name);
+            if comparable || title_score < 0.9 || !dur_diff.is_some_and(|d| d <= 2.0) {
+                return None;
+            }
+        }
+        score
     };
 
-    let dur_score = r
-        .duration
-        .map(|d| {
-            let diff = (d - duration).abs();
-            if diff <= 2.0 {
-                1.0_f64
-            } else {
-                (1.0_f64 - (diff - 2.0) / 28.0).max(0.0)
-            }
-        })
-        .unwrap_or(0.5);
+    let dur_score = match dur_diff {
+        Some(diff) if diff <= 2.0 => 1.0,
+        Some(diff) => 1.0 - (diff - 2.0) / (MAX_DURATION_DIFF - 2.0),
+        None => 0.5,
+    };
 
-    title_score * 0.5 + artist_score * 0.3 + dur_score * 0.2
+    Some(title_score * 0.45 + artist_score * 0.35 + dur_score * 0.2)
+}
+
+/// lowercases, drops punctuation and collapses whitespace
+fn normalize(s: &str) -> String {
+    let cleaned: String = s
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect();
+    cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// removes bracketed parts like "(feat. x)" or "[remastered]"
+fn strip_brackets(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut depth = 0usize;
+    for c in s.chars() {
+        match c {
+            '(' | '[' | '{' | '\u{3010}' | '\u{ff08}' => depth += 1,
+            ')' | ']' | '}' | '\u{3011}' | '\u{ff09}' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn title_similarity(a: &str, b: &str) -> f64 {
+    let full = similarity(&normalize(a), &normalize(b));
+    let bare = similarity(&normalize(&strip_brackets(a)), &normalize(&strip_brackets(b)));
+    full.max(bare)
+}
+
+/// compares the best pair of individual artists, so "a, b" still matches "b"
+fn artist_similarity(a: &str, b: &str) -> f64 {
+    let full = similarity(&normalize(a), &normalize(b));
+    let ta = split_artists(a);
+    let tb = split_artists(b);
+    ta.iter()
+        .flat_map(|x| tb.iter().map(move |y| similarity(x, y)))
+        .fold(full, f64::max)
+}
+
+fn split_artists(s: &str) -> Vec<String> {
+    let mut s = format!(" {} ", s.to_lowercase());
+    for sep in [" feat. ", " feat ", " ft. ", " ft ", " featuring ", " and ", " with ", " x ", " vs. ", " vs "] {
+        s = s.replace(sep, ",");
+    }
+    s.split(|c: char| matches!(c, ',' | '&' | '/' | ';' | '+' | '\u{3001}' | '\u{00d7}'))
+        .map(normalize)
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
+fn has_non_latin(s: &str) -> bool {
+    s.chars().any(|c| c.is_alphabetic() && (c as u32) >= 0x250)
 }
 
 fn similarity(a: &str, b: &str) -> f64 {
@@ -354,4 +412,34 @@ fn parse_timestamp(s: &str) -> Option<f64> {
         return None;
     }
     Some(mins * 60.0 + secs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn score(track: &str, artist: &str, dur: f64) -> Option<f64> {
+        score_result(Some(track), Some(artist), Some(dur), "Enigma", "sanmal", 168.0)
+    }
+
+    #[test]
+    fn rejects_same_title_different_artist() {
+        assert!(score("Enigma", "AMI, Tata Vlad", 168.0).is_none());
+    }
+
+    #[test]
+    fn rejects_far_duration() {
+        assert!(score("Enigma", "sanmal", 200.0).is_none());
+    }
+
+    #[test]
+    fn accepts_collab_and_feat_suffix() {
+        assert!(score("Enigma (feat. someone)", "someone & sanmal", 169.0).is_some());
+    }
+
+    #[test]
+    fn accepts_other_script_only_on_tight_match() {
+        assert!(score("Enigma", "\u{3055}\u{3093}\u{307e}\u{308b}", 168.5).is_some());
+        assert!(score("Enigma", "\u{3055}\u{3093}\u{307e}\u{308b}", 175.0).is_none());
+    }
 }

@@ -13,7 +13,9 @@ use rodio::{MixerDeviceSink, DeviceSinkBuilder, Player, Source};
 /// at each SamplesBuffer boundary causes a phase discontinuity that manifests
 /// as an audible click/pop, which this design eliminates.
 struct ChannelSource {
-    receiver: Receiver<Option<Vec<f32>>>,
+    /// Chunks are tagged with the seek generation they were decoded for, so a
+    /// seek can discard whatever was queued before it without a new stream.
+    receiver: Receiver<Option<(u64, Vec<f32>)>>,
     sample_rate: NonZeroU32,
     channels: NonZeroU16,
     /// Iterator over the currently-active chunk; cheap to drain sample-by-sample.
@@ -30,11 +32,31 @@ struct ChannelSource {
     /// Gain actually applied, chased toward `volume` a sample at a time so a
     /// jump in the slider never lands as a step discontinuity (a click).
     gain: f32,
+    /// Seek requests from the player; a generation newer than `cur_gen` means
+    /// everything still queued is stale.
+    seek: Arc<SeekSignal>,
+    /// Generation of the audio currently being played.
+    cur_gen: u64,
+    /// Generation `samples_emitted` is counting for. The counter is reset at
+    /// the switch, so the decode thread only trusts it once this matches.
+    emitted_gen: Arc<AtomicU64>,
+    /// Samples left in the fade-out of the old position while a seek flushes.
+    fade_out: u32,
+    /// Samples played since the last flush, for the fade-in of the new position.
+    fade_in: u32,
+    /// Length of both seek fades, in interleaved samples.
+    fade_len: u32,
+    /// A newer chunk that arrived mid fade-out, held until the fade completes.
+    stash: Option<(u64, Vec<f32>)>,
 }
 
 /// Per-sample smoothing coefficient: closes most of a volume jump in ~10 ms at
 /// 48 kHz, fast enough to feel immediate and slow enough to stay inaudible.
 const VOL_SMOOTH: f32 = 0.002;
+
+/// Seek fade length: long enough that cutting away from the old position and
+/// into the new one never lands as a click, short enough to feel instant.
+const SEEK_FADE_MS: u32 = 6;
 
 impl ChannelSource {
     #[inline]
@@ -42,6 +64,41 @@ impl ChannelSource {
         let target = f64::from_bits(self.volume.load(Ordering::Relaxed)) as f32;
         self.gain += (target - self.gain) * VOL_SMOOTH;
         (s * self.gain).clamp(-1.0, 1.0)
+    }
+
+    /// Next raw sample of the current generation, pulling queued chunks as
+    /// needed and dropping ones decoded for a position that was seeked away
+    /// from. `None` means nothing is ready (an underrun, or a seek decoding).
+    fn pull(&mut self) -> Option<f32> {
+        loop {
+            if let Some(s) = self.current.next() { return Some(s); }
+            let (gen, chunk) = match self.stash.take() {
+                Some(c) => c,
+                None => match self.receiver.try_recv() {
+                    Ok(Some(c)) => c,
+                    Ok(None) | Err(TryRecvError::Disconnected) => {
+                        self.done = true;
+                        return None;
+                    }
+                    Err(TryRecvError::Empty) => return None,
+                },
+            };
+            if gen < self.cur_gen { continue; }
+            if gen > self.cur_gen {
+                self.stash = Some((gen, chunk));
+                return None;
+            }
+            self.current = chunk.into_iter();
+        }
+    }
+
+    /// Drop the old position and start counting for the new one.
+    fn switch_to(&mut self, gen: u64) {
+        self.current = Vec::new().into_iter();
+        self.cur_gen = gen;
+        self.fade_in = 0;
+        self.samples_emitted.store(0, Ordering::Relaxed);
+        self.emitted_gen.store(gen, Ordering::Release);
     }
 }
 
@@ -53,34 +110,41 @@ impl Iterator for ChannelSource {
         if self.done {
             return None;
         }
-        // Fast path: still draining the current chunk.
-        if let Some(s) = self.current.next() {
-            self.samples_emitted.fetch_add(1, Ordering::Relaxed);
-            return Some(self.shaped(s));
+        // nothing here may block: this runs on the audio callback.
+        let want = self.seek.generation();
+        if want != self.cur_gen && self.fade_out == 0 {
+            self.fade_out = self.fade_len;
         }
-        // Current chunk exhausted — fetch the next without blocking
-        // (the audio callback must never block).
-        match self.receiver.try_recv() {
-            Ok(Some(chunk)) => {
-                self.current = chunk.into_iter();
-                match self.current.next() {
-                    Some(s) => {
-                        self.samples_emitted.fetch_add(1, Ordering::Relaxed);
-                        Some(self.shaped(s))
-                    }
-                    None => Some(0.0),
-                }
+
+        if self.fade_out > 0 {
+            // a seek is pending: ramp the old position down before cutting it.
+            let s = self.pull();
+            let g = self.fade_out as f32 / self.fade_len as f32;
+            self.fade_out -= 1;
+            // running dry mid-fade leaves nothing to ramp, so cut right away
+            if self.fade_out == 0 || s.is_none() {
+                self.fade_out = 0;
+                self.switch_to(want);
             }
-            Ok(None) | Err(TryRecvError::Disconnected) => {
-                self.done = true;
-                None
+            if self.done { return None; }
+            return Some(self.shaped(s.unwrap_or(0.0) * g));
+        }
+
+        match self.pull() {
+            Some(s) => {
+                self.samples_emitted.fetch_add(1, Ordering::Relaxed);
+                let s = if self.fade_in < self.fade_len {
+                    self.fade_in += 1;
+                    s * (self.fade_in as f32 / self.fade_len as f32)
+                } else {
+                    s
+                };
+                Some(self.shaped(s))
             }
-            Err(TryRecvError::Empty) => {
-                // Transient underrun: emit silence rather than terminating the
-                // source.  With buffer_packets=30 this path is essentially
-                // unreachable during normal decoding.
-                Some(0.0)
-            }
+            None if self.done => None,
+            // underrun, or the new position still decoding: emit silence
+            // rather than terminating the source.
+            None => Some(self.shaped(0.0)),
         }
     }
 }
@@ -96,22 +160,27 @@ impl Source for ChannelSource {
 
 /// Producer end of a `ChannelSource`.
 pub struct StreamSender {
-    sender: SyncSender<Option<Vec<f32>>>,
+    sender: SyncSender<Option<(u64, Vec<f32>)>>,
     stop_flag: Arc<AtomicBool>,
+    seek: Arc<SeekSignal>,
 }
 
 impl StreamSender {
-    /// Push a decoded chunk.  Spins with 5 ms sleeps when the channel is full
-    /// so the audio device can catch up.  Returns `false` when a stop was
-    /// requested or the sink was closed.
-    pub fn send(&self, mut samples: Vec<f32>) -> bool {
+    /// Push a chunk decoded for seek generation `gen`.  Spins with 5 ms sleeps
+    /// when the channel is full so the audio device can catch up, giving up
+    /// early (dropping the chunk) once a newer seek has made it stale.
+    /// Returns `false` when a stop was requested or the sink was closed.
+    pub fn send(&self, gen: u64, mut samples: Vec<f32>) -> bool {
         loop {
             if self.stop_flag.load(Ordering::Relaxed) {
                 return false;
             }
-            match self.sender.try_send(Some(samples)) {
+            if self.seek.generation() != gen {
+                return true;
+            }
+            match self.sender.try_send(Some((gen, samples))) {
                 Ok(_) => return true,
-                Err(TrySendError::Full(Some(s))) => {
+                Err(TrySendError::Full(Some((_, s)))) => {
                     samples = s;
                     std::thread::sleep(std::time::Duration::from_millis(5));
                 }
@@ -127,6 +196,26 @@ impl StreamSender {
 }
 
 // ─── AudioController ───────────────────────────────────────────────────────
+
+/// A seek handed to a running stream instead of restarting it, which would
+/// reopen the audio device (slow to start) and cut the old audio mid-wave.
+///
+/// The target is written before the generation is bumped, so whoever sees a
+/// new generation also sees its target.
+#[derive(Default)]
+pub struct SeekSignal {
+    gen: AtomicU64,
+    target: AtomicU64,
+}
+
+impl SeekSignal {
+    pub fn request(&self, secs: f64) {
+        self.target.store(secs.to_bits(), Ordering::Relaxed);
+        self.gen.fetch_add(1, Ordering::Release);
+    }
+    pub fn generation(&self) -> u64 { self.gen.load(Ordering::Acquire) }
+    pub fn target(&self) -> f64 { f64::from_bits(self.target.load(Ordering::Relaxed)) }
+}
 
 pub struct AudioController {
     // Keeping the sink alive prevents the audio device from shutting down.
@@ -145,9 +234,12 @@ impl AudioController {
     }
 
     /// Attach a continuous streaming source and return:
-    /// - a `StreamSender` to push decoded chunks, and
+    /// - a `StreamSender` to push decoded chunks,
     /// - an `Arc<AtomicU64>` counting how many f32 values the audio thread
-    ///   has consumed so far (for heard-position tracking).
+    ///   has consumed since the last seek (for heard-position tracking), and
+    /// - the seek generation that counter currently belongs to.
+    ///
+    /// `gen` is the generation of `seek` the stream starts at.
     ///
     /// `buffer_packets` sets the channel capacity; 30 gives ~780 ms of MP3
     /// headroom and is more than enough for any supported format.
@@ -161,9 +253,12 @@ impl AudioController {
         stop_flag: Arc<AtomicBool>,
         buffer_packets: usize,
         volume: Arc<AtomicU64>,
-    ) -> (StreamSender, Arc<AtomicU64>) {
+        seek: Arc<SeekSignal>,
+        gen: u64,
+    ) -> (StreamSender, Arc<AtomicU64>, Arc<AtomicU64>) {
         let (tx, rx) = sync_channel(buffer_packets);
         let samples_emitted = Arc::new(AtomicU64::new(0));
+        let emitted_gen = Arc::new(AtomicU64::new(gen));
         // Start at the current level: ramping up from silence would turn every
         // track start into an unasked-for fade-in.
         let gain = f64::from_bits(volume.load(Ordering::Relaxed)) as f32;
@@ -176,9 +271,17 @@ impl AudioController {
             samples_emitted: samples_emitted.clone(),
             volume,
             gain,
+            seek: seek.clone(),
+            cur_gen: gen,
+            emitted_gen: emitted_gen.clone(),
+            fade_out: 0,
+            // a track start needs no fade-in; only seeks land mid-waveform
+            fade_in: u32::MAX,
+            fade_len: (sample_rate * channels as u32 * SEEK_FADE_MS / 1000).max(1),
+            stash: None,
         };
         self.player.append(source);
-        (StreamSender { sender: tx, stop_flag }, samples_emitted)
+        (StreamSender { sender: tx, stop_flag, seek }, samples_emitted, emitted_gen)
     }
 
     /// Append a raw `SamplesBuffer` — used by CD playback which already manages
@@ -396,4 +499,90 @@ pub fn compute_bands(tap: &VisTap, bands: usize) -> Vec<f32> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // a 1 kHz mono source at 48 kHz, fed straight through the channel
+    fn source(seek: &Arc<SeekSignal>) -> (ChannelSource, SyncSender<Option<(u64, Vec<f32>)>>) {
+        let (tx, rx) = sync_channel(8);
+        let src = ChannelSource {
+            receiver: rx,
+            sample_rate: NonZeroU32::new(48_000).unwrap(),
+            channels: NonZeroU16::new(1).unwrap(),
+            current: Vec::new().into_iter(),
+            done: false,
+            samples_emitted: Arc::new(AtomicU64::new(0)),
+            volume: Arc::new(AtomicU64::new(1.0f64.to_bits())),
+            gain: 1.0,
+            seek: seek.clone(),
+            cur_gen: 0,
+            emitted_gen: Arc::new(AtomicU64::new(0)),
+            fade_out: 0,
+            fade_in: u32::MAX,
+            fade_len: 48_000 * SEEK_FADE_MS / 1000,
+            stash: None,
+        };
+        (src, tx)
+    }
+
+    fn sine(phase: f32, n: usize) -> Vec<f32> {
+        (0..n).map(|i| (phase + i as f32 * 2.0 * std::f32::consts::PI / 48.0).sin()).collect()
+    }
+
+    #[test]
+    fn seek_drops_stale_audio_and_restarts_the_counter() {
+        let seek = Arc::new(SeekSignal::default());
+        let (mut src, tx) = source(&seek);
+        tx.send(Some((0, vec![0.5; 4800]))).unwrap();
+        tx.send(Some((0, vec![0.5; 4800]))).unwrap();
+        for _ in 0..100 { src.next(); }
+
+        seek.request(42.0);
+        tx.send(Some((1, vec![-0.5; 4800]))).unwrap();
+        let out: Vec<f32> = (0..2000).map(|_| src.next().unwrap()).collect();
+
+        // the old position fades out, then only the new one is heard
+        assert!(out[..src.fade_len as usize].iter().all(|&s| s >= 0.0));
+        assert!(out[src.fade_len as usize + 1..].iter().all(|&s| s < 0.0));
+        assert_eq!(src.emitted_gen.load(Ordering::Relaxed), 1);
+        assert_eq!(src.samples_emitted.load(Ordering::Relaxed), 2000 - src.fade_len as u64);
+        assert_eq!(seek.target(), 42.0);
+    }
+
+    #[test]
+    fn seek_between_opposite_phases_has_no_jump() {
+        let seek = Arc::new(SeekSignal::default());
+        let (mut src, tx) = source(&seek);
+        tx.send(Some((0, sine(0.0, 4800)))).unwrap();
+        for _ in 0..1012 { src.next(); }
+
+        // cut at a peak into the opposite peak: a hard switch would jump by ~2
+        seek.request(10.0);
+        tx.send(Some((1, sine(std::f32::consts::PI * 1.5, 4800)))).unwrap();
+        let mut prev = src.next().unwrap();
+        for _ in 0..3000 {
+            let s = src.next().unwrap();
+            // a 1 kHz sine at 48 kHz moves at most ~0.13 per sample
+            assert!((s - prev).abs() < 0.15, "jump {} -> {}", prev, s);
+            prev = s;
+        }
+    }
+
+    #[test]
+    fn repeated_seeks_settle_on_the_latest() {
+        let seek = Arc::new(SeekSignal::default());
+        let (mut src, tx) = source(&seek);
+        tx.send(Some((0, vec![0.1; 4800]))).unwrap();
+        src.next();
+        seek.request(1.0);
+        tx.send(Some((1, vec![0.2; 4800]))).unwrap();
+        seek.request(2.0);
+        tx.send(Some((2, vec![0.3; 4800]))).unwrap();
+        let last = (0..3000).map(|_| src.next().unwrap()).last().unwrap();
+        assert!((last - 0.3).abs() < 1e-6);
+        assert_eq!(src.emitted_gen.load(Ordering::Relaxed), 2);
+    }
 }
