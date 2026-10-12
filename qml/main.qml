@@ -447,6 +447,37 @@ ApplicationWindow {
         }
     }
 
+    // blurhash stand-in for a cover that is still decoding. painted at 32 px and
+    // stretched by the gpu, and unloaded again once the real image is up.
+    component CoverBlur: Item {
+        id: cvb
+        property string cover: ""
+        property bool loading: true
+        readonly property bool shown: cvbLoader.item !== null && cvbLoader.item.ready
+        Loader {
+            id: cvbLoader
+            active: cvb.loading && cvb.cover !== ""
+            sourceComponent: BlurhashItem {
+                width: 32; height: 32; source: cvb.cover
+                transform: Scale { xScale: cvb.width / 32; yScale: cvb.height / 32 }
+            }
+        }
+    }
+
+    // a cover that took a noticeable moment to decode fades in over its
+    // placeholder instead of popping in; a quick (or cached) one just appears.
+    component CoverImage: Image {
+        id: cvi
+        property real _loadStart: Date.now()
+        // false until the image is up and any fade has finished
+        readonly property bool settled: status === Image.Ready && !cviFade.running
+        onStatusChanged: {
+            if (status === Image.Loading) _loadStart = Date.now()
+            else if (status === Image.Ready && Date.now() - _loadStart > 100) cviFade.restart()
+        }
+        NumberAnimation { id: cviFade; target: cvi; property: "opacity"; from: 0; to: 1; duration: 150 }
+    }
+
     // settings building blocks
     // grouped "card" container with an optional heading + caption.
     component SettingsCard: Rectangle {
@@ -1087,13 +1118,14 @@ ApplicationWindow {
                         Rectangle {
                             id:coverRect;anchors.left:parent.left;anchors.right:parent.right;anchors.top:parent.top
                             height:sidebarColumn._naturalCoverH;color:clrSurf2
-                            border.color:coverImg.status!==Image.Ready?clrBorder:"transparent";border.width:1
+                            border.color:coverImg.status!==Image.Ready&&!coverBlur.shown?clrBorder:"transparent";border.width:1
+                            CoverBlur{id:coverBlur;anchors.fill:parent;cover:player.cover_art_path;loading:!coverImg.settled}
                             // cap the decode size: embedded art is often 1500-3000 px and a
                             // full-res rgba texture of that costs tens of mb. 1024 covers the
                             // sidebar's 400 px max width even on 2x-dpi screens.
-                            Image{id:coverImg;anchors.fill:parent;source:player.cover_art_path;fillMode:Image.Stretch;smooth:true;mipmap:true;visible:status===Image.Ready
+                            CoverImage{id:coverImg;anchors.fill:parent;source:player.cover_art_path;fillMode:Image.Stretch;smooth:true;mipmap:true;visible:status===Image.Ready
                                 asynchronous:true;sourceSize.width:1024;sourceSize.height:1024}
-                            Canvas{anchors.centerIn:parent;width:44;height:44;opacity:0.3;visible:coverImg.status!==Image.Ready
+                            Canvas{anchors.centerIn:parent;width:44;height:44;opacity:0.3;visible:coverImg.status!==Image.Ready&&!coverBlur.shown
                                 onPaint:{var c=getContext("2d");c.clearRect(0,0,44,44);c.beginPath();c.arc(22,22,20,0,2*Math.PI);c.strokeStyle="#888";c.lineWidth=1.5;c.stroke();c.beginPath();c.arc(22,22,4,0,2*Math.PI);c.fillStyle="#666";c.fill()}}
                             MouseArea{anchors.fill:parent;cursorShape:Qt.PointingHandCursor;onClicked:coverOnSide=true}
                         }
@@ -1106,12 +1138,13 @@ ApplicationWindow {
                         Rectangle{id:thumbRect;x:sidebarColumn._slideX;y:0;height:70;width:sidebarColumn._thumbW;color:clrSurf2
                             // collapsed the thumb is flush with the title bar line above and
                             // the sidebar separator below, so only the right edge gets a line
-                            border.color:coverImg.status!==Image.Ready?clrBorder:"transparent"
+                            border.color:coverImg.status!==Image.Ready&&!thumbBlur.shown?clrBorder:"transparent"
                             border.width:window.coverOnSide?0:1;clip:true
+                            CoverBlur{id:thumbBlur;anchors.fill:parent;cover:player.cover_art_path;loading:!thumbImg.settled}
                             Rectangle{anchors.right:parent.right;anchors.top:parent.top;anchors.bottom:parent.bottom
-                                width:1;color:clrBorder;visible:window.coverOnSide&&coverImg.status!==Image.Ready}
+                                width:1;color:clrBorder;visible:window.coverOnSide&&coverImg.status!==Image.Ready&&!thumbBlur.shown}
                             // same source + sourceSize as coverImg so both share one cache entry.
-                            Image{anchors.fill:parent;source:player.cover_art_path;fillMode:Image.Stretch;smooth:true;mipmap:true;visible:coverImg.status===Image.Ready
+                            CoverImage{id:thumbImg;anchors.fill:parent;source:player.cover_art_path;fillMode:Image.Stretch;smooth:true;mipmap:true;visible:coverImg.status===Image.Ready
                                 asynchronous:true;sourceSize.width:1024;sourceSize.height:1024}
                             MouseArea{anchors.fill:parent;cursorShape:Qt.PointingHandCursor;onClicked:coverOnSide=false}}
                         Column{
@@ -1657,7 +1690,12 @@ ApplicationWindow {
                                         id: tileArt
                                         anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
                                         height: parent.width; color: clrSurf2
-                                        Image {
+                                        CoverBlur {
+                                            anchors.fill: parent; cover: modelData.cover_url || ""
+                                            loading: !tileImg.settled && modelData.loading !== true
+                                        }
+                                        CoverImage {
+                                            id: tileImg
                                             // no mipmap: at 320 px the texture is already ~1:1 with the
                                             // tile (cells are 150-300 px), so mipmaps would only add vram.
                                             anchors.fill: parent; fillMode: Image.Stretch; smooth: true
@@ -1775,7 +1813,8 @@ ApplicationWindow {
                                         anchors.fill:parent;anchors.leftMargin:12;anchors.rightMargin:12;spacing:10
                                         Rectangle {
                                             width:32;height:32;radius:3;color:clrSurf2;clip:true
-                                            Image{anchors.fill:parent;fillMode:Image.Stretch;smooth:true;mipmap:true;source:modelData.cover_url||"";visible:status===Image.Ready
+                                            CoverBlur{anchors.fill:parent;cover:modelData.cover_url||"";loading:!rowImg.settled&&modelData.loading!==true}
+                                            CoverImage{id:rowImg;anchors.fill:parent;fillMode:Image.Stretch;smooth:true;mipmap:true;source:modelData.cover_url||"";visible:status===Image.Ready
                                                 asynchronous:true;sourceSize.width:64;sourceSize.height:64}
                                             Spinner{anchors.centerIn:parent;width:16;height:16;stroke:1.5;visible:modelData.loading===true}
                                             Canvas{anchors.centerIn:parent;width:16;height:16;opacity:0.6;visible:(modelData.kind==="folder"||modelData.cover_url==="")&&modelData.loading!==true

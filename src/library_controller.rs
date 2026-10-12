@@ -187,6 +187,7 @@ impl library_bridge::LibraryController {
                 self.as_mut().start_scan();
             } else {
                 let rescan = library_cache::needs_rescan(&settings, &result);
+                queue_blurhashes(&result);
                 { self.state.lock().unwrap().scan_result = Some(result); }
                 self.as_mut().refresh_nodes();
                 if rescan { self.as_mut().start_scan(); }
@@ -325,6 +326,7 @@ impl library_bridge::LibraryController {
         };
         if let Some(result) = done {
             library_cache::save_cache(&result);
+            queue_blurhashes(&result);
             {
                 let mut st = self.state.lock().unwrap();
                 st.scan_result = Some(result);
@@ -677,6 +679,12 @@ impl library_bridge::LibraryController {
         };
         self.as_mut().set_search_results(QString::from(json.as_str()));
     }
+}
+
+/// hand every album cover to the background blurhash worker; covers that
+/// already have an up-to-date hash are skipped there.
+fn queue_blurhashes(result: &LibraryScanResult) {
+    crate::cover_blur::enqueue(result.albums.iter().filter_map(|a| a.cover_url.clone()));
 }
 
 /// most search hits the ui will publish at once.

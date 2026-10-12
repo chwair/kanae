@@ -26,6 +26,8 @@ mod discord;
 mod player;
 #[cfg(feature = "gui")]
 mod library_controller;
+#[cfg(feature = "gui")]
+mod cover_blur;
 #[cfg(all(feature = "gui", windows))]
 mod win_frame;
 

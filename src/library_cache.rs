@@ -153,6 +153,12 @@ pub fn cover_cache_dir() -> PathBuf {
     dir
 }
 
+/// where the cover blurhashes are persisted (see cover_blur.rs).
+#[cfg(feature = "gui")]
+pub fn blurhash_cache_path() -> PathBuf {
+    ensure_dir().join("blurhash_cache.json")
+}
+
 /// true if the cached result predates the album `id` field (every album has an
 /// empty id). such a cache must be fully re-scanned - not incrementally reused -
 /// so albums get stable ids and untagged singles split apart correctly.
