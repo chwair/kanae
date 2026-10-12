@@ -1,9 +1,5 @@
-; Kanae NSIS installer
-;
-; Build with (from repo root after windeployqt6 has populated dist\):
-;   makensis /DVERSION=<version> /DVARIANT=<gui|hybrid> scripts\installer.nsi
-;
-; Produces: kanae-<variant>-windows-x64-<version>.exe
+; kanae installer, built with makensis /DVERSION=<version> /DVARIANT=<gui|hybrid> scripts\installer.nsi
+; run from the repo root after windeployqt6 fills dist\, produces kanae-<variant>-windows-x64-<version>.exe
 
 !ifndef VERSION
   !define VERSION "dev"
@@ -11,7 +7,7 @@
 !ifndef VARIANT
   !define VARIANT "gui"
 !endif
-; four-part numeric version for the exe's file properties; CI passes the real
+; four-part numeric version for the exe's file properties; ci passes the real
 ; one, since VERSION itself may be a tag name like "v1.2.3" or "dev"
 !ifndef VERSION_NUM
   !define VERSION_NUM "0.0.0.0"
@@ -49,7 +45,7 @@
   !insertmacro ${MAC} ".ape"
 !macroend
 
-; offer Kanae for this type without stealing the existing default
+; offer kanae for this type without stealing the existing default
 !macro RegisterExt EXT
   WriteRegStr HKLM "Software\Classes\${EXT}\OpenWithProgIds" "${PROGID}" ""
   WriteRegStr HKLM "Software\Classes\Applications\${APPEXE}\SupportedTypes" "${EXT}" ""
@@ -94,7 +90,7 @@ VIAddVersionKey  "LegalCopyright"  ""
 !include "FileFunc.nsh"
 !include "WinMessages.nsh"
 
-; MUI paints the header and the welcome/finish pages with these
+; mui paints the header and the welcome/finish pages with these
 !define MUI_BGCOLOR                   "${CLR_BG}"
 !define MUI_TEXTCOLOR                 "${CLR_TEXT}"
 !define MUI_INSTFILESPAGE_COLORS      "${CLR_TEXT2} ${CLR_BG}"
@@ -117,7 +113,7 @@ VIAddVersionKey  "LegalCopyright"  ""
 !define MUI_FINISHPAGE_LINK_LOCATION "https://github.com/chwair/kanae"
 !define MUI_FINISHPAGE_NOREBOOTSUPPORT
 
-; the directory and instfiles pages are plain win32 dialogs, so MUI's colors
+; the directory and instfiles pages are plain win32 dialogs, so mui's colors
 ; don't reach them; recolor their controls as each one is shown
 !define MUI_PAGE_CUSTOMFUNCTION_SHOW DirectoryPageShow
 !insertmacro MUI_PAGE_WELCOME
@@ -137,9 +133,9 @@ VIAddVersionKey  "LegalCopyright"  ""
 
 !insertmacro MUI_LANGUAGE "English"
 
-; ── Theme ────────────────────────────────────────────────────────────────────
+; theme
 ; $R0 holds the inner dialog. Statics are drawn transparent so they sit on the
-; dialog's own background; push buttons stay native, Windows themes those.
+; dialog's own background; push buttons stay native, windows themes those.
 !macro _DarkStatic ID
   GetDlgItem $R1 $R0 ${ID}
   SetCtlColors $R1 "${CLR_TEXT}" transparent
@@ -182,15 +178,11 @@ Function un.DarkFrame
   !insertmacro _DarkFrame
 FunctionEnd
 
-; ── User PATH (hybrid only) ──────────────────────────────────────────────────
-; The hybrid build runs as a TUI when started from a terminal, so the install
-; dir goes on the PATH to make "kanae" work from cmd/PowerShell. The GUI-only
-; build has nothing to offer a shell, so it relies on App Paths alone.
-;
-; This is the per-user PATH (HKCU\Environment), never the machine-wide one. The
-; installer elevates for its HKLM writes, so this is the HKCU of whoever the
-; elevation ran as: with over-the-shoulder elevation (different admin account)
-; the entry lands on that account's PATH, not the logged-in user's.
+; user PATH (hybrid only)
+; the hybrid build runs as a tui from a terminal, so the install dir goes on the per-user
+; PATH (HKCU\Environment, never the machine-wide one) to make "kanae" work from cmd/powershell.
+; the gui-only build relies on App Paths alone. the installer elevates, so HKCU is that of
+; the elevated account, which may differ from the logged-in user under over-the-shoulder elevation.
 !if "${VARIANT}" == "hybrid"
 
 !include "WordFunc.nsh"
@@ -199,15 +191,10 @@ FunctionEnd
 
 !define ENVREG "Environment"
 
-; Reads the existing user PATH into $0. Uses $2, $3 and $4 as scratch.
-;
-; NSIS strings are capped at 1024 chars and ReadRegStr reports "no such value"
-; and "value too long for the buffer" the same way: error flag set, $0 empty.
-; Those two cases must not be conflated, because the caller treats an empty $0
-; as "nothing to append to" and writes a fresh value. So enumerate the key first
-; to establish whether a Path value actually exists; if one does but the read
-; failed, it is too long for us to edit and the only safe move is to leave it
-; completely untouched.
+; reads the existing user PATH into $0, using $2, $3 and $4 as scratch. nsis strings are capped
+; at 1024 chars and ReadRegStr reports "no such value" and "value too long for the buffer" the
+; same way (error flag set, $0 empty), so enumerate the key first to tell a missing Path value
+; from an oversized one; if a Path value exists but the read failed, leave it completely untouched.
 !macro _ReadUserPath
   StrCpy $3 0
   StrCpy $4 "0"           ; becomes "1" if a Path value exists in the key
@@ -243,7 +230,7 @@ FunctionEnd
 !macro _WriteUserPath MSG
   DetailPrint "${MSG}"
   WriteRegExpandStr HKCU "${ENVREG}" "Path" "$1"
-  ; tell already-running shells and Explorer to reread the environment
+  ; tell already-running shells and explorer to reread the environment
   SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
 !macroend
 
@@ -281,20 +268,20 @@ FunctionEnd
 
 !endif
 
-; ── Install ──────────────────────────────────────────────────────────────────
+; install
 Section "Kanae" SecMain
   SectionIn RO  ; required section
 
-  ; Upgrade path: clear out any previous install first so stale Qt DLLs and
-  ; QML plugins from an older version can't be loaded by the new binary.
-  ; User data is untouched (Kanae keeps caches/config under %APPDATA%).
+  ; upgrade path: clear out any previous install first so stale qt dlls and
+  ; qml plugins from an older version can't be loaded by the new binary.
+  ; user data is untouched (kanae keeps caches/config under %APPDATA%).
   IfFileExists "$INSTDIR\${APPEXE}" 0 +2
     RMDir /r "$INSTDIR"
 
   SetOutPath "$INSTDIR"
   File /r "${ROOT}\dist\*"
 
-  ; Registry: install path + Add/Remove Programs entry
+  ; registry: install path + add/remove programs entry
   WriteRegStr   HKLM "${REGKEY}"     "InstallDir"          "$INSTDIR"
   WriteRegStr   HKLM "${UNINSTREG}"  "DisplayName"         "${APPNAME}"
   WriteRegStr   HKLM "${UNINSTREG}"  "DisplayVersion"      "${VERSION}"
@@ -307,29 +294,29 @@ Section "Kanae" SecMain
   WriteRegDWORD HKLM "${UNINSTREG}"  "NoModify"            1
   WriteRegDWORD HKLM "${UNINSTREG}"  "NoRepair"            1
 
-  ; App Paths: lets "kanae" work from Win+R and the shell's path lookup
+  ; App Paths: lets "kanae" work from win+r and the shell's path lookup
   WriteRegStr HKLM "${APPPATHS}" ""     "$INSTDIR\${APPEXE}"
   WriteRegStr HKLM "${APPPATHS}" "Path" "$INSTDIR"
 
-  ; PATH: lets "kanae" work from cmd/PowerShell, where the hybrid build's TUI is
+  ; PATH: lets "kanae" work from cmd/powershell, where the hybrid build's tui is
 !if "${VARIANT}" == "hybrid"
   Call AddToUserPath
 !endif
 
-  ; The file type Kanae hands to Windows, and the verb used to launch it.
+  ; the file type kanae hands to windows, and the verb used to launch it.
   WriteRegStr HKLM "Software\Classes\${PROGID}" ""                 "Audio File"
   WriteRegStr HKLM "Software\Classes\${PROGID}" "FriendlyTypeName" "Audio File"
   WriteRegStr HKLM "Software\Classes\${PROGID}" "AppUserModelID"   "${AUMID}"
   WriteRegStr HKLM "Software\Classes\${PROGID}\DefaultIcon"        "" "$INSTDIR\${APPEXE},0"
   WriteRegStr HKLM "Software\Classes\${PROGID}\shell\open\command" "" '"$INSTDIR\${APPEXE}" "%1"'
 
-  ; The application itself, which is what puts Kanae in the "Open with" list.
+  ; the application itself, which is what puts kanae in the "Open with" list.
   WriteRegStr HKLM "Software\Classes\Applications\${APPEXE}" "FriendlyAppName" "${APPNAME}"
   WriteRegStr HKLM "Software\Classes\Applications\${APPEXE}" "AppUserModelID"  "${AUMID}"
   WriteRegStr HKLM "Software\Classes\Applications\${APPEXE}\DefaultIcon"        "" "$INSTDIR\${APPEXE},0"
   WriteRegStr HKLM "Software\Classes\Applications\${APPEXE}\shell\open\command" "" '"$INSTDIR\${APPEXE}" "%1"'
 
-  ; Capabilities + RegisteredApplications is what Settings > Default apps reads.
+  ; Capabilities + RegisteredApplications is what settings > default apps reads.
   WriteRegStr HKLM "${REGKEY}\Capabilities" "ApplicationName"        "${APPNAME}"
   WriteRegStr HKLM "${REGKEY}\Capabilities" "ApplicationDescription" "A music player."
   WriteRegStr HKLM "${REGKEY}\Capabilities" "ApplicationIcon"        "$INSTDIR\${APPEXE},0"
@@ -341,12 +328,12 @@ Section "Kanae" SecMain
   ; sign-out (SHCNE_ASSOCCHANGED, SHCNF_IDLIST)
   System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'
 
-  ; Installed size, shown in Add/Remove Programs.
+  ; installed size, shown in add/remove programs.
   ${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2
   IntFmt $0 "0x%08X" $0
   WriteRegDWORD HKLM "${UNINSTREG}" "EstimatedSize" $0
 
-  ; Shortcuts
+  ; shortcuts
   CreateDirectory "$SMPROGRAMS\${APPNAME}"
   CreateShortcut  "$SMPROGRAMS\${APPNAME}\${APPNAME}.lnk" "$INSTDIR\${APPEXE}"
   CreateShortcut  "$DESKTOP\${APPNAME}.lnk"               "$INSTDIR\${APPEXE}"
@@ -354,7 +341,7 @@ Section "Kanae" SecMain
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 SectionEnd
 
-; ── Uninstall ─────────────────────────────────────────────────────────────────
+; uninstall
 Section "Uninstall"
   Delete "$SMPROGRAMS\${APPNAME}\${APPNAME}.lnk"
   RMDir  "$SMPROGRAMS\${APPNAME}"

@@ -1,5 +1,4 @@
-/// Library controller — a QML-exposed QObject that manages scanning,
-/// navigation, settings and CD tile state.
+/// library controller that manages scanning, navigation, settings and cd tile state.
 use cxx_qt_lib::{QStringList, QString};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -8,16 +7,16 @@ use std::thread;
 use crate::library::{LibraryScanResult, LibrarySettings, ScanProgress};
 use crate::library_cache;
 
-// DTOs serialised to JSON for QML
+// dtos serialised to json for qml
 #[derive(serde::Serialize, Clone)]
 struct LibraryNodeDto {
     kind:         String,
-    /// Real filesystem path. For folders this is the directory to navigate into;
+    /// real filesystem path. for folders this is the directory to navigate into;
     /// for albums it is the containing directory (used by the context menu for
     /// pin/merge/ignore, which operate on directories).
     path:         String,
-    /// Stable album identity used for browsing. Distinguishes multiple albums or
-    /// singles that share a directory. Empty for folders/CD nodes.
+    /// stable album identity used for browsing. distinguishes multiple albums or
+    /// singles that share a directory. empty for folders/cd nodes.
     id:           String,
     name:         String,
     album_artist: String,
@@ -91,14 +90,14 @@ struct LibraryState {
     nav_stack:   Vec<std::path::PathBuf>,
     nav_idx:     usize,
     picker_result: Arc<Mutex<Option<Option<std::path::PathBuf>>>>,
-    /// Set by the background watcher thread when the filesystem changed.
+    /// set by the background watcher thread when the filesystem changed.
     fs_dirty:    Arc<AtomicBool>,
-    /// Whether the live-change watcher thread has been started.
+    /// whether the live-change watcher thread has been started.
     watcher_started: bool,
-    /// Lowercased haystacks for the omnibar search, built on first query and
+    /// lowercased haystacks for the omnibar search, built on first query and
     /// dropped whenever the scan result changes.
     search_index: Option<Vec<SearchEntry>>,
-    /// Last query and the (uncapped) indices it matched, so typing another
+    /// last query and the (uncapped) indices it matched, so typing another
     /// character only has to re-score what already matched.
     last_query: String,
     last_hits:  Vec<usize>,
@@ -182,9 +181,9 @@ impl library_bridge::LibraryController {
         }
         if let Some(result) = cached {
             if library_cache::is_legacy_cache(&result) {
-                // Old cache (pre-id): discard it and full-rescan so albums get
+                // old cache (pre-id): discard it and full-rescan so albums get
                 // stable ids, singles split, and covers re-extract to the
-                // persistent cache dir. Leaving scan_result unset → prev = None.
+                // persistent cache dir. leaving scan_result unset -> prev = None.
                 self.as_mut().start_scan();
             } else {
                 let rescan = library_cache::needs_rescan(&settings, &result);
@@ -217,7 +216,7 @@ impl library_bridge::LibraryController {
         let done_clone = done_result.clone();
 
         let handle = thread::spawn(move || {
-            // Reuse the previous result so unchanged directories skip re-reading.
+            // reuse the previous result so unchanged directories skip re-reading.
             let r = crate::library::scan(&settings_clone, stop_clone, prog_tx, prev.as_ref());
             *done_clone.lock().unwrap() = Some(r);
         });
@@ -235,7 +234,7 @@ impl library_bridge::LibraryController {
         self.as_mut().ensure_watcher();
     }
 
-    /// Spawn the live-change watcher thread (idempotent). It periodically checks
+    /// spawn the live-change watcher thread (idempotent). it periodically checks
     /// the filesystem for added/removed/changed files and flags `fs_dirty`, which
     /// `poll_scan` consumes to kick off an incremental rescan.
     fn ensure_watcher(self: Pin<&mut Self>) {
@@ -247,10 +246,10 @@ impl library_bridge::LibraryController {
         };
         thread::spawn(move || loop {
             thread::sleep(std::time::Duration::from_secs(3));
-            // Snapshot only the dir list + mtimes (not the albums) under the lock.
+            // snapshot only the dir list + mtimes (not the albums) under the lock.
             let snapshot = {
                 let st = state.lock().unwrap();
-                // Skip while a scan is in flight or nothing scanned yet.
+                // skip while a scan is in flight or nothing scanned yet.
                 if st.progress_rx.is_some() { None }
                 else { st.scan_result.as_ref().map(|r|
                     (st.settings.search_paths.clone(), r.dirs.clone(), r.dir_mtimes.clone())) }
@@ -281,8 +280,8 @@ impl library_bridge::LibraryController {
         if let Some(msg) = last_msg {
             self.as_mut().set_scan_message(QString::from(msg.as_str()));
         }
-        // Merge partial albums into the scan result and refresh nodes incrementally.
-        // Upsert by album id so incremental rescans (which re-stream unchanged
+        // merge partial albums into the scan result and refresh nodes incrementally.
+        // upsert by album id so incremental rescans (which re-stream unchanged
         // directories) don't create duplicate tiles.
         if !new_albums.is_empty() {
             {
@@ -296,8 +295,8 @@ impl library_bridge::LibraryController {
             self.as_mut().refresh_nodes();
         }
 
-        // Live rescan: the watcher flagged a filesystem change and no scan is
-        // currently running — kick off an incremental rescan.
+        // live rescan: the watcher flagged a filesystem change and no scan is
+        // currently running - kick off an incremental rescan.
         let should_rescan = {
             let st = self.state.lock().unwrap();
             st.progress_rx.is_none() && st.fs_dirty.swap(false, Ordering::Relaxed)
@@ -379,8 +378,8 @@ impl library_bridge::LibraryController {
 
     pub fn browse_album(mut self: Pin<&mut Self>, id: QString) {
         let album_id = id.to_string();
-        // Collect track paths from the scan result while holding the lock briefly.
-        // Match on the stable album id so multiple albums/singles sharing a
+        // collect track paths from the scan result while holding the lock briefly.
+        // match on the stable album id so multiple albums/singles sharing a
         // directory each resolve to their own track list.
         let track_paths: Vec<std::path::PathBuf> = {
             let state = self.state.lock().unwrap();
@@ -404,7 +403,7 @@ impl library_bridge::LibraryController {
         self.as_mut().set_album_tracks_json(QString::from(json.as_str()));
     }
 
-    /// An album's track paths in play order, for queueing it without having to
+    /// an album's track paths in play order, for queueing it without having to
     /// browse into it first.
     pub fn album_track_paths(self: Pin<&mut Self>, id: QString) -> QStringList {
         let album_id = id.to_string();
@@ -622,9 +621,9 @@ impl library_bridge::LibraryController {
         self.as_mut().set_library_nodes(QString::from(json.as_str()));
     }
 
-    /// Filter the whole library by `query` and publish the matches as
-    /// `search_results` (same DTO shape the browser grid already renders).
-    /// Matching is case-insensitive and every whitespace-separated term must
+    /// filter the whole library by `query` and publish the matches as
+    /// `search_results` (same dto shape the browser grid already renders).
+    /// matching is case-insensitive and every whitespace-separated term must
     /// appear somewhere in the album's text.
     pub fn search_library(mut self: Pin<&mut Self>, query: QString) {
         let q = query.to_string().to_lowercase();
@@ -648,10 +647,10 @@ impl library_bridge::LibraryController {
                 };
                 st.search_index = Some(index);
             }
-            // Taken out so the hit list can be stored back into `st` below.
+            // taken out so the hit list can be stored back into `st` below.
             let index = st.search_index.take().unwrap_or_default();
 
-            // Typing another character can only shrink the previous result set,
+            // typing another character can only shrink the previous result set,
             // so narrow it instead of walking the whole library again.
             let narrow = !st.last_query.is_empty() && q.starts_with(&st.last_query);
             let mut hits: Vec<(u8, usize)> = Vec::new();
@@ -680,16 +679,16 @@ impl library_bridge::LibraryController {
     }
 }
 
-/// Most search hits the UI will publish at once.
+/// most search hits the ui will publish at once.
 const SEARCH_LIMIT: usize = 300;
 
-/// One album flattened into lowercase haystacks so a keystroke costs only
+/// one album flattened into lowercase haystacks so a keystroke costs only
 /// substring scans, no re-lowercasing of the whole library.
 struct SearchEntry {
     dto:       LibraryNodeDto,
     name_lc:   String,
     artist_lc: String,
-    /// Track file stems and the containing folder name, joined by newlines.
+    /// track file stems and the containing folder name, joined by newlines.
     extra_lc:  String,
 }
 
@@ -770,7 +769,7 @@ fn build_nodes_json(cd: Option<&std::path::Path>, result: &LibraryScanResult, se
         });
     };
 
-    // Helper: promote folder to album if it has exactly one album descendant
+    // helper: promote folder to album if it has exactly one album descendant
     let promote_folder = |dtos: &mut Vec<LibraryNodeDto>, dir: &std::path::Path,
                           result: &LibraryScanResult, settings: &LibrarySettings,
                           used: &mut BTreeSet<std::path::PathBuf>| {
@@ -827,13 +826,13 @@ fn build_nodes_json(cd: Option<&std::path::Path>, result: &LibraryScanResult, se
                     push_album(&mut dtos, album, settings);
                 }
             } else {
-                // Direct-child albums
+                // direct-child albums
                 for album in &result.albums {
                     if album.dir != cur || ignored(&album.dir) { continue; }
                     used.insert(album.dir.clone());
                     push_album(&mut dtos, album, settings);
                 }
-                // Sub-dirs: promote single-album folders
+                // sub-dirs: promote single-album folders
                 for dir in &result.dirs {
                     if used.contains(dir) || dir.parent() != Some(cur) || ignored(dir) { continue; }
                     promote_folder(&mut dtos, dir, result, settings, &mut used);

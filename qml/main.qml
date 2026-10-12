@@ -17,7 +17,7 @@ ApplicationWindow {
     flags: Qt.FramelessWindowHint | Qt.Window
     color: "transparent"
 
-    // ── Palette ────────────────────────────────────────────────────────────
+    // palette
     readonly property color clrBg:      "#0f0f0f"
     readonly property color clrSurface: "#161616"
     readonly property color clrSurf2:   "#1e1e1e"
@@ -30,12 +30,12 @@ ApplicationWindow {
     property bool coverOnSide: false
     property bool queueOpen: false
     property bool _resizing: false
-    // Spectrum visualizer toggle, mirrored from settings.json (on by default).
+    // spectrum visualizer toggle, mirrored from settings.json (on by default).
     readonly property bool visualizerOn: {
         try { return JSON.parse(library.settings_json.toString()).visualizer !== false }
         catch (e) { return true }
     }
-    // Crossfade config, mirrored from settings.json and pushed to the player
+    // crossfade config, mirrored from settings.json and pushed to the player
     // (which keeps its own copy so the audio thread never touches the library).
     readonly property bool _crossfadeOn: {
         try { return JSON.parse(library.settings_json.toString()).crossfade === true }
@@ -53,29 +53,29 @@ ApplicationWindow {
     onWidthChanged:  { _resizing = true; resizeEndTimer.restart() }
     onHeightChanged: { _resizing = true; resizeEndTimer.restart() }
 
-    // ── Backends ───────────────────────────────────────────────────────────
+    // backends
     PlayerController   { id: player }
     LibraryController  { id: library }
 
-    // ── View state ─────────────────────────────────────────────────────────
-    // "library" – browsable library grid in right panel
-    // "album"   – track list in right panel
+    // view state
+    // "library" - browsable library grid in right panel
+    // "album"   - track list in right panel
     property string _view:          "library"
     property bool   _fileMode:      false
-    property bool   _showingCdView: false  // true when album view should show CD state (not file tracks)
+    property bool   _showingCdView: false  // true when album view should show cd state (not file tracks)
 
-    // When browsing a library album without yet loading it into the player:
+    // when browsing a library album without yet loading it into the player:
     property string _browseDir: ""        // dir being previewed; "" = player owns the track list
     property string _browseAlbumName: "" // display name for the breadcrumb
 
-    // Tracks for the currently browsed library album (populated by library.browseAlbum).
+    // tracks for the currently browsed library album (populated by library.browseAlbum).
     property var _browseTracks: {
         var j = library.album_tracks_json.toString()
         if (!j || j === "[]") return []
         try { return JSON.parse(j) } catch(e) { return [] }
     }
 
-    // Unified track list model: use browse data when previewing, player data when playing.
+    // unified track list model: use browse data when previewing, player data when playing.
     property var _effectiveTracklist: {
         if (_browseDir !== "" && _browseTracks.length > 0) return _browseTracks
         if (player.total_tracks <= 0) return []
@@ -85,17 +85,17 @@ ApplicationWindow {
                 title:    (player.track_titles[i]  || "").toString(),
                 artist:   (player.track_artists[i] || "").toString(),
                 duration: (player.track_names[i]   || "").toString(),
-                // Empty for CD tracks, which cannot be queued.
+                // empty for cd tracks, which cannot be queued.
                 path:     (player.track_paths[i]   || "").toString()
             })
         }
         return arr
     }
 
-    // Grid/list toggle for library browser
+    // grid/list toggle for library browser
     property bool _libUseGrid: true
 
-    // ── Omnibar search ───────────────────────────────────────────
+    // omnibar search
     // _searchOpen drives the expand animation; results replace the library
     // grid's model only while there is something typed.
     property bool   _searchOpen:  false
@@ -116,14 +116,14 @@ ApplicationWindow {
     }
     on_ViewChanged: if (_view !== "library" && _searchOpen) closeSearch()
 
-    // Navigation state for forward-to-album
+    // navigation state for forward-to-album
     property string _prevBrowseDir: ""
     property string _prevBrowseAlbumName: ""
     property bool   _prevFileMode: false
     property bool   _prevShowingCdView: false
     property bool   _canGoForwardToAlbum: false
 
-    // Mouse back/forward navigation
+    // mouse back/forward navigation
     MouseArea {
         anchors.fill: parent
         acceptedButtons: Qt.BackButton | Qt.ForwardButton
@@ -164,8 +164,8 @@ ApplicationWindow {
         _view = "album"
     }
 
-    // Called from the track list delegate to start playing a browsed library album.
-    // All window-property mutations live here so delegate scope issues are avoided.
+    // called from the track list delegate to start playing a browsed library album.
+    // all window-property mutations live here so delegate scope issues are avoided.
     property bool   _suppressFileModeFlag: false
     property string _playingAlbumDir: ""   // album dir currently loaded in the player from library
     function playBrowsedTrack(idx) {
@@ -182,7 +182,7 @@ ApplicationWindow {
         }
     }
 
-    // Breadcrumbs computed relative to library search roots;
+    // breadcrumbs computed relative to library search roots;
     // appends album name when viewing an album's track list
     property var _crumbs: {
         var p = library.current_path.toString()
@@ -217,8 +217,8 @@ ApplicationWindow {
         }
         if (_view === "album") {
             var aName = _browseDir !== "" ? _browseAlbumName : player.album_title.toString()
-            // For drag-and-drop / file mode, insert an unclickable 'Files' segment
-            // between Library and the album name.
+            // for drag-and-drop / file mode, insert an unclickable 'Files' segment
+            // between library and the album name.
             if (_fileMode) {
                 base = base.concat([{name: "Files", path: "__files__"}])
             }
@@ -229,7 +229,7 @@ ApplicationWindow {
         return base
     }
 
-    // When pending_open_dir is set by the library controller
+    // when pending_open_dir is set by the library controller
     Connections {
         target: library
         function onPending_open_dirChanged() {
@@ -246,18 +246,18 @@ ApplicationWindow {
     }
 
     // 100 ms position updates are only needed while audio is actually playing;
-    // when paused/idle the tick just drains SMTC commands, so 300 ms is plenty.
+    // when paused/idle the tick just drains smtc commands, so 300 ms is plenty.
     Timer { interval: player.is_playing ? 100 : 300; repeat: true; running: true; onTriggered: player.updatePosition() }
     Timer { interval: player.total_tracks > 0 && !player.is_file_mode ? 1000 : 3000; repeat: true
             running: !player.is_loading
             onTriggered: { if (player.drive_list.length === 0) player.scanDrives(); else player.checkDrive() } }
-    // Fast polling only matters while a disc load or library scan is in flight.
+    // fast polling only matters while a disc load or library scan is in flight.
     Timer { interval: player.is_loading || library.is_scanning ? 150 : 500
             repeat: true; running: true; onTriggered: { player.pollLoad(); library.pollScan() } }
-    // Lyric results only arrive while a fetch is in flight.
+    // lyric results only arrive while a fetch is in flight.
     Timer { interval: 300; repeat: true; running: player.lyrics_loading; onTriggered: player.pollLyrics() }
-    // Spectrum bars: ~60 fps while playing for a responsive read. Paused/idle
-    // the bars are gated to 0 in QML, so there's no need to keep sampling.
+    // spectrum bars: ~60 fps while playing for a responsive read. paused/idle
+    // the bars are gated to 0 in qml, so there's no need to keep sampling.
     Timer { interval: 16; repeat: true
             running: player.is_playing && player.total_tracks > 0 && window.visualizerOn
             onTriggered: player.updateVisualizer() }
@@ -271,12 +271,12 @@ ApplicationWindow {
         }
     }
 
-    // ── Keyboard shortcuts ─────────────────────────────────────────────────
+    // keyboard shortcuts
     property real _volBeforeMute: 1.0
     function togglePlayPause() {
         if (player.total_tracks > 0 && player.current_track >= 0) player.playPause()
     }
-    // Mirrors the prev button: restart the track past 4s, otherwise skip back.
+    // mirrors the prev button: restart the track past 4s, otherwise skip back.
     function prevTrackOrRestart() {
         if (!(player.current_track > 0 || player.current_time > 4)) return
         if (player.current_time > 4) { player.seek(0) }
@@ -286,7 +286,7 @@ ApplicationWindow {
         if (!(player.current_track >= 0 && player.current_track < player.total_tracks - 1)) return
         var wp = player.is_playing; player.nextTrack(); if (wp) player.playPause()
     }
-    // Relative seek clamped to the track bounds.
+    // relative seek clamped to the track bounds.
     function seekBy(secs) {
         if (player.total_tracks <= 0 || player.current_track < 0) return
         player.seek(Math.max(0, Math.min(player.total_time, player.current_time + secs)))
@@ -300,16 +300,16 @@ ApplicationWindow {
         else { var v = _volBeforeMute > 0.001 ? _volBeforeMute : 1.0; volSlider.value = v; player.setVolumeLevel(v) }
     }
 
-    // Pixels travelled per wheel notch. Flickable's built-in wheel step is a
+    // pixels travelled per wheel notch. flickable's built-in wheel step is a
     // fraction of this, which is what made the lists feel sluggish.
     property real _wheelStep: 130
     property int  _wheelDuration: 260
-    // Scrolls `view` by the wheel event, easing via `anim` so repeated notches
-    // retarget one animation instead of fighting each other. Retargeting off
+    // scrolls `view` by the wheel event, easing via `anim` so repeated notches
+    // retarget one animation instead of fighting each other. retargeting off
     // anim.to (not contentY) is what lets a fast flick of the wheel accumulate.
     function wheelScroll(view, anim, ev) {
-        // The top of a ListView is originY, not 0 -- it shifts as delegates are
-        // created or the model changes. Clamping against 0 is what allowed
+        // the top of a ListView is originY, not 0 -- it shifts as delegates are
+        // created or the model changes. clamping against 0 is what allowed
         // scrolling past the top of the list.
         var minY = view.originY
         var maxY = minY + Math.max(0, view.contentHeight - view.height)
@@ -321,11 +321,11 @@ ApplicationWindow {
         anim.restart()
     }
 
-    // Disabled while the first-run "where's your music" field has focus so
+    // disabled while the first-run "where's your music" field has focus so
     // typing a path doesn't trigger playback/volume shortcuts.
     property bool _shortcutsEnabled: !musicDirInput.activeFocus && !omniSearchInput.activeFocus
     Shortcut { sequence: "Space";       enabled: window._shortcutsEnabled; onActivated: togglePlayPause() }
-    // Arrows seek; Shift+Arrows change track.
+    // arrows seek; shift+arrows change track.
     Shortcut { sequence: "Left";        enabled: window._shortcutsEnabled; onActivated: seekBy(-5) }
     Shortcut { sequence: "Right";       enabled: window._shortcutsEnabled; onActivated: seekBy(5) }
     Shortcut { sequence: "Shift+Left";  enabled: window._shortcutsEnabled; onActivated: prevTrackOrRestart() }
@@ -349,7 +349,7 @@ ApplicationWindow {
         })
     }
 
-    // ── ScrollText component ──────────────────────────────────────────────
+    // ScrollText component
     component ScrollText: Item {
         id: stRoot
         implicitHeight: stLabel.implicitHeight
@@ -383,7 +383,7 @@ ApplicationWindow {
         }
     }
 
-    // ── WaveText: per-character colour sweep (the lyrics loading effect) ──
+    // WaveText: per-character colour sweep (the lyrics loading effect)
     component WaveText: Row {
         id: wtRoot
         property string text: ""
@@ -408,7 +408,7 @@ ApplicationWindow {
         }
     }
 
-    // True only after the player has been reading the disc for >= 1s straight,
+    // true only after the player has been reading the disc for >= 1s straight,
     // so the periodic empty-drive poll doesn't flash a "Reading CD" state.
     property bool _cdLoading: false
     readonly property bool _cdLoadingRaw: player.is_loading && !player.is_file_mode
@@ -427,8 +427,8 @@ ApplicationWindow {
     }
     Timer { id: cdTileLoadingDelay; interval: 1000; onTriggered: window._cdTileLoading = true }
     readonly property bool _cdLoaded:  player.total_tracks > 0 && !player.is_file_mode
-    // "CD" badge label; shows the disc position within a multi-CD release
-    // (from MusicBrainz), e.g. "CD 2/3".
+    // "CD" badge label; shows the disc position within a multi-cd release
+    // (from musicbrainz), e.g. "CD 2/3".
     readonly property string _cdBadgeLabel:
         _cdLoaded && player.cd_disc_count > 1 && player.cd_disc_number > 0
         ? "CD " + player.cd_disc_number + "/" + player.cd_disc_count : "CD"
@@ -447,8 +447,8 @@ ApplicationWindow {
         }
     }
 
-    // ── Settings building blocks ──────────────────────────────────────────
-    // Grouped "card" container with an optional heading + caption.
+    // settings building blocks
+    // grouped "card" container with an optional heading + caption.
     component SettingsCard: Rectangle {
         default property alias content: cardCol.data
         property string heading: ""
@@ -471,7 +471,7 @@ ApplicationWindow {
         }
     }
 
-    // Sliding pill switch.
+    // sliding pill switch.
     component PillToggle: Item {
         id: tg
         property bool checked: false
@@ -493,7 +493,7 @@ ApplicationWindow {
         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: tg.toggled() }
     }
 
-    // Bordered icon + label button.
+    // bordered icon + label button.
     component TextButton: Rectangle {
         id: btn
         property string label: ""
@@ -520,7 +520,7 @@ ApplicationWindow {
         MouseArea { id: btnMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: btn.clicked() }
     }
 
-    // ── Resize handles ────────────────────────────────────────────────────
+    // resize handles
     readonly property bool _resizable: Qt.platform.os !== "osx" && window.visibility !== Window.Maximized
     Item {
         anchors.fill: parent; z: 100; visible: window._resizable
@@ -534,7 +534,7 @@ ApplicationWindow {
         MouseArea { width:6;anchors.top:parent.top;anchors.bottom:parent.bottom;anchors.right:parent.right;anchors.topMargin:6;anchors.bottomMargin:6;cursorShape:Qt.SizeHorCursor;onPressed:window.startSystemResize(Qt.RightEdge) }
     }
 
-    // ── Settings window ───────────────────────────────────────────────────
+    // settings window
     Window {
         id: settingsWindow
         title: "Settings \u2013 Kanae"
@@ -551,12 +551,12 @@ ApplicationWindow {
         Rectangle {
             anchors.fill: parent; color: clrBg; radius: 6; clip: true
 
-            // Title bar
+            // title bar
             Rectangle {
                 id: swTitleBar
                 anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
                 height: 30; color: "transparent"; z: 10; radius: 6
-                // Square off the bottom corners
+                // square off the bottom corners
                 Rectangle { anchors.left:parent.left;anchors.right:parent.right;anchors.bottom:parent.bottom;height:parent.height/2;color:"transparent" }
                 Rectangle { anchors.bottom:parent.bottom;anchors.left:parent.left;anchors.right:parent.right;height:1;color:clrBorder }
 
@@ -571,13 +571,13 @@ ApplicationWindow {
                     text: "Settings"; color: clrText2; font.pixelSize: 11; font.family: "Segoe UI"
                 }
 
-                // Close button
+                // close button
                 Rectangle {
                     width: 30; height: parent.height
                     anchors.right: parent.right; anchors.top: parent.top
                     color: swClsHov.containsMouse ? "#3c1a1a" : "transparent"
                     radius: 6
-                    // Square off the left + bottom-left corner
+                    // square off the left + bottom-left corner
                     Rectangle { anchors.left:parent.left;anchors.top:parent.top;anchors.bottom:parent.bottom;width:parent.radius;color:parent.color }
                     Rectangle { anchors.left:parent.left;anchors.right:parent.right;anchors.bottom:parent.bottom;height:parent.radius;color:parent.color }
                     Behavior on color { ColorAnimation { duration: 100 } }
@@ -611,7 +611,7 @@ ApplicationWindow {
 
                     Item { height: 4 }
 
-                    // ── Search paths ──────────────────────────────────────
+                    // search paths
                     SettingsCard {
                         heading: "Search Paths"
                         caption: "Folders that Kanae scans for music"
@@ -645,7 +645,7 @@ ApplicationWindow {
                         TextButton { label: "Add Folder"; icon: "folder-plus"; onClicked: library.openFolderPicker() }
                     }
 
-                    // ── Display ───────────────────────────────────────────
+                    // display
                     SettingsCard {
                         heading: "Display"
                         RowLayout {
@@ -662,7 +662,7 @@ ApplicationWindow {
                         }
                     }
 
-                    // ── Merged / ignored folders ──────────────────────────
+                    // merged / ignored folders
                     SettingsCard {
                         heading: "Merged Folders"
                         visible: (settingsWindow.settingsObj.merged_folders || []).length > 0
@@ -689,7 +689,7 @@ ApplicationWindow {
                         }
                     }
 
-                    // ── Lyrics ────────────────────────────────────────────
+                    // lyrics
                     SettingsCard {
                         heading: "Lyrics"
                         RowLayout {
@@ -727,7 +727,7 @@ ApplicationWindow {
                         }
                     }
 
-                    // ── Interface ─────────────────────────────────────────
+                    // interface
                     SettingsCard {
                         heading: "Interface"
                         RowLayout {
@@ -744,7 +744,7 @@ ApplicationWindow {
                         }
                     }
 
-                    // ── Playback ──────────────────────────────────────────
+                    // playback
                     SettingsCard {
                         heading: "Playback"
                         RowLayout {
@@ -798,7 +798,7 @@ ApplicationWindow {
                         }
                     }
 
-                    // ── Integrations ──────────────────────────────────────
+                    // integrations
                     SettingsCard {
                         heading: "Integrations"
                         RowLayout {
@@ -819,7 +819,7 @@ ApplicationWindow {
                         }
                     }
 
-                    // ── Library maintenance ───────────────────────────────
+                    // library maintenance
                     SettingsCard {
                         heading: "Library"
                         TextButton { label: "Rescan Library"; icon: "refresh"; onClicked: library.startScan() }
@@ -831,13 +831,16 @@ ApplicationWindow {
         }
     }
 
-    // ── Root background ───────────────────────────────────────────────────
+    // root background
     Rectangle {
         id: rootBg
         anchors.fill: parent
-        color: clrBg; radius: 6; clip: true
+        // a natively maximized window overhangs the screen by its (invisible) frame.
+        anchors.margins: window.visibility === Window.Maximized
+            ? Math.max(0, (window.width - Screen.width) / 2, (window.height - Screen.height) / 2) : 0
+        color: clrBg; radius: window.visibility === Window.Maximized ? 0 : 6; clip: true
 
-        // ── Titlebar ──────────────────────────────────────────────────────
+        // titlebar
         Rectangle {
             id: titleBar
             anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
@@ -849,7 +852,7 @@ ApplicationWindow {
                 onPressed: function(mouse) { window.startSystemMove(); mouse.accepted = false }
             }
 
-            // macOS traffic lights
+            // macos traffic lights
             Item {
                 id: trafficLights; visible: Qt.platform.os === "osx"
                 anchors.left: parent.left; anchors.leftMargin: 12
@@ -867,7 +870,7 @@ ApplicationWindow {
                         onClicked: window.visibility===Window.FullScreen?window.showNormal():window.showFullScreen()} }
             }
 
-            // macOS settings button (right side of titlebar)
+            // macos settings button (right side of titlebar)
             Item {
                 id: macSettingsBtn
                 visible: Qt.platform.os === "osx"
@@ -890,7 +893,7 @@ ApplicationWindow {
                     cursorShape: Qt.PointingHandCursor; onClicked: settingsWindow.show() }
             }
 
-            // Now playing (left-aligned): \u25B6 Artist \u2014 Title, title brightest.
+            // now playing (left-aligned): > artist - title, title brightest.
             MatIcon {
                 id: npTitleIcon
                 visible: player.is_playing && player.total_tracks > 0
@@ -920,12 +923,12 @@ ApplicationWindow {
                 font.pixelSize: 11; font.family: "Segoe UI"
             }
 
-            // Windows titlebar buttons
+            // windows titlebar buttons
             Row {
                 id: winButtons; visible: Qt.platform.os !== "osx"
                 anchors.right: parent.right; anchors.top: parent.top; height: titleBar.height
 
-                // Settings button (cog icon)
+                // settings button (cog icon)
                 Rectangle {
                     width: 32; height: parent.height; color: "transparent"
                     Rectangle { anchors.fill:parent; color:settingsHov.containsMouse?clrSurf2:"transparent"; Behavior on color{ColorAnimation{duration:100}} }
@@ -947,7 +950,7 @@ ApplicationWindow {
                 Rectangle {
                     width:32;height:parent.height;color:"transparent"
                     Rectangle{anchors.fill:parent;color:maxHov.containsMouse?clrSurf2:"transparent";Behavior on color{ColorAnimation{duration:100}}}
-                    // Drawn empty square: the icon font is a FILL=1 subset, so the
+                    // drawn empty square: the icon font is a FILL=1 subset, so the
                     // crop_square glyph renders as a solid block.
                     Rectangle{anchors.centerIn:parent;width:7;height:7
                         visible:window.visibility!==Window.Maximized
@@ -956,11 +959,15 @@ ApplicationWindow {
                     MatIcon{anchors.centerIn:parent;size:11;name:"restore"
                         visible:window.visibility===Window.Maximized
                         color:maxHov.containsMouse?clrText:clrText2}
-                    MouseArea{id:maxHov;anchors.fill:parent;hoverEnabled:true;onClicked:window.visibility===Window.Maximized?window.showNormal():window.showMaximized()}
+                    MouseArea{id:maxHov;anchors.fill:parent;hoverEnabled:true;
+                        onClicked:{if(Qt.platform.os==="windows")player.toggleMaximize();else if(window.visibility===Window.Maximized)window.showNormal();else window.showMaximized()}}
                 }
                 Rectangle {
                     width:32;height:parent.height;color:"transparent"
-                    Rectangle{anchors.fill:parent;color:clsHov.containsMouse?"#3c1a1a":"transparent";Behavior on color{ColorAnimation{duration:100}}}
+                    // oversized and clipped so only the top-right corner follows the window's rounding.
+                    Item{anchors.fill:parent;clip:true
+                        Rectangle{x:-radius;width:parent.width+radius;height:parent.height+radius;radius:rootBg.radius
+                            color:clsHov.containsMouse?"#3c1a1a":"transparent";Behavior on color{ColorAnimation{duration:100}}}}
                     MatIcon{anchors.centerIn:parent;name:"close";size:11;color:clsHov.containsMouse?"#d07070":clrText2}
                     MouseArea{id:clsHov;anchors.fill:parent;hoverEnabled:true;onClicked:Qt.quit()}
                 }
@@ -968,13 +975,13 @@ ApplicationWindow {
             Rectangle { anchors.bottom:parent.bottom;anchors.left:parent.left;anchors.right:parent.right;height:1;color:clrBorder }
         }
 
-        // ── Content ───────────────────────────────────────────────────────
+        // content
         ColumnLayout {
             anchors.top: titleBar.bottom
             anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
             spacing: 0
 
-            // ── Main SplitView (always visible: sidebar + right panel) ────
+            // main SplitView (always visible: sidebar + right panel)
             SplitView {
                 Layout.fillWidth: true; Layout.fillHeight: true
                 orientation: Qt.Horizontal
@@ -982,7 +989,7 @@ ApplicationWindow {
                 handle: Item {
                     id: splitHandle
                     implicitWidth: 1; implicitHeight: 1
-                    // Which pane this divider sizes. The sidebar sits left of its
+                    // which pane this divider sizes. the sidebar sits left of its
                     // handle, the queue pane right of its own.
                     readonly property bool forSidebar: x < queuePane.x
                     readonly property Item pane: forSidebar ? sidebarColumn : queuePane
@@ -993,8 +1000,8 @@ ApplicationWindow {
                         Behavior on color{ColorAnimation{duration:100}}
                     }
 
-                    // The divider is 1px, which is a miserable drag target, so the
-                    // grab area overhangs it by 4px on each side. That means doing
+                    // the divider is 1px, which is a miserable drag target, so the
+                    // grab area overhangs it by 4px on each side. that means doing
                     // the resize here rather than letting SplitView drive it: the
                     // pane's own onWidthChanged still records the new share.
                     MouseArea {
@@ -1021,7 +1028,7 @@ ApplicationWindow {
                     }
                 }
 
-                // ── Left sidebar (always visible) ─────────────────────────
+                // left sidebar (always visible)
                 ColumnLayout {
                     id: sidebarColumn
                     property real _ratio: 200.0/880.0
@@ -1081,9 +1088,9 @@ ApplicationWindow {
                             id:coverRect;anchors.left:parent.left;anchors.right:parent.right;anchors.top:parent.top
                             height:sidebarColumn._naturalCoverH;color:clrSurf2
                             border.color:coverImg.status!==Image.Ready?clrBorder:"transparent";border.width:1
-                            // Cap the decode size: embedded art is often 1500–3000 px and a
-                            // full-res RGBA texture of that costs tens of MB. 1024 covers the
-                            // sidebar's 400 px max width even on 2x-DPI screens.
+                            // cap the decode size: embedded art is often 1500-3000 px and a
+                            // full-res rgba texture of that costs tens of mb. 1024 covers the
+                            // sidebar's 400 px max width even on 2x-dpi screens.
                             Image{id:coverImg;anchors.fill:parent;source:player.cover_art_path;fillMode:Image.Stretch;smooth:true;mipmap:true;visible:status===Image.Ready
                                 asynchronous:true;sourceSize.width:1024;sourceSize.height:1024}
                             Canvas{anchors.centerIn:parent;width:44;height:44;opacity:0.3;visible:coverImg.status!==Image.Ready
@@ -1103,7 +1110,7 @@ ApplicationWindow {
                             border.width:window.coverOnSide?0:1;clip:true
                             Rectangle{anchors.right:parent.right;anchors.top:parent.top;anchors.bottom:parent.bottom
                                 width:1;color:clrBorder;visible:window.coverOnSide&&coverImg.status!==Image.Ready}
-                            // Same source + sourceSize as coverImg so both share one cache entry.
+                            // same source + sourceSize as coverImg so both share one cache entry.
                             Image{anchors.fill:parent;source:player.cover_art_path;fillMode:Image.Stretch;smooth:true;mipmap:true;visible:coverImg.status===Image.Ready
                                 asynchronous:true;sourceSize.width:1024;sourceSize.height:1024}
                             MouseArea{anchors.fill:parent;cursorShape:Qt.PointingHandCursor;onClicked:coverOnSide=false}}
@@ -1117,7 +1124,7 @@ ApplicationWindow {
                     }
                     Rectangle{Layout.fillWidth:true;height:1;color:clrBorder}
 
-                    // ── Lyrics ────────────────────────────────────────────
+                    // lyrics
                     Item {
                         id:lyricsArea;Layout.fillWidth:true;Layout.fillHeight:true;clip:true
                         property var timesArr:{var a=[];for(var i=0;i<player.lyric_times.length;i++)a.push(parseFloat(player.lyric_times[i]));return a}
@@ -1129,12 +1136,12 @@ ApplicationWindow {
                         on_LyricsWatchChanged:{lyricsArea.userScrolled=false;syncScroll(lyricsArea.activeIdx)}
                         onActiveIdxChanged:{if(!userScrolled)syncScroll(activeIdx)}
                         ListView{id:lyricsView;anchors.fill:parent;clip:true;model:player.lyric_lines;spacing:0;flickDeceleration:600;maximumFlickVelocity:6000
-                            // Only the auto-follow glides; wheel scrolling drives
+                            // only the auto-follow glides; wheel scrolling drives
                             // contentY through lyricsWheelAnim instead, so it is
                             // not dragged out to 700 ms per notch.
                             Behavior on contentY{enabled:lyricsArea._autoScrolling;NumberAnimation{duration:700;easing.type:Easing.InOutQuart}}
                             NumberAnimation{id:lyricsWheelAnim;target:lyricsView;property:"contentY";duration:window._wheelDuration;easing.type:Easing.OutCubic;onFinished:target.returnToBounds()}
-                            // Setting contentY directly emits no movement signals,
+                            // setting contentY directly emits no movement signals,
                             // so the resync badge has to be armed here.
                             WheelHandler{acceptedDevices:PointerDevice.Mouse
                                 onWheel:function(ev){lyricsArea.userScrolled=true;window.wheelScroll(lyricsView,lyricsWheelAnim,ev)}}
@@ -1169,7 +1176,7 @@ ApplicationWindow {
                             MouseArea{anchors.fill:parent;cursorShape:Qt.PointingHandCursor;onClicked:{lyricsArea.userScrolled=false;lyricsArea.syncScroll(lyricsArea.activeIdx)}}
                         }
 
-                        // ── Loading / empty overlay ───────────────────────
+                        // loading / empty overlay
                         Item {
                             anchors.centerIn: parent; z: 3
                             visible: player.lyrics_loading || (!player.lyrics_loading && player.lyric_lines.length === 0 && player.total_tracks > 0)
@@ -1193,9 +1200,9 @@ ApplicationWindow {
                         }
                     }
 
-                    // ── Spectrum visualizer ───────────────────────────────
-                    // Sits at the bottom of the sidebar, just under the lyrics.
-                    // Bars read player.vis_bands (0..1 strings) refreshed at
+                    // spectrum visualizer
+                    // sits at the bottom of the sidebar, just under the lyrics.
+                    // bars read player.vis_bands (0..1 strings) refreshed at
                     // ~60 fps by vizTimer; is_playing gates each bar to 0 so
                     // they fall away smoothly on pause.
                     Rectangle{Layout.fillWidth:true;Layout.preferredHeight:(player.is_playing&&window.visualizerOn)?1:0;color:clrBorder;visible:Layout.preferredHeight>0
@@ -1208,8 +1215,8 @@ ApplicationWindow {
                         clip: true
                         Behavior on Layout.preferredHeight { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
 
-                        // Bars keep a roughly constant width, so a wider sidebar
-                        // gets more of them rather than fatter ones. Rust clamps
+                        // bars keep a roughly constant width, so a wider sidebar
+                        // gets more of them rather than fatter ones. rust clamps
                         // the count to 8..64; mirror that here so the Repeater
                         // never asks for bands the backend won't produce.
                         readonly property real _gap: 3
@@ -1219,7 +1226,7 @@ ApplicationWindow {
                         readonly property real _barW: Math.max(2, (width - 24 - (n - 1) * _gap) / n)
                         property var bands: player.vis_bands
 
-                        // Tell the backend how many bands to compute.
+                        // tell the backend how many bands to compute.
                         onNChanged: player.vis_band_count = n
                         Component.onCompleted: player.vis_band_count = n
                         Row {
@@ -1242,7 +1249,7 @@ ApplicationWindow {
                                         height: 2 + parent.v * 22
                                         color: clrText2
                                         opacity: 0.3 + parent.v * 0.6
-                                        // Rust already emits smooth 60fps gravity motion; this only
+                                        // rust already emits smooth 60fps gravity motion; this only
                                         // de-steps between property updates, so keep it to ~1 frame.
                                         Behavior on height { NumberAnimation { duration: 20; easing.type: Easing.Linear } }
                                     }
@@ -1252,11 +1259,11 @@ ApplicationWindow {
                     }
                 }
 
-                // ── Right panel ───────────────────────────────────────────
+                // right panel
                 Item {
                     SplitView.fillWidth: true; SplitView.minimumWidth: 220
 
-                    // ── Path bar (always visible) ─────────────────────────
+                    // path bar (always visible)
                     Rectangle {
                         id: rightPathBar
                         anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
@@ -1266,7 +1273,7 @@ ApplicationWindow {
                         RowLayout {
                             anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 4
 
-                            // Back
+                            // back
                             Rectangle {
                                 width:22;height:22;radius:3
                                 color: backPathHov.containsMouse && (library.can_go_back || _view === "album") ? clrSurf2 : "transparent"
@@ -1278,7 +1285,7 @@ ApplicationWindow {
                                     onClicked: if(library.can_go_back || window._view === "album") window.goBack() }
                             }
 
-                            // Forward
+                            // forward
                             Rectangle {
                                 width:22;height:22;radius:3
                                 color: fwdPathHov.containsMouse && (library.can_go_forward || (_view === "library" && _canGoForwardToAlbum)) ? clrSurf2 : "transparent"
@@ -1290,7 +1297,7 @@ ApplicationWindow {
                                     onClicked: if(library.can_go_forward || (window._view === "library" && window._canGoForwardToAlbum)) window.goForward() }
                             }
 
-                            // Breadcrumbs (relative to library root)
+                            // breadcrumbs (relative to library root)
                             Row {
                                 id: crumbsRow
                                 Layout.fillWidth: true; spacing: 0; clip: true
@@ -1321,7 +1328,7 @@ ApplicationWindow {
                                             anchors.verticalCenter: parent.verticalCenter
                                             spacing: 0
 
-                                            // Fraction slash separator (not before first item)
+                                            // fraction slash separator (not before first item)
                                             Text {
                                                 visible: crumbDelegate.index > 0
                                                 text: "\u2044"
@@ -1353,7 +1360,7 @@ ApplicationWindow {
                                 }
                             }
 
-                            // Eject (visible when viewing the audio CD)
+                            // eject (visible when viewing the audio cd)
                             Rectangle {
                                 width: 22; height: 22; radius: 3
                                 visible: player.drive_list.length > 0 && (_view === "library" || (_view === "album" && _showingCdView))
@@ -1365,20 +1372,22 @@ ApplicationWindow {
                                     cursorShape: Qt.PointingHandCursor; onClicked: player.ejectDisc() }
                             }
 
-                            // Grid/List toggle (only relevant in library view)
+                            // grid/list toggle (only relevant in library view)
                             Row {
                                 spacing: 4; visible: _view === "library"
-                                // Album sort mode (click to cycle). Persisted via
-                                // library.setAlbumSort \u2192 settings.json; _cur re-reads it.
+                                // album sort mode (click to cycle). persisted via
+                                // library.setAlbumSort -> settings.json; _cur re-reads it.
                                 Rectangle {
                                     id: sortToggle
                                     width: sortRow.implicitWidth + 16; height: 22; radius: 3
                                     color: sortHov.containsMouse ? clrSurf2 : "transparent"
                                     Behavior on color { ColorAnimation { duration: 80 } }
-                                    readonly property var _modes: ["artist", "album", "year_desc", "year_asc"]
-                                    readonly property var _labels: ({"artist": "Artist", "album": "Album",
+                                    readonly property var _modes: ["artist", "artist_desc", "album", "album_desc",
+                                                                   "year_desc", "year_asc"]
+                                    readonly property var _labels: ({"artist": "Artist", "artist_desc": "Artist",
+                                                                     "album": "Album", "album_desc": "Album",
                                                                      "year_desc": "Year", "year_asc": "Year"})
-                                    readonly property bool _desc: _cur === "year_desc"
+                                    readonly property bool _desc: _cur.slice(-5) === "_desc"
                                     property string _cur: {
                                         try {
                                             var s = JSON.parse(library.settings_json)
@@ -1387,8 +1396,9 @@ ApplicationWindow {
                                     }
                                     Row {
                                         id: sortRow; anchors.centerIn: parent; spacing: 4
-                                        // Direction arrow: chevron glyph rotated up (ascending /
-                                        // A-Z) or down (newest first), flipping with a short spin.
+                                        // direction arrow: chevron glyph rotated up (ascending: a-z,
+                                        // oldest first) or down (descending: z-a, newest first),
+                                        // flipping with a short spin.
                                         MatIcon {
                                             anchors.verticalCenter: parent.verticalCenter
                                             name: "chevron-right"; size: 11
@@ -1428,7 +1438,7 @@ ApplicationWindow {
                                 }
                             }
 
-                            // Search (far right) — collapsed state of the field below
+                            // search (far right) - collapsed state of the field below
                             Rectangle {
                                 width:22;height:22;radius:3
                                 opacity: window._searchOpen ? 0 : 1
@@ -1442,7 +1452,7 @@ ApplicationWindow {
                             }
                         }
 
-                        // Search field — grows out of the button to cover the whole bar
+                        // search field - grows out of the button to cover the whole bar
                         Rectangle {
                             id: omniSearch
                             anchors.right: parent.right; anchors.top: parent.top
@@ -1451,7 +1461,7 @@ ApplicationWindow {
                             visible: window._searchOpen || width > 33
                             color: clrSurface
                             clip: true
-                            // Opening is the move the user is waiting on, so it is
+                            // opening is the move the user is waiting on, so it is
                             // quick and front-loaded; closing gets out of the way
                             // faster still.
                             Behavior on width {
@@ -1461,7 +1471,7 @@ ApplicationWindow {
                                 }
                             }
 
-                            // Swallows clicks meant for the field, which would
+                            // swallows clicks meant for the field, which would
                             // otherwise reach the path-bar buttons underneath.
                             MouseArea {
                                 anchors.fill: parent
@@ -1489,7 +1499,7 @@ ApplicationWindow {
                                 selectionColor: clrSurf2; selectedTextColor: clrText
                                 opacity: window._searchOpen ? 1 : 0
                                 Behavior on opacity { NumberAnimation { duration: 90 } }
-                                // Results come straight back from the in-memory
+                                // results come straight back from the in-memory
                                 // index, so every keystroke can query directly.
                                 onTextChanged: {
                                     window._searchQuery = text
@@ -1524,19 +1534,19 @@ ApplicationWindow {
                         }
                     }
 
-                    // ── Library browser (visible when _view === "library") ─
+                    // library browser (visible when _view === "library")
                     ColumnLayout {
                         anchors.top: rightPathBar.bottom
                         anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
                         spacing: 0
                         visible: _view === "library"
 
-                        // ── Library grid / list ───────────────────────────
+                        // library grid / list
                         Item {
                             id: libBrowserArea
                             Layout.fillWidth: true; Layout.fillHeight: true
 
-                            // Empty state
+                            // empty state
                             Column {
                                 anchors.centerIn: parent; spacing: 12
                                 visible: !library.is_scanning && libBrowserArea.nodes.length === 0
@@ -1564,7 +1574,7 @@ ApplicationWindow {
                                 }
                             }
 
-                            // Scanning spinner
+                            // scanning spinner
                             Column {
                                 anchors.centerIn: parent; spacing: 10
                                 visible: library.is_scanning && libBrowserArea.nodes.length === 0
@@ -1585,7 +1595,7 @@ ApplicationWindow {
                                 try {
                                     var base = JSON.parse(library.library_nodes)
                                     var atRoot = library.current_path.toString() === "Library" || library.current_path.toString() === ""
-                                    // only an audio CD (or a drive still being read) gets a tile;
+                                    // only an audio cd (or a drive still being read) gets a tile;
                                     // the cd_* properties describe the disc even in file mode.
                                     var cdLoading = window._cdTileLoading
                                     if (atRoot && player.drive_list.length > 0 && (player.cd_present || cdLoading)) {
@@ -1604,7 +1614,7 @@ ApplicationWindow {
                                 } catch(e) { return [] }
                             }
 
-                            // Grid view — flush tiles, 0 padding
+                            // grid view - flush tiles, 0 padding
                             GridView {
                                 id: libGridView
                                 anchors.fill: parent
@@ -1629,31 +1639,31 @@ ApplicationWindow {
                                     required property var modelData
                                     required property int index
 
-                                    // Hover tint
+                                    // hover tint
                                     Rectangle {
                                         anchors.fill: parent
                                         color: gridItemHov.containsMouse ? "#18ffffff" : "transparent"
                                         Behavior on color { ColorAnimation { duration: 100 } }
                                     }
 
-                                    // Tile borders
+                                    // tile borders
                                     // the last column's line would sit against the split handle
                                     Rectangle { anchors.right:parent.right; width:1; height:parent.height; color:clrBorder; z:1
                                         visible: (index + 1) % libGridView.numCols !== 0 }
                                     Rectangle { anchors.bottom:parent.bottom; height:1; width:parent.width; color:clrBorder; z:1 }
 
-                                    // Cover art (square)
+                                    // cover art (square)
                                     Rectangle {
                                         id: tileArt
                                         anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
                                         height: parent.width; color: clrSurf2
                                         Image {
-                                            // No mipmap: at 320 px the texture is already ~1:1 with the
-                                            // tile (cells are 150–300 px), so mipmaps would only add VRAM.
+                                            // no mipmap: at 320 px the texture is already ~1:1 with the
+                                            // tile (cells are 150-300 px), so mipmaps would only add vram.
                                             anchors.fill: parent; fillMode: Image.Stretch; smooth: true
                                             source: modelData.cover_url || ""; visible: status === Image.Ready && modelData.loading !== true
-                                            // Decode off the UI thread at thumbnail size — full-size
-                                            // covers otherwise cost several MB of texture per tile.
+                                            // decode off the ui thread at thumbnail size - full-size
+                                            // covers otherwise cost several mb of texture per tile.
                                             asynchronous: true
                                             sourceSize.width: 320; sourceSize.height: 320
                                         }
@@ -1678,7 +1688,7 @@ ApplicationWindow {
                                         }
                                     }
 
-                                    // CD badge — marks the audio-CD tile apart from library albums
+                                    // cd badge - marks the audio-cd tile apart from library albums
                                     Rectangle {
                                         visible: modelData.kind === "cd"
                                         anchors.left: tileArt.left; anchors.bottom: tileArt.bottom; anchors.margins: 6
@@ -1695,7 +1705,7 @@ ApplicationWindow {
                                         }
                                     }
 
-                                    // Text area
+                                    // text area
                                     Column {
                                         anchors.top: tileArt.bottom; anchors.left: parent.left; anchors.right: parent.right
                                         anchors.bottom: parent.bottom; anchors.topMargin: 6
@@ -1706,7 +1716,7 @@ ApplicationWindow {
                                         Text { width:parent.width;visible:modelData.album_artist.length>0&&modelData.year.length>0;text:modelData.year;color:clrMuted;font.pixelSize:9;font.family:"Segoe UI" }
                                     }
 
-                                    // Pin dot
+                                    // pin dot
                                     Rectangle { visible:modelData.pinned;width:5;height:5;radius:2.5;color:clrAccent;anchors.top:parent.top;anchors.right:parent.right;anchors.margins:5 }
 
                                     MouseArea {
@@ -1741,7 +1751,7 @@ ApplicationWindow {
                                 }
                             }
 
-                            // List view
+                            // list view
                             ListView {
                                 id: libListView
                                 anchors.fill: parent
@@ -1777,7 +1787,7 @@ ApplicationWindow {
                                             Text{width:parent.width;visible:modelData.loading!==true;text:modelData.name;color:clrText;font.pixelSize:12;font.family:"Segoe UI";elide:Text.ElideRight}
                                             Text{width:parent.width;visible:modelData.album_artist.length>0;text:modelData.album_artist;color:clrText2;font.pixelSize:10;font.family:"Segoe UI";elide:Text.ElideRight}
                                         }
-                                        // CD badge — marks the audio-CD row apart from library albums
+                                        // cd badge - marks the audio-cd row apart from library albums
                                         Rectangle{
                                             visible: modelData.kind === "cd"
                                             width: listCdBadgeRow.implicitWidth + 12; height: 18; radius: 3
@@ -1819,7 +1829,7 @@ ApplicationWindow {
                         }
                     }
 
-                    // ── Track list (visible when _view === "album") ────────
+                    // track list (visible when _view === "album")
                     Item {
                         anchors.top: rightPathBar.bottom
                         anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
@@ -1864,7 +1874,7 @@ ApplicationWindow {
                                     acceptedButtons:Qt.LeftButton|Qt.RightButton
                                     onClicked:function(mouse){
                                         if(mouse.button===Qt.RightButton){
-                                            // CD tracks have no path, so nothing to queue.
+                                            // cd tracks have no path, so nothing to queue.
                                             var p=modelData.path||""
                                             if(p!==""){var mp=rowMs.mapToItem(rootBg,mouse.x,mouse.y);itemCtxMenu.openAt(p,"track",mp.x,mp.y,"")}
                                             return
@@ -1881,13 +1891,13 @@ ApplicationWindow {
                     }
                 }
 
-                // ── Queue pane (far right, toggled from under the seek bar) ──
-                // Rows are dragged vertically to reorder; the drop index is the
+                // queue pane (far right, toggled from under the seek bar)
+                // rows are dragged vertically to reorder; the drop index is the
                 // row the delegate's centre has travelled to, and the reorder is
-                // applied in Rust so the TUI sees the same list.
+                // applied in rust so the tui sees the same list.
                 Item {
                     id: queuePane
-                    // Sized as a share of the window like the left sidebar, so it
+                    // sized as a share of the window like the left sidebar, so it
                     // tracks window resizes; dragging the handle rewrites the share.
                     property real _ratio: 240.0/880.0
                     readonly property real openMinW: 180
@@ -1895,8 +1905,8 @@ ApplicationWindow {
                     readonly property real openW:
                         Math.max(openMinW, Math.min(openMaxW, Math.round(window.width*_ratio)))
 
-                    // The slide animates how *open* the pane is, not how wide it
-                    // is. Animating the width instead would tie the slide to
+                    // the slide animates how *open* the pane is, not how wide it
+                    // is. animating the width instead would tie the slide to
                     // openW, so a handle drag would crawl to its new size over
                     // the slide duration -- and the animation would be skipped
                     // outright whenever the width binding happened to re-evaluate
@@ -1906,22 +1916,22 @@ ApplicationWindow {
                     readonly property real paneW: openW * openFrac
                     visible: paneW > 1
 
-                    // The handle is live only once the pane has finished sliding.
+                    // the handle is live only once the pane has finished sliding.
                     readonly property bool _live: window.queueOpen && openFrac > 0.999
                     Connections { target: window; function onQueueOpenChanged() {
-                        // A previous handle drag will have overwritten preferredWidth
+                        // a previous handle drag will have overwritten preferredWidth
                         // with a plain value; rebind so the slide animation drives it.
                         queuePane.SplitView.preferredWidth = Qt.binding(function(){ return queuePane.paneW })
                     }}
 
-                    // Pinned while sliding (min == max makes the handle inert),
+                    // pinned while sliding (min == max makes the handle inert),
                     // released to the real bounds once open.
                     SplitView.preferredWidth: paneW
                     SplitView.minimumWidth: _live ? openMinW : paneW
                     SplitView.maximumWidth: _live ? openMaxW : paneW
                     clip: true
 
-                    // Handle drags land here as width changes. Record the new share,
+                    // handle drags land here as width changes. record the new share,
                     // then rebind preferredWidth once the drag settles so the pane
                     // goes back to following the window.
                     Timer { id: queueDragEnd; interval: 60; onTriggered:
@@ -1940,10 +1950,10 @@ ApplicationWindow {
                     }
                     readonly property int rowH: 44
 
-                    // Fixed-width content pinned to the pane's right edge. The pane's
+                    // fixed-width content pinned to the pane's right edge. the pane's
                     // own width animates, so laying the content out against it would
                     // reflow every frame of the slide and visibly squash the wrapped
-                    // "queue is empty" text. Holding the content at its open width and
+                    // "queue is empty" text. holding the content at its open width and
                     // letting the pane clip turns the same animation into a clean slide.
                     ColumnLayout {
                         id: queueContent
@@ -1994,8 +2004,8 @@ ApplicationWindow {
                                 boundsBehavior: Flickable.StopAtBounds
                                 NumberAnimation{id:queueWheelAnim;target:queueList;property:"contentY";duration:window._wheelDuration;easing.type:Easing.OutCubic;onFinished:target.returnToBounds()}
                                 WheelHandler{acceptedDevices:PointerDevice.Mouse;onWheel:function(ev){window.wheelScroll(queueList,queueWheelAnim,ev)}}
-                                // Reorder state. Rows are never mutated mid-drag —
-                                // the model only changes on release — so each row's
+                                // reorder state. rows are never mutated mid-drag -
+                                // the model only changes on release - so each row's
                                 // offset is a plain binding on these three values and
                                 // the untouched rows animate aside to open a gap.
                                 property int  dragIndex: -1
@@ -2003,11 +2013,11 @@ ApplicationWindow {
                                 property real dragOffset: 0
                                 interactive: dragIndex < 0
 
-                                // Pointer tracking for the drag. Positions are kept in
+                                // pointer tracking for the drag. positions are kept in
                                 // the list's own content space, never relative to the
                                 // row: the row moves as it is dragged, so a row-local
                                 // delta would feed straight back into its own offset.
-                                // Content space also means an autoscroll step moves the
+                                // content space also means an autoscroll step moves the
                                 // row exactly as if the pointer had travelled.
                                 property real dragPressY: 0   // content-space y at press
                                 property real dragViewY:  0   // viewport y of the pointer
@@ -2023,7 +2033,7 @@ ApplicationWindow {
                                         from + Math.round(dragOffset / queuePane.rowH)))
                                 }
 
-                                // Drag past either end to scroll the queue along.
+                                // drag past either end to scroll the queue along.
                                 Timer {
                                     id: qAutoScroll
                                     interval: 16; repeat: true
@@ -2038,7 +2048,7 @@ ApplicationWindow {
                                     }
                                 }
 
-                                // The delegate is a fixed slot the ListView positions;
+                                // the delegate is a fixed slot the ListView positions;
                                 // the visible row is a child that floats inside it, so
                                 // dragging never fights the view's own layout.
                                 delegate: Item {
@@ -2056,7 +2066,7 @@ ApplicationWindow {
                                         readonly property var modelData: qSlot.modelData
                                         readonly property bool held: qSlot.held
 
-                                        // The dragged row tracks the pointer; the rows
+                                        // the dragged row tracks the pointer; the rows
                                         // between it and the drop slot step aside by one
                                         // row to show where it will land.
                                         y: {
@@ -2075,7 +2085,7 @@ ApplicationWindow {
 
                                         color: held ? clrSurf2 : (qRowMa.containsMouse ? "#141414" : "transparent")
                                         Behavior on color { ColorAnimation { duration: 110 } }
-                                        // Lift the dragged row off the list.
+                                        // lift the dragged row off the list.
                                         border.color: held ? clrBorder : "transparent"
                                         border.width: 1
                                         radius: held ? 3 : 0
@@ -2084,7 +2094,7 @@ ApplicationWindow {
 
                                         RowLayout {
                                             anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 6; spacing: 8
-                                            // Grip: drawn rather than an icon, the bundled
+                                            // grip: drawn rather than an icon, the bundled
                                             // symbol font is subset and has no drag glyph.
                                             Column {
                                                 Layout.preferredWidth: 8; spacing: 2
@@ -2117,7 +2127,7 @@ ApplicationWindow {
                                             anchors.fill: parent; anchors.rightMargin: 26
                                             hoverEnabled: true
                                             cursorShape: qSlot.held ? Qt.ClosedHandCursor : Qt.PointingHandCursor
-                                            // Only past a few pixels does this become a
+                                            // only past a few pixels does this become a
                                             // drag, so a plain click still plays the row.
                                             property bool armed: false
 
@@ -2144,7 +2154,7 @@ ApplicationWindow {
                                                     queueList.dragIndex = qSlot.index
                                                 }
                                                 queueList.updateDrag()
-                                                // Ramp the autoscroll up as the pointer
+                                                // ramp the autoscroll up as the pointer
                                                 // pushes further past the edge.
                                                 var edge = 26
                                                 var y = queueList.dragViewY
@@ -2177,12 +2187,12 @@ ApplicationWindow {
                 }
             }
 
-            // ── Seek section ──────────────────────────────────────────────
+            // seek section
             Rectangle{Layout.fillWidth:true;height:1;color:clrBorder;visible:_view==="album"||player.is_playing}
 
             TextMetrics{id:timeMetrics;font.pixelSize:11;font.family:Qt.platform.os==="osx"?"Menlo":"Consolas";text:"00:00"}
 
-            // Single compact row: current time \u00B7 seek slider \u00B7 total time
+            // single compact row: current time / seek slider / total time
             RowLayout{
                 Layout.fillWidth:true;Layout.leftMargin:14;Layout.rightMargin:14;Layout.topMargin:8;Layout.bottomMargin:6
                 spacing:10;visible:_view==="album"||player.is_playing
@@ -2195,7 +2205,7 @@ ApplicationWindow {
                             Rectangle{id:seekFill;width:parent.width*seekSlider.visualPosition;height:parent.height;radius:1;color:clrAccent
                                 Behavior on width{enabled:!seekSlider.pressed;NumberAnimation{duration:60;easing.type:Easing.OutSine}}
                                 Rectangle{anchors.top:parent.top;anchors.left:parent.left;anchors.right:parent.right;height:1;radius:1;color:"#ffffff";opacity:0.08}}
-                            // Ghost fill spanning playhead to previewed point.
+                            // ghost fill spanning playhead to previewed point.
                             Rectangle{
                                 visible:seekSlider.previewOn&&!seekSlider.pressed
                                 x:Math.min(seekFill.width,seekSlider.previewX)
@@ -2209,32 +2219,32 @@ ApplicationWindow {
                         Behavior on color{ColorAnimation{duration:80}}
                         Rectangle{anchors.fill:parent;anchors.margins:-1;radius:parent.radius+1;color:"transparent";border.color:"#ffffff";border.width:1;opacity:0.08}}
 
-                    // ── Hover scrub preview ──────────────────────────────
-                    // The handle tracks playback, not the cursor, so the time
+                    // hover scrub preview
+                    // the handle tracks playback, not the cursor, so the time
                     // under the pointer needs its own readout.
                     HoverHandler{id:seekHover;acceptedDevices:PointerDevice.Mouse;cursorShape:Qt.PointingHandCursor}
                     readonly property real hoverFrac:Math.max(0,Math.min(1,seekHover.point.position.x/Math.max(1,seekSlider.availableWidth)))
-                    // While dragging, follow the handle: the pointer can leave
+                    // while dragging, follow the handle: the pointer can leave
                     // the slider mid-drag and the preview should still lead it.
                     readonly property real previewTime:pressed?value:hoverFrac*player.total_time
                     readonly property bool previewOn:(seekHover.hovered||pressed)&&player.total_tracks>0&&player.total_time>0
 
-                    // Position being previewed, in pixels along the track.
+                    // position being previewed, in pixels along the track.
                     readonly property real previewX:(pressed?visualPosition:hoverFrac)*availableWidth
 
                     Rectangle{
                         id:seekTip
                         visible:opacity>0.01
                         opacity:seekSlider.previewOn?1.0:0.0
-                        // Rises slightly as it fades in rather than just appearing.
+                        // rises slightly as it fades in rather than just appearing.
                         y:Math.round(-height-(seekSlider.previewOn?8:4))
                         Behavior on opacity{NumberAnimation{duration:110}}
                         Behavior on y{NumberAnimation{duration:140;easing.type:Easing.OutCubic}}
                         z:100
                         width:Math.round(seekTipText.implicitWidth)+16;height:20
                         color:clrBg;border.color:clrBorder;border.width:1
-                        // Clamped so the bubble stays over the track at both ends.
-                        // Rounded so the 1px border lands on whole pixels instead
+                        // clamped so the bubble stays over the track at both ends.
+                        // rounded so the 1px border lands on whole pixels instead
                         // of straddling two rows and reading as 2px.
                         x:Math.round(Math.max(0,Math.min(seekSlider.width-width,seekSlider.previewX-width/2)))
                         Text{id:seekTipText;anchors.centerIn:parent;text:formatTime(seekSlider.previewTime)
@@ -2244,13 +2254,13 @@ ApplicationWindow {
                 Text{text:formatTime(player.total_time);color:clrText2;font.pixelSize:11;font.family:Qt.platform.os==="osx"?"Menlo":"Consolas";Layout.preferredWidth:timeMetrics.advanceWidth;horizontalAlignment:Text.AlignRight}
             }
 
-            // ── Transport + volume ────────────────────────────────────────
+            // transport + volume
             Rectangle{Layout.fillWidth:true;height:1;color:clrBorder}
             Item{
                 Layout.fillWidth:true;Layout.leftMargin:14;Layout.rightMargin:14;Layout.topMargin:10;Layout.bottomMargin:12
                 Layout.preferredHeight:38
-                // ── Now playing: title / artist; click → current song ──
-                // Anchored rather than laid out: a RowLayout hands surplus width
+                // now playing: title / artist; click -> current song
+                // anchored rather than laid out: a RowLayout hands surplus width
                 // to its fillWidth children in proportion to their preferred size,
                 // which would leave the transport sitting between its neighbours
                 // instead of on the window's centre line.
@@ -2295,7 +2305,7 @@ ApplicationWindow {
                     }
                 }
 
-                // ── Transport, centred ────────────────────────────────────
+                // transport, centred
                 RowLayout{
                     id:transportRow
                     anchors.horizontalCenter:parent.horizontalCenter
@@ -2317,7 +2327,7 @@ ApplicationWindow {
                             onClicked:{var wp=player.is_playing;player.nextTrack();if(wp)player.playPause()}}}
                 }
 
-                // ── Shuffle / repeat / queue / volume, right-aligned ──────
+                // shuffle / repeat / queue / volume, right-aligned
                 RowLayout{
                     id:rightControls
                     anchors.right:parent.right; anchors.verticalCenter:parent.verticalCenter
@@ -2342,7 +2352,7 @@ ApplicationWindow {
                     MatIcon{anchors.centerIn:parent;name:"queue";size:16
                         color:window.queueOpen||queueBtnMa.containsMouse?clrText:clrText2
                         Behavior on color{ColorAnimation{duration:90}}}
-                    // Marker so a queue built while the pane is shut is still visible.
+                    // marker so a queue built while the pane is shut is still visible.
                     Rectangle{visible:!window.queueOpen&&player.queue_len>0
                         anchors.right:parent.right;anchors.top:parent.top;anchors.rightMargin:3;anchors.topMargin:3
                         width:5;height:5;radius:2.5;color:clrAccent}
@@ -2370,7 +2380,7 @@ ApplicationWindow {
             }
         }
 
-        // ── Item context menu (right-click on albums & folders) ─────────
+        // item context menu (right-click on albums & folders)
         Rectangle {
             id: itemCtxMenu
             visible: false; z: 200
@@ -2391,7 +2401,7 @@ ApplicationWindow {
                 var merged  = (sj.merged_folders  || []).some(function(p){ return p === path })
                 var ign     = (sj.ignored_folders || []).some(function(p){ return p === path })
                 var items = [{label: "Add to queue", action: "queue"}]
-                // A single track only offers queueing; pin/merge/ignore are
+                // a single track only offers queueing; pin/merge/ignore are
                 // folder-and-album concepts.
                 if (kind !== "track") {
                     items.push(pinned ? {label: "Unpin",   action: "unpin"} : {label: "Pin",    action: "pin"})
@@ -2424,7 +2434,7 @@ ApplicationWindow {
                             onClicked: {
                                 itemCtxMenu.visible = false
                                 if (modelData.action === "queue") {
-                                    // An album resolves through its id (several albums
+                                    // an album resolves through its id (several albums
                                     // can share a directory); a folder queues by path.
                                     if (itemCtxMenu.targetKind === "album" && itemCtxMenu.targetId !== "")
                                         player.enqueuePaths(library.albumTrackPaths(itemCtxMenu.targetId))
@@ -2446,7 +2456,7 @@ ApplicationWindow {
             acceptedButtons: Qt.LeftButton | Qt.RightButton; onClicked: itemCtxMenu.visible = false
         }
 
-        // ── No disc popup ─────────────────────────────────────────────────
+        // no disc popup
         Popup {
             id: noDiscPopup
             anchors.centerIn: parent; z: 300
@@ -2458,7 +2468,7 @@ ApplicationWindow {
             }
         }
 
-        // ── Music dir popup ───────────────────────────────────────────────
+        // music dir popup
         Rectangle {
             id: musicDirPopup
             anchors.centerIn: parent; z: 300
@@ -2494,7 +2504,7 @@ ApplicationWindow {
             }
         }
 
-        // ── Scan progress toast ───────────────────────────────────────────
+        // scan progress toast
         Rectangle {
             anchors.left: parent.left; anchors.bottom: parent.bottom; anchors.margins: 12; z: 250
             visible: library.is_scanning && library.scan_message.length > 0

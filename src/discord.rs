@@ -9,15 +9,15 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const CLIENT_ID: &str = "1513290345322905781";
-/// Cloudflare worker that holds a 128×128 cover for an hour so Discord can fetch it.
+/// cloudflare worker that holds a 128x128 cover for an hour so discord can fetch it.
 const COVER_UPLOAD_URL: &str = "https://cover.kanaefm.workers.dev/upload";
-/// Slightly under the host's one-hour expiry, so a cached URL never outlives the image.
+/// slightly under the host's one-hour expiry, so a cached url never outlives the image.
 const COVER_CACHE_TTL: Duration = Duration::from_secs(58 * 60);
 const SEEK_THRESHOLD_SECS: f64 = 3.0;
-/// Backoff before each retry of a failed cover upload. Length caps the attempts.
+/// backoff before each retry of a failed cover upload. length caps the attempts.
 const COVER_RETRY_BACKOFF_SECS: [u64; 3] = [5, 20, 60];
 
-/// A finished upload, tagged with the request it answers.
+/// a finished upload, tagged with the request it answers.
 struct CoverResult {
     gen: u64,
     url: Option<String>,
@@ -27,7 +27,7 @@ pub struct TrackInfo {
     pub title:         String,
     pub artist:        String,
     pub album:         String,
-    /// Local filesystem path or http(s):// URL for cover art.
+    /// local filesystem path or http(s):// url for cover art.
     pub cover_url:     String,
     pub position_secs: f64,
     pub duration_secs: f64,
@@ -38,23 +38,23 @@ pub struct DiscordPresence {
     client:              Client<Arc<InnerClient>>,
     connected:           bool,
     last_reconnect:      Instant,
-    // Cover art upload + 1-hour cache
+    // cover art upload + 1-hour cache
     cached_cover_src: String,
     cached_cover_url: String,
     cover_cache:      HashMap<String, (String, Instant)>,
     cover_slot:       Arc<Mutex<Option<CoverResult>>>,
-    /// Bumped per upload request; results carrying a stale gen are discarded.
+    /// bumped per upload request; results carrying a stale gen are discarded.
     cover_gen:        u64,
     cover_inflight:   bool,
     cover_attempts:   usize,
     cover_retry_at:   Option<Instant>,
-    // Change detection — only call IPC when something actually changes
+    // change detection - only call ipc when something actually changes
     last_title:          String,
     last_artist:         String,
     last_album:          String,
     last_is_playing:     bool,
     last_pushed_cover:   String,
-    // Seek detection
+    // seek detection
     last_push_time:      Instant,
     last_pushed_position: f64,
 }
@@ -93,7 +93,7 @@ impl DiscordPresence {
         }
     }
 
-    /// Upload the current cover in the background, tagged with a fresh gen.
+    /// upload the current cover in the background, tagged with a fresh gen.
     fn spawn_cover_upload(&mut self) {
         let src = self.cached_cover_src.clone();
         if src.is_empty() { return; }
@@ -109,16 +109,16 @@ impl DiscordPresence {
         });
     }
 
-    /// Poll the background upload thread; returns true if the cover URL changed.
+    /// poll the background upload thread; returns true if the cover url changed.
     fn poll_cover(&mut self) -> bool {
         let Some(result) = self.cover_slot.lock().unwrap().take() else { return false };
-        // An upload for a cover we've since moved off of. Dropping it keeps its
-        // URL from being cached under — or pushed for — the current track.
+        // an upload for a cover we've since moved off of. dropping it keeps its
+        // url from being cached under - or pushed for - the current track.
         if result.gen != self.cover_gen { return false; }
         self.cover_inflight = false;
 
         let Some(url) = result.url else {
-            // Failed. Schedule a retry so one flaky upload doesn't cost the
+            // failed. schedule a retry so one flaky upload doesn't cost the
             // cover for as long as this track stays loaded.
             self.cover_retry_at = COVER_RETRY_BACKOFF_SECS
                 .get(self.cover_attempts - 1)
@@ -139,7 +139,7 @@ impl DiscordPresence {
         true
     }
 
-    /// Call every tick with current player state.
+    /// call every tick with current player state.
     pub fn update(&mut self, info: Option<TrackInfo>) {
         let cover_arrived = self.poll_cover();
 
@@ -180,13 +180,13 @@ impl DiscordPresence {
                 if self.cached_cover_url.is_empty() { self.spawn_cover_upload(); }
             }
         } else if self.cached_cover_url.is_empty() && !self.cover_inflight {
-            // Retry an earlier failure once its backoff expires.
+            // retry an earlier failure once its backoff expires.
             if self.cover_retry_at.is_some_and(|at| Instant::now() >= at) {
                 self.spawn_cover_upload();
             }
         }
 
-        // Detect seeks: position jumped more than threshold from expected progression.
+        // detect seeks: position jumped more than threshold from expected progression.
         let seek_detected = info.is_playing
             && !self.last_title.is_empty()
             && info.title == self.last_title
@@ -196,7 +196,7 @@ impl DiscordPresence {
                 (info.position_secs - expected).abs() > SEEK_THRESHOLD_SECS
             };
 
-        // Only push IPC when something meaningful changed.
+        // only push ipc when something meaningful changed.
         let dirty = seek_detected
             || cover_arrived
             || info.title      != self.last_title
@@ -223,9 +223,9 @@ impl DiscordPresence {
         } else {
             "Kanae".to_string()
         };
-        // Discord Rich Presence has no dedicated "paused" state, so we mark it
+        // discord rich presence has no dedicated "paused" state, so we mark it
         // two ways: drop the progress-bar timestamps (below) and tag the state
-        // line — otherwise a paused track is indistinguishable from one that
+        // line - otherwise a paused track is indistinguishable from one that
         // simply has no known duration.
         if !info.is_playing {
             state.push_str(" • Paused");
@@ -236,9 +236,9 @@ impl DiscordPresence {
             .details(title)
             .state(state);
 
-        // Timestamps: start = when this track "began" in Unix time,
-        // end = when it will finish. Both together give Discord a progress bar.
-        // Only sent while playing — a live countdown next to a paused track would
+        // timestamps: start = when this track "began" in unix time,
+        // end = when it will finish. both together give discord a progress bar.
+        // only sent while playing - a live countdown next to a paused track would
         // keep ticking, so paused presence carries no timestamps at all.
         if info.is_playing && info.duration_secs > 0.0 {
             let now = SystemTime::now()
@@ -253,10 +253,10 @@ impl DiscordPresence {
         if !self.cached_cover_url.is_empty() {
             let tooltip = if info.album.is_empty() { None } else { Some(info.album.as_str()) };
             let mut assets = Assets::new().large_image(self.cached_cover_url.as_str(), tooltip);
-            // A small pause badge over the cover reinforces the paused state for
-            // viewers. "paused" is an asset key registered in the Discord app's
-            // Rich Presence art assets; if it isn't present Discord just ignores
-            // it, and the " • Paused" state tag still conveys the status.
+            // a small pause badge over the cover reinforces the paused state for
+            // viewers. "paused" is an asset key registered in the discord app's
+            // rich presence art assets; if it isn't present discord just ignores
+            // it, and the "Paused" state tag still conveys the status.
             if !info.is_playing {
                 assets = assets.small_image("paused", Some("Paused"));
             }
@@ -270,7 +270,7 @@ impl DiscordPresence {
     }
 }
 
-/// Convert a file:// URL or plain path to a filesystem path; keep http(s) URLs as-is.
+/// convert a file:// url or plain path to a filesystem path; keep http(s) urls as-is.
 fn normalize_cover_path(url: &str) -> String {
     if url.is_empty() { return String::new(); }
     if url.starts_with("http://") || url.starts_with("https://") {
@@ -288,7 +288,7 @@ fn normalize_cover_path(url: &str) -> String {
     url.to_string()
 }
 
-/// Load cover art (file path or HTTP URL), resize to 128×128, upload to the
+/// load cover art (file path or http url), resize to 128x128, upload to the
 /// kanae image host, which serves it for one hour.
 fn upload_cover_art(path_or_url: &str) -> Option<String> {
     eprintln!("[discord] uploading cover: {}", path_or_url);

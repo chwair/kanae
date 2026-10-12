@@ -11,20 +11,16 @@ short_description = "CD and file music player"
 long_description = "Kanae is a Qt/QML + Rust music player supporting CDs and local files."
 
 [features]
-# Build variants
-# - gui:    Qt/QML frontend (default)
-# - tui:    ratatui terminal frontend (default)
-# - hybrid: both (default — cargo build with no flags)
-# To build GUI-only:  cargo build --no-default-features --features gui
-# To build TUI-only:  cargo build --no-default-features --features tui
+# build variants: gui (qt/qml), tui (ratatui) or hybrid (both, the default). for gui-only,
+# use --no-default-features --features gui; for tui-only, use --no-default-features --features tui
 default = ["gui", "tui"]
 gui = ["dep:cxx", "dep:cxx-qt", "dep:cxx-qt-lib", "dep:rfd"]
 tui = ["dep:ratatui", "dep:crossterm", "dep:unicode-width", "dep:ratatui-image"]
 
 [dependencies]
-# ── Shared ────────────────────────────────────────────────────────────────────
+# shared
 cd-da-reader = "0.4.1"
-# Output-only: kanae decodes with symphonia itself, so rodio's decoder features
+# output-only: kanae decodes with symphonia itself, so rodio's decoder features
 # (which would pull a second, older symphonia tree) are disabled.
 rodio = { version = "0.22", default-features = false, features = ["playback", "dither"] }
 sha1 = "0.10"
@@ -35,19 +31,19 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 lofty = "0.22"
 rayon = "1"
-# "all" = every codec/container/metadata reader (0.6 adds APE decode);
-# opt-simd enables SSE/AVX/NEON DSP.
+# "all" = every codec/container/metadata reader (0.6 adds ape decode);
+# opt-simd enables sse/avx/neon dsp.
 symphonia = { version = "0.6", features = ["all", "opt-simd"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
-# ── GUI-only ─────────────────────────────────────────────────────────────────
+# gui-only
 cxx          = { version = "1.0",  optional = true }
 cxx-qt       = { version = "0.8",  optional = true }
 cxx-qt-lib   = { version = "0.8",  features = ["qt_full"], optional = true }
 rfd          = { version = "0.15", optional = true }
 souvlaki     = "0.8.3"
 
-# ── TUI-only ──────────────────────────────────────────────────────────────────
+# tui-only
 ratatui      = { version = "0.30", optional = true }
 crossterm    = { version = "0.29", features = ["event-stream"], optional = true }
 unicode-width = { version = "0.2", optional = true }
@@ -55,7 +51,7 @@ ratatui-image = { version = "10",  default-features = false, features = ["crosst
 kakasi = "0.1.0"
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = ["winuser", "processthreadsapi", "fileapi", "winioctl", "ioapiset", "handleapi", "wincon", "consoleapi", "processenv", "winbase", "winnt"] }
+winapi = { version = "0.3", features = ["winuser", "processthreadsapi", "fileapi", "winioctl", "ioapiset", "handleapi", "wincon", "consoleapi", "processenv", "winbase", "winnt", "dwmapi"] }
 winreg = "0.52"
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -70,5 +66,5 @@ strip = "symbols"
 lto = false
 
 [build-dependencies]
-# Always present; only invoked when the 'gui' feature is active (see build.rs).
+# always present; only invoked when the 'gui' feature is active (see build.rs).
 cxx-qt-build = { version = "0.8", features = ["link_qt_object_files"] }

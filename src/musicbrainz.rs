@@ -89,10 +89,10 @@ pub struct AlbumMetadata {
     pub track_titles: Vec<String>,
     pub track_artists: Vec<String>,
     pub cover_art_url: Option<String>,
-    /// Position of this disc within the release (1-based), e.g. disc 2 of a
-    /// 3-CD box set. 0 when unknown.
+    /// position of this disc within the release (1-based), e.g. disc 2 of a
+    /// 3-cd box set. 0 when unknown.
     pub disc_number: u32,
-    /// Total number of media in the release. 0 when unknown.
+    /// total number of media in the release. 0 when unknown.
     pub disc_count: u32,
 }
 
@@ -121,7 +121,7 @@ pub fn lookup_metadata(toc: &Toc) -> Option<AlbumMetadata> {
     );
     eprintln!("[mb] looking up disc ID {}", disc_id);
 
-    // Some(None) is a definite miss (disc not in MusicBrainz); retrying a
+    // Some(None) is a definite miss (disc not in musicbrainz); retrying a
     // 404 would only hold the disc load up for a few more seconds.
     let response: MbResponse = retry(3, || {
         match ureq::get(&url)
@@ -152,9 +152,9 @@ pub fn lookup_metadata(toc: &Toc) -> Option<AlbumMetadata> {
         .to_string();
     let artist = parse_artist_credit(release.artist_credit.as_deref());
 
-    // Pick the medium that actually contains our disc ID — on multi-CD
+    // pick the medium that actually contains our disc id - on multi-cd
     // releases the first medium would otherwise give the wrong track list.
-    // Fall back to a "CD"-format medium, then the first medium.
+    // fall back to a "CD"-format medium, then the first medium.
     let media = release.media.as_deref()?;
     let cd_medium = media
         .iter()
@@ -242,9 +242,9 @@ fn fetch_cover_art(release_id: &str) -> Option<String> {
                 match resp.body_mut().read_to_vec() {
                     Ok(bytes) if !bytes.is_empty() => {
                         let ext = if bytes.starts_with(b"\x89PNG") { "png" } else { "jpg" };
-                        // Per-release filename: a shared one makes every disc's cover
+                        // per-release filename: a shared one makes every disc's cover
                         // look like the same source to consumers that key off the path
-                        // (Discord's upload cache, Qt's image cache).
+                        // (discord's upload cache, qt's image cache).
                         let path = std::env::temp_dir()
                             .join(format!("kanae_cover_{}.{}", release_id, ext));
                         match std::fs::write(&path, &bytes) {

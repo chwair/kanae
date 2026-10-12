@@ -31,8 +31,8 @@ pub struct SmtcHandle {
     commands: Arc<Mutex<Vec<SmtcCommand>>>,
 }
 
-// SAFETY: souvlaki's Windows backend uses IAgileObject COM — safe as long as
-// all methods are called on the Qt main thread.
+// safety: souvlaki's windows backend uses IAgileObject com - safe as long as
+// all methods are called on the qt main thread.
 unsafe impl Send for SmtcHandle {}
 unsafe impl Sync for SmtcHandle {}
 
@@ -41,19 +41,13 @@ impl SmtcHandle {
         match u {
             SmtcUpdate::Metadata { title, artist, album, cover_url, duration } => {
                 eprintln!("[smtc] set_metadata {:?} – {:?}", artist, title);
-                // Pass http(s) URLs as-is. Local covers need per-platform shapes
-                // (souvlaki 0.8.3 behaviour):
-                // - Windows strips "file://" and feeds the rest to
-                //   GetFileFromPathAsync, so it must be "file://" + a native
-                //   C:\ path — "file:///C:/…" yields the bogus "path too long".
-                // - macOS + Linux (MPRIS) both feed the string to
-                //   `[NSURL URLWithString:]` / GIO, which require a real,
-                //   percent-encoded `file://` URI *with* a scheme. A bare path
-                //   (`/Users/…`) produces a nil NSURL → nil NSImage, and
-                //   souvlaki then aborts the process from its async artwork task
-                //   (non-unwinding panic in `msg_send!(image, size)`). We also
-                //   only emit the URL when the file actually exists, so a missing
-                //   cover can never reach that nil-image abort path.
+                // pass http(s) urls as-is. local covers need per-platform shapes (souvlaki 0.8.3 behaviour):
+                // windows strips "file://" and feeds the rest to GetFileFromPathAsync,
+                // so it needs "file://" plus a native drive path, since
+                // "file:///C:/..." yields "path too long".
+                // macos and linux (mpris) need a percent-encoded file:// uri with a
+                // scheme, otherwise souvlaki gets a nil NSImage and aborts the process,
+                // so local urls are only emitted when the file exists.
                 let normalised: Option<String> = cover_url.as_deref().and_then(|u| {
                     if u.starts_with("http") {
                         Some(u.to_string())
@@ -63,7 +57,7 @@ impl SmtcHandle {
                         #[cfg(not(target_os = "windows"))]
                         { file_uri_if_exists(&format!("/{}", p)) }
                     } else if u.starts_with('/') {
-                        // Bare absolute POSIX path.
+                        // bare absolute posix path.
                         #[cfg(target_os = "windows")]
                         { None }
                         #[cfg(not(target_os = "windows"))]
@@ -84,8 +78,8 @@ impl SmtcHandle {
                     Ok(()) => eprintln!("[smtc] set_metadata OK"),
                     Err(e) => {
                         eprintln!("[smtc] set_metadata ERR: {:?}", e);
-                        // If cover loading caused the failure, retry without it so
-                        // text metadata still appears in SMTC.
+                        // if cover loading caused the failure, retry without it so
+                        // text metadata still appears in smtc.
                         if normalised.is_some() {
                             eprintln!("[smtc] retrying without cover art");
                             if let Err(e2) = self.controls.set_metadata(MediaMetadata {
@@ -126,12 +120,10 @@ impl SmtcHandle {
     }
 }
 
-/// Build a `file://` URI for an absolute path, but only if the file exists.
-///
-/// Returning `None` for a missing file is a safety guard: souvlaki 0.8.3's
-/// macOS backend loads cover art on a background GCD queue and does not
-/// null-check the resulting `NSImage`, so a path it can't read leads to a
-/// `msg_send!(nil, size)` that aborts the whole process (non-unwinding panic).
+/// build a `file://` uri for an absolute path, but only if the file exists.
+/// a missing file returns `None` as a safety guard: souvlaki 0.8.3's macos backend
+/// loads cover art on a background gcd queue without null-checking the `NSImage`,
+/// so an unreadable path aborts the process (non-unwinding panic).
 #[cfg(not(target_os = "windows"))]
 fn file_uri_if_exists(abs_path: &str) -> Option<String> {
     if std::path::Path::new(abs_path).is_file() {
@@ -142,8 +134,8 @@ fn file_uri_if_exists(abs_path: &str) -> Option<String> {
     }
 }
 
-/// Percent-encode a filesystem path for use inside a file:// URI.
-/// Keeps `/` and `:`, encodes everything else outside the RFC 3986 unreserved
+/// percent-encode a filesystem path for use inside a file:// uri.
+/// keeps `/` and `:`, encodes everything else outside the rfc 3986 unreserved
 /// set (cover paths are never pre-encoded, so `%` is encoded too).
 #[cfg(not(target_os = "windows"))]
 fn encode_uri_path(path: &str) -> String {
@@ -158,26 +150,26 @@ fn encode_uri_path(path: &str) -> String {
     out
 }
 
-/// On macOS TUI mode: briefly pump the main run loop so MPRemoteCommandCenter
-/// can deliver queued media-key callbacks. Safe to call every tick; returns
+/// on macos tui mode: briefly pump the main run loop so MPRemoteCommandCenter
+/// can deliver queued media-key callbacks. safe to call every tick; returns
 /// immediately when there is nothing pending.
 pub fn pump_runloop() {
     #[cfg(target_os = "macos")]
     unsafe {
         use objc::{class, msg_send, sel, sel_impl};
         use objc::runtime::Object;
-        // [NSDate dateWithTimeIntervalSinceNow: 0.0]  →  returns "now"
+        // [NSDate dateWithTimeIntervalSinceNow: 0.0]  ->  returns "now"
         let date_cls = class!(NSDate);
         let now: *mut Object = msg_send![date_cls, dateWithTimeIntervalSinceNow: 0.0f64];
-        // [[NSRunLoop mainRunLoop] runUntilDate: now]  →  drains pending work, non-blocking
+        // [[NSRunLoop mainRunLoop] runUntilDate: now]  ->  drains pending work, non-blocking
         let rl_cls = class!(NSRunLoop);
         let rl: *mut Object = msg_send![rl_cls, mainRunLoop];
         let _: () = msg_send![rl, runUntilDate: now];
     }
 }
 
-/// On macOS: initialise NSApplication once so the process is registered with
-/// the system media server (required for Now Playing / MPRemoteCommandCenter).
+/// on macos: initialise NSApplication once so the process is registered with
+/// the system media server (required for now playing / MPRemoteCommandCenter).
 #[cfg(target_os = "macos")]
 fn ensure_nsapplication(regular_app: bool) {
     use std::sync::Once;
@@ -187,8 +179,8 @@ fn ensure_nsapplication(regular_app: bool) {
         use objc::runtime::Object;
         let cls = class!(NSApplication);
         let app: *mut Object = msg_send![cls, sharedApplication];
-        // Regular (0): normal GUI app, visible in Dock.
-        // Accessory (1): background/accessory app, no Dock icon/window binding.
+        // regular (0): normal gui app, visible in dock.
+        // accessory (1): background/accessory app, no dock icon/window binding.
         let policy = if regular_app { 0i64 } else { 1i64 };
         let _: () = msg_send![app, setActivationPolicy: policy];
         eprintln!(
@@ -350,7 +342,7 @@ fn find_main_hwnd() -> usize {
     if found != 0 {
         return found;
     }
-    // Fallback for TUI mode (no Qt window): use the console window.
+    // fallback for tui mode (no qt window): use the console window.
     let console_hwnd = unsafe { winapi::um::wincon::GetConsoleWindow() };
     if !console_hwnd.is_null() {
         eprintln!("[smtc] using console HWND 0x{:X} as fallback", console_hwnd as usize);

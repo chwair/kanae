@@ -1,21 +1,18 @@
-//! In-memory play queue shared by the GUI and TUI frontends.
-//!
-//! Entries play ahead of whatever the album/disc would have played next; once
-//! the queue drains, playback returns to the interrupted album. The queue is
-//! deliberately not persisted — it is a scratch list for the current session.
+//! in-memory play queue shared by the gui and tui frontends.
+//! not persisted; playback returns to the interrupted album once it drains.
 
 use std::path::PathBuf;
 
 use crate::file_player::LocalTrack;
 
-/// One queued song. Only local files can be queued; a CD track has no path
+/// one queued song. only local files can be queued; a cd track has no path
 /// that survives the disc being swapped.
 #[derive(Clone)]
 pub struct QueueEntry {
     pub path: PathBuf,
     pub title: String,
     pub artist: String,
-    /// Pre-formatted mm:ss, so both frontends render the same string.
+    /// pre-formatted mm:ss, so both frontends render the same string.
     pub duration: String,
 }
 
@@ -56,9 +53,9 @@ impl Queue {
         self.entries.is_empty()
     }
 
-    /// Append every audio file found under `paths`. Accepts files and folders
+    /// append every audio file found under `paths`. accepts files and folders
     /// alike, so an album, a folder or a single song all go through here.
-    /// Returns how many entries were added.
+    /// returns how many entries were added.
     pub fn extend_from_paths(&mut self, paths: &[String]) -> usize {
         let tracks = crate::file_player::collect_files_from_paths(paths);
         let added = tracks.len();
@@ -70,13 +67,13 @@ impl Queue {
         if self.entries.is_empty() { None } else { Some(self.entries.remove(0)) }
     }
 
-    /// Remove and return one entry, ignoring an out-of-range index.
+    /// remove and return one entry, ignoring an out-of-range index.
     pub fn remove(&mut self, index: usize) -> Option<QueueEntry> {
         if index < self.entries.len() { Some(self.entries.remove(index)) } else { None }
     }
 
-    /// Move an entry to another position, clamping the destination. Used by the
-    /// GUI's drag-and-drop and the TUI's move up/down keys.
+    /// move an entry to another position, clamping the destination. used by the
+    /// gui's drag-and-drop and the tui's move up/down keys.
     pub fn move_entry(&mut self, from: usize, to: usize) {
         if from >= self.entries.len() || from == to {
             return;
@@ -90,7 +87,7 @@ impl Queue {
         self.entries.clear();
     }
 
-    /// The queue as JSON for the GUI, mirroring `album_tracks_json`.
+    /// the queue as json for the gui, mirroring `album_tracks_json`.
     pub fn to_json(&self) -> String {
         let rows: Vec<serde_json::Value> = self.entries.iter()
             .map(|e| serde_json::json!({

@@ -35,7 +35,7 @@ impl LocalTrack {
     }
 }
 
-/// Collect audio tracks from a mixed list of file and folder paths.
+/// collect audio tracks from a mixed list of file and folder paths.
 pub fn collect_files_from_paths(input_paths: &[String]) -> Vec<LocalTrack> {
     let mut tracks = Vec::new();
     for p in input_paths {
@@ -65,17 +65,16 @@ fn collect_dir(dir: &Path) -> Vec<LocalTrack> {
     files.iter().map(|f| read_file_metadata(f)).collect()
 }
 
-/// The album a file belongs to, as the sibling audio files in its directory
-/// that share its album tag, plus the file's index within them.
-///
-/// Falls back to the file on its own when it has no album siblings, so an
-/// untagged loose file still plays.
+/// the album a file belongs to, as the sibling audio files in its directory
+/// that share its album tag, plus the file's index within them. falls back to
+/// the file on its own when it has no album siblings, so an untagged loose
+/// file still plays.
 pub fn album_context_for(path: &Path) -> (Vec<LocalTrack>, i32) {
     let this = read_file_metadata(path);
     let Some(dir) = path.parent() else { return (vec![this], 0) };
 
     let siblings = collect_files_from_paths(&[dir.to_string_lossy().into_owned()]);
-    // Directories can hold several albums; keep only the matching one. An empty
+    // directories can hold several albums; keep only the matching one. an empty
     // album tag means the track is a standalone single.
     let album: Vec<_> = if this.album.is_empty() {
         Vec::new()
@@ -88,11 +87,9 @@ pub fn album_context_for(path: &Path) -> (Vec<LocalTrack>, i32) {
     }
 }
 
-/// Track metadata without any cover-art work.
-///
-/// Symphonia handles the common formats on its own, so lofty is only opened
-/// when symphonia came back without a duration or a title. That keeps the
-/// usual case to a single parse per file instead of two.
+/// track metadata without any cover-art work. symphonia handles the common
+/// formats on its own, so lofty is only opened when symphonia came back without
+/// a duration or a title, keeping the usual case to a single parse per file.
 pub fn read_file_metadata_light(path: &Path) -> LocalTrack {
     use symphonia::core::{
         formats::{probe::Hint, FormatOptions, TrackType},
@@ -108,7 +105,7 @@ pub fn read_file_metadata_light(path: &Path) -> LocalTrack {
         ..Default::default()
     };
 
-    // ── Symphonia: duration + text tags ──────────────────────────────────
+    // symphonia: duration + text tags
     if let Ok(file) = std::fs::File::open(path) {
         let mss = MediaSourceStream::new(Box::new(file), Default::default());
         let mut hint = Hint::new();
@@ -127,7 +124,7 @@ pub fn read_file_metadata_light(path: &Path) -> LocalTrack {
                 }
             }
 
-            // Consume media-level metadata (ID3, Vorbis Comment, APE, etc.)
+            // consume media-level metadata (id3, vorbis comment, ape, etc.)
             if let Some(rev) = reader.metadata().skip_to_latest() {
                 for tag in &rev.media.tags {
                     match &tag.std {
@@ -135,7 +132,7 @@ pub fn read_file_metadata_light(path: &Path) -> LocalTrack {
                         Some(StandardTag::Artist(v))      => track.artist       = v.to_string(),
                         Some(StandardTag::Album(v))       => track.album        = v.to_string(),
                         Some(StandardTag::AlbumArtist(v)) => track.album_artist = v.to_string(),
-                        // Take just the year portion (first 4 chars).
+                        // take just the year portion (first 4 chars).
                         Some(StandardTag::ReleaseDate(v)) => track.year = v.chars().take(4).collect(),
                         Some(StandardTag::RecordingDate(v)) if track.year.is_empty() => {
                             track.year = v.chars().take(4).collect();
@@ -151,7 +148,7 @@ pub fn read_file_metadata_light(path: &Path) -> LocalTrack {
         track.album_artist = track.artist.clone();
     }
 
-    // ── Lofty: only for what symphonia could not read ────────────────────
+    // lofty: only for what symphonia could not read
     let needs_lofty = track.duration_secs == 0.0 || track.title == stem;
     if needs_lofty {
         if let Some(tagged) = lofty::probe::Probe::open(path).ok().and_then(|p| p.read().ok()) {
@@ -183,14 +180,14 @@ pub fn read_file_metadata_light(path: &Path) -> LocalTrack {
     track
 }
 
-/// Cover art embedded in a file, written to the cover cache and returned as a
+/// cover art embedded in a file, written to the cover cache and returned as a
 /// `file://` url. None when the file carries no picture.
 pub fn embedded_cover(path: &Path) -> Option<String> {
     use lofty::prelude::TaggedFileExt;
     let tagged = lofty::probe::Probe::open(path).ok()?.read().ok()?;
     let tag = tagged.primary_tag().or_else(|| tagged.first_tag())?;
 
-    // Prefer CoverFront picture, fall back to first picture.
+    // prefer CoverFront picture, fall back to first picture.
     use lofty::picture::PictureType;
     let pic = tag.pictures().iter()
         .find(|p| p.pic_type() == PictureType::CoverFront)
@@ -201,7 +198,7 @@ pub fn embedded_cover(path: &Path) -> Option<String> {
         Some(MimeType::Png) => "png",
         _ => "jpg",
     };
-    // Key the cache file by picture *content*, not source path, so the same art
+    // key the cache file by picture *content*, not source path, so the same art
     // embedded in every track of an album (or shared across albums) dedupes to
     // a single file instead of one copy per track.
     let hash = {
@@ -215,14 +212,14 @@ pub fn embedded_cover(path: &Path) -> Option<String> {
         .join(format!("kanae_cover_{:016x}.{}", hash, ext));
     if dest.exists() || std::fs::write(&dest, pic.data()).is_ok() {
         let url_path = dest.to_string_lossy().replace('\\', "/");
-        // Trim any leading slash so format!() produces exactly 3 slashes.
+        // trim any leading slash so format!() produces exactly 3 slashes.
         Some(format!("file:///{}", url_path.trim_start_matches('/')))
     } else {
         None
     }
 }
 
-/// Cover image sitting next to a file, as a `file://` url.
+/// cover image sitting next to a file, as a `file://` url.
 pub fn folder_cover(dir: &Path) -> Option<String> {
     for name in &["cover.jpg", "cover.png", "folder.jpg", "folder.png", "front.jpg", "front.png"] {
         let candidate = dir.join(name);
@@ -234,19 +231,19 @@ pub fn folder_cover(dir: &Path) -> Option<String> {
     None
 }
 
-/// Embedded art if the file has any, otherwise the containing folder's image.
+/// embedded art if the file has any, otherwise the containing folder's image.
 pub fn cover_for(path: &Path) -> Option<String> {
     embedded_cover(path).or_else(|| path.parent().and_then(folder_cover))
 }
 
-/// Memoised metadata, keyed on the file's (mtime, size) so an edited file is
+/// memoised metadata, keyed on the file's (mtime, size) so an edited file is
 /// re-read but an unchanged one is not.
 fn meta_cache() -> &'static std::sync::Mutex<HashMap<PathBuf, (u64, u64, LocalTrack)>> {
     static CACHE: OnceLock<std::sync::Mutex<HashMap<PathBuf, (u64, u64, LocalTrack)>>> = OnceLock::new();
     CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
-/// Dropped wholesale once it grows past this; a browse view only ever needs the
+/// dropped wholesale once it grows past this; a browse view only ever needs the
 /// albums the user actually visited.
 const META_CACHE_MAX: usize = 4096;
 
@@ -263,7 +260,7 @@ fn file_stamp(path: &Path) -> (u64, u64) {
     }
 }
 
-/// Track rows for a browse listing: read in parallel, cover art skipped (the
+/// track rows for a browse listing: read in parallel, cover art skipped (the
 /// list only shows title / artist / duration) and cached so revisiting an album
 /// costs nothing.
 pub fn read_album_metadata(paths: &[PathBuf]) -> Vec<LocalTrack> {
@@ -300,15 +297,15 @@ pub fn read_album_metadata(paths: &[PathBuf]) -> Vec<LocalTrack> {
         .collect()
 }
 
-/// Full metadata for one track, cover art included.
+/// full metadata for one track, cover art included.
 pub fn read_file_metadata(path: &Path) -> LocalTrack {
     let mut track = read_file_metadata_light(path);
     track.cover_art_path = cover_for(path);
     track
 }
 
-/// Decode and play back a local audio file on a background thread.
-/// Progress is reported via `heard_position_arc` and `current_position`.
+/// decode and play back a local audio file on a background thread.
+/// progress is reported via `heard_position_arc` and `current_position`.
 pub fn play_local_file(
     file_path: PathBuf,
     start_offset: f64,
@@ -320,9 +317,9 @@ pub fn play_local_file(
     vis_tap: Arc<std::sync::Mutex<crate::audio_player::VisTap>>,
     // fade_in_secs: seconds to ramp up from silence at the start (0 = full gain).
     fade_in_secs: f64,
-    // fade_out_secs: set by the player to hand this track over to the next one —
+    // fade_out_secs: set by the player to hand this track over to the next one -
     // the bits of an f64 giving how long to ramp down to silence, after which the
-    // stream ends. Zero means "play to the end normally".
+    // stream ends. zero means "play to the end normally".
     fade_out_secs: Arc<AtomicU64>,
     // seeks while playing arrive here rather than restarting the thread;
     // seek_gen is the generation start_offset already accounts for.
@@ -376,7 +373,7 @@ pub fn play_local_file(
     let track_id    = track.id;
     let time_base   = track.time_base;
 
-    // Gapless is decoder-side in 0.6: packets carry trim info and the decoder
+    // gapless is decoder-side in 0.6: packets carry trim info and the decoder
     // strips encoder delay/padding when this option is set (default: on).
     let mut dec_opts = AudioDecoderOptions::default();
     dec_opts.gapless = true;
@@ -409,13 +406,13 @@ pub fn play_local_file(
         }
     }
 
-    // Output seconds emitted so far, used to place both fade ramps.
+    // output seconds emitted so far, used to place both fade ramps.
     let mut emitted_secs = 0.0f64;
-    // Where the fade-out was triggered, once it has been.
+    // where the fade-out was triggered, once it has been.
     let mut fade_out_from: Option<f64> = None;
     let mut fade_in = if start_offset < 0.05 { fade_in_secs.max(0.0) } else { 0.0 };
 
-    // Volume is applied by the stream itself, at the device end of the buffer.
+    // volume is applied by the stream itself, at the device end of the buffer.
     let mut my_gen = seek_gen;
     let (stream_sender, samples_emitted_arc, emitted_gen_arc) = audio_controller.begin_stream(
         sample_rate, n_channels as u16, stop_flag.clone(), 4, volume_arc, seek.clone(), my_gen,
@@ -423,7 +420,7 @@ pub fn play_local_file(
     // samples sent since the last seek, to tell when the tail has been heard.
     let mut sent: u64 = 0;
 
-    // Bind the visualizer to the device's consumed-sample counter so it reads
+    // bind the visualizer to the device's consumed-sample counter so it reads
     // the window being heard, not the one being decoded.
     if let Ok(mut tap) = vis_tap.lock() {
         tap.attach(samples_emitted_arc.clone(), n_channels as u16);
@@ -504,14 +501,14 @@ pub fn play_local_file(
             skip_until = None;
         }
 
-        // Feed the visualizer here, BEFORE volume scaling, so the spectrum is
+        // feed the visualizer here, before volume scaling, so the spectrum is
         // independent of the playback volume.
         if let Ok(mut tap) = vis_tap.lock() { tap.push(&samples, n_channels as u16); }
 
         let count  = samples.len();
         let frames = count as f64 / (sample_rate as f64 * (n_channels as f64).max(1.0));
 
-        // Pick up a crossfade handover requested since the last packet.
+        // pick up a crossfade handover requested since the last packet.
         let requested = f64::from_bits(fade_out_secs.load(Ordering::Relaxed));
         if fade_out_from.is_none() && requested > 0.0 {
             fade_out_from = Some(emitted_secs);
@@ -519,11 +516,11 @@ pub fn play_local_file(
         let fade_len = requested.max(0.0);
         let fade_start = fade_out_from;
 
-        // Only the crossfade ramps are applied here: they are positions on the
+        // only the crossfade ramps are applied here: they are positions on the
         // track's own timeline, so they have to ride along with the samples.
         if fade_in > 0.0 || fade_len > 0.0 {
             for (i, s) in samples.iter_mut().enumerate() {
-                // Where this sample sits on the track's output timeline.
+                // where this sample sits on the track's output timeline.
                 let at = emitted_secs + frames * (i as f64 / count.max(1) as f64);
                 let mut g = 1.0f32;
                 if fade_in > 0.0 && at < fade_in {
@@ -540,7 +537,7 @@ pub fn play_local_file(
         if !stream_sender.send(my_gen, samples) { break; }
         sent += count as u64;
 
-        // The handover is complete once the ramp has run its course.
+        // the handover is complete once the ramp has run its course.
         if let (Some(from), true) = (fade_start, fade_len > 0.0) {
             if emitted_secs - from >= fade_len { break; }
         }

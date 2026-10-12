@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use crate::musicbrainz::AlbumMetadata;
 
-/// sectors between the last audio track and the data session on a CD-Extra
+/// sectors between the last audio track and the data session on a cd-extra
 /// disc; matches the gap cd-da-reader leaves out of its own track reads.
 const CD_EXTRA_GAP_SECTORS: u32 = 11_400;
 
@@ -21,16 +21,16 @@ pub struct TrackInfo {
     pub duration_seconds: f64,
 }
 
-/// Result produced by the background disc-load thread and consumed by poll_load.
+/// result produced by the background disc-load thread and consumed by poll_load.
 pub enum PendingDiscResult {
-    /// TOC read successfully; tracks, durations and optional metadata are ready.
-    /// `looked_up` tells whether MusicBrainz was queried for this read.
+    /// toc read successfully; tracks, durations and optional metadata are ready.
+    /// `looked_up` tells whether musicbrainz was queried for this read.
     Loaded { tracks: Vec<TrackInfo>, durations: Vec<String>, metadata: Option<AlbumMetadata>, disc_id: String, looked_up: bool },
-    /// a disc is in the drive but it has no audio tracks (data CD, DVD...).
+    /// a disc is in the drive but it has no audio tracks (data cd, dvd...).
     NotAudio { status: String },
-    /// Drive opened but disc absent or unreadable.
+    /// drive opened but disc absent or unreadable.
     Empty { status: String },
-    /// Could not open the drive at all.
+    /// could not open the drive at all.
     Unavailable { status: String },
     /// another thread of ours had the drive open; nothing was learned.
     Busy,
@@ -82,7 +82,7 @@ impl std::ops::Deref for Drive {
 }
 
 /// list optical drives without touching the discs in them, so it is cheap
-/// enough to call from a UI thread.
+/// enough to call from a ui thread.
 pub fn scan_drives() -> Vec<DriveInfo> {
     list_drive_paths()
         .into_iter()
@@ -125,7 +125,7 @@ fn list_drive_paths() -> Vec<String> {
 
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
 fn list_drive_paths() -> Vec<String> {
-    // macOS discovery reads the I/O Registry passively and never opens a device
+    // macos discovery reads the i/o registry passively and never opens a device
     match CdReader::list_drives() {
         Ok(drives) => drives.into_iter().map(|d| d.path).collect(),
         Err(e) => {
@@ -148,9 +148,9 @@ pub fn read_toc(reader: &CdReader) -> Result<Toc, CdReaderError> {
     reader.read_toc()
 }
 
-/// read what is in the drive. blocking (spin-up, SCSI timeouts, network), so
+/// read what is in the drive. blocking (spin-up, scsi timeouts, network), so
 /// only call it from a background thread. `should_lookup` gets the disc id and
-/// decides whether MusicBrainz is queried; the drive is released before that.
+/// decides whether musicbrainz is queried; the drive is released before that.
 pub fn probe_disc(path: &str, should_lookup: impl FnOnce(&str) -> bool) -> PendingDiscResult {
     let toc = {
         let reader = match open_drive(path) {
@@ -220,8 +220,8 @@ pub fn format_duration(seconds: f64) -> String {
     format!("{:02}:{:02}", mins, secs)
 }
 
-/// Extract a short display label (e.g. "D:") from a drive path such as
-/// "\\.\D:" (Windows), "/dev/sr0" (Linux) or "disk6" (macOS).
+/// extract a short display label (e.g. "D:") from a drive path such as
+/// "\\.\D:" (windows), "/dev/sr0" (linux) or "disk6" (macos).
 pub fn drive_letter(drive_path: &str) -> String {
     if drive_path.contains('\\') {
         drive_path.split('\\').last().unwrap_or(drive_path).to_string()
@@ -265,8 +265,8 @@ fn eject_drive_windows(drive_path: &str) {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
 
-    // Build a wide "\\.\D:" style device path from e.g. "D:\" or "\\.\D:".
-    // The path may start with '\' so find the first alphabetic character.
+    // build a wide "\\.\D:" style device path from e.g. "D:\" or "\\.\D:".
+    // the path may start with '\' so find the first alphabetic character.
     let letter = drive_path.chars()
         .find(|c| c.is_ascii_alphabetic())
         .unwrap_or('D')

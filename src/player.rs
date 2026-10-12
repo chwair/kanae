@@ -40,12 +40,12 @@ mod player_bridge {
         #[qproperty(i32, cd_disc_number)]
         #[qproperty(i32, cd_disc_count)]
         #[qproperty(bool, is_loading)]
-        /// an audio CD is in the selected drive, whatever mode the player is in.
+        /// an audio cd is in the selected drive, whatever mode the player is in.
         #[qproperty(bool, cd_present)]
         /// the drive is being read and it isn't known yet what is in it.
         #[qproperty(bool, cd_scanning)]
         /// disc metadata for the library tile; unlike album_* these keep
-        /// describing the CD while local files are playing.
+        /// describing the cd while local files are playing.
         #[qproperty(QString, cd_title)]
         #[qproperty(QString, cd_artist)]
         #[qproperty(QString, cd_year)]
@@ -136,6 +136,10 @@ mod player_bridge {
         fn init_smtc(self: Pin<&mut Self>);
 
         #[qinvokable]
+        #[cxx_name = "toggleMaximize"]
+        fn toggle_maximize(self: Pin<&mut Self>);
+
+        #[qinvokable]
         #[cxx_name = "openFilesDialog"]
         fn open_files_dialog(self: Pin<&mut Self>);
 
@@ -193,7 +197,7 @@ mod player_bridge {
     }
 }
 
-/// Album-level fields shown above a local track list.
+/// album-level fields shown above a local track list.
 #[derive(Clone, Default)]
 struct AlbumMeta {
     title: String,
@@ -202,7 +206,7 @@ struct AlbumMeta {
     cover: Option<String>,
 }
 
-/// For a single file, show the track's own title/artist. For multiple files,
+/// for a single file, show the track's own title/artist. for multiple files,
 /// use a common album when they share one and fall back to the folder name.
 fn derive_album_meta(
     tracks: &[crate::file_player::LocalTrack],
@@ -241,7 +245,7 @@ fn derive_album_meta(
     }
 }
 
-/// Index in `0..len` from the system clock. Shuffle order does not need to be
+/// index in `0..len` from the system clock. shuffle order does not need to be
 /// cryptographically anything, and this keeps the dependency list unchanged.
 fn pseudo_random(len: usize) -> usize {
     if len == 0 { return 0; }
@@ -255,7 +259,7 @@ fn pseudo_random(len: usize) -> usize {
     (x % len as u64) as usize
 }
 
-/// Where playback goes back to once the queue drains.
+/// where playback goes back to once the queue drains.
 struct QueueResume {
     tracks: Vec<crate::file_player::LocalTrack>,
     is_single: bool,
@@ -274,7 +278,7 @@ pub struct PlayerState {
     playback_ended: Arc<AtomicBool>,
     playback_disc_error: Arc<AtomicBool>, // set on errors, distinguishes ejection from track end
     volume: Arc<AtomicU64>,
-    heard_position: Arc<AtomicU64>, // oldest chunk in rodio's queue — what the listener hears
+    heard_position: Arc<AtomicU64>, // oldest chunk in rodio's queue - what the listener hears
     disc_load_result: Arc<Mutex<Option<PendingDiscResult>>>,
     disc_load_thread: Option<thread::JoinHandle<()>>,
     disc_check_active: Arc<AtomicBool>,
@@ -282,12 +286,12 @@ pub struct PlayerState {
     /// stale (the drive or mode may have changed) and a new probe follows it.
     probe_rerun: bool,
     /// failed periodic reads of a disc that was there; one miss is ignored
-    /// since drives drop the odd TOC read without the disc going anywhere.
+    /// since drives drop the odd toc read without the disc going anywhere.
     missed_reads: u32,
     /// last probe found a data disc; re-reading it is quick and routine, so
     /// it shouldn't bring the loading state back every tick.
     not_audio: bool,
-    /// last MusicBrainz answer, keyed by disc id (None = not in the database),
+    /// last musicbrainz answer, keyed by disc id (None = not in the database),
     /// so periodic checks and mode switches don't query again for the same disc.
     meta_cache: Option<(String, Option<AlbumMetadata>)>,
     metadata_loaded: bool,
@@ -295,7 +299,7 @@ pub struct PlayerState {
     lyric_result: Arc<Mutex<Option<Option<Vec<crate::lrclib::LyricLine>>>>>,
     lyric_fetch_thread: Option<thread::JoinHandle<()>>,
     lyric_fetch_generation: Arc<AtomicU64>,
-    /// Original (non-romanized) lyric lines for the current track, kept so the
+    /// original (non-romanized) lyric lines for the current track, kept so the
     /// romanize toggle can be re-applied live without re-fetching.
     lyrics_src: Vec<crate::lrclib::LyricLine>,
     smtc_handle: Option<crate::smtc::SmtcHandle>,
@@ -308,47 +312,47 @@ pub struct PlayerState {
     file_tracks: Vec<crate::file_player::LocalTrack>,
     discord: Option<crate::discord::DiscordPresence>,
     discord_enabled: bool,
-    /// Whole second of the last SMTC/Discord progress push; used to throttle
-    /// those updates to 1 Hz (the position timer itself ticks at 10 Hz).
+    /// whole second of the last smtc/discord progress push; used to throttle
+    /// those updates to 1 hz (the position timer itself ticks at 10 hz).
     last_progress_push_sec: i64,
-    /// Shared spectrum tap handed to each playback thread's AudioController;
-    /// the GUI drains it once per frame via `update_visualizer`.
+    /// shared spectrum tap handed to each playback thread's AudioController;
+    /// the gui drains it once per frame via `update_visualizer`.
     vis_tap: Arc<Mutex<audio_player::VisTap>>,
-    /// Current displayed bar heights (0..1). Bars snap up to new energy and
+    /// current displayed bar heights (0..1). bars snap up to new energy and
     /// fall under gravity, the audioviz/crav-style motion.
     vis_smooth: Vec<f32>,
-    /// Per-bar downward fall velocity for the gravity effect.
+    /// per-bar downward fall velocity for the gravity effect.
     vis_vel: Vec<f32>,
-    /// Timestamp of the previous visualizer update, so gravity is applied with
+    /// timestamp of the previous visualizer update, so gravity is applied with
     /// real delta-time and stays smooth regardless of frame rate.
     vis_last_update: Option<std::time::Instant>,
-    /// Auto-gain reference level: tracks the current loudness so the bars use
+    /// auto-gain reference level: tracks the current loudness so the bars use
     /// the full height for both quiet and loud material.
     vis_ref: f32,
-    /// Songs to play ahead of the rest of the album.
+    /// songs to play ahead of the rest of the album.
     queue: crate::queue::Queue,
-    /// Captured the first time the queue interrupts an album, so playback can
+    /// captured the first time the queue interrupts an album, so playback can
     /// return to it once the queue drains.
     queue_resume: Option<QueueResume>,
 
-    /// Crossfade config, mirrored from settings.json.
+    /// crossfade config, mirrored from settings.json.
     crossfade: bool,
     crossfade_secs: f64,
-    /// Handed to the running track so the player can tell it to ramp out.
+    /// handed to the running track so the player can tell it to ramp out.
     fade_out_secs: Arc<AtomicU64>,
-    /// Handed to the running file track so a seek can jump its stream in place.
+    /// handed to the running file track so a seek can jump its stream in place.
     seek_signal: Arc<audio_player::SeekSignal>,
-    /// The outgoing track during a crossfade. It owns orphaned copies of the
+    /// the outgoing track during a crossfade. it owns orphaned copies of the
     /// progress atomics, so it can finish without disturbing the new track.
     fading_thread: Option<thread::JoinHandle<()>>,
     fading_stop: Option<Arc<AtomicBool>>,
-    /// Set once the handover for the current track has been started, so the
+    /// set once the handover for the current track has been started, so the
     /// position tick doesn't fire it again every 100 ms.
     crossfade_armed: bool,
-    /// Indices already played in this shuffle pass, so it doesn't repeat until
+    /// indices already played in this shuffle pass, so it doesn't repeat until
     /// the album is exhausted.
     shuffle_history: Vec<i32>,
-    /// Set by the handover so the track started next ramps in.
+    /// set by the handover so the track started next ramps in.
     pending_fade_in: bool,
 }
 
@@ -413,7 +417,7 @@ impl Default for PlayerState {
 
 impl PlayerState {
     pub fn sync_discord(&mut self, current_track: i32, is_playing: bool) {
-        // When RPC is disabled, clear any existing presence and push nothing.
+        // when rpc is disabled, clear any existing presence and push nothing.
         if !self.discord_enabled {
             if let Some(ref mut d) = self.discord { d.update(None); }
             return;
@@ -540,7 +544,7 @@ impl player_bridge::PlayerController {
             self.as_mut().set_drive_list(QStringList::default());
             self.as_mut().set_selected_drive_index(-1);
             self.as_mut().publish_cd_info(None, false);
-            // Don't wipe file-mode track state — the timer calls scan_drives
+            // don't wipe file-mode track state - the timer calls scan_drives
             // periodically and would otherwise clear the loaded track list.
             if !self.state.lock().unwrap().is_file_mode {
                 self.as_mut().set_track_names(QStringList::default());
@@ -575,7 +579,7 @@ impl player_bridge::PlayerController {
     }
 
     pub fn select_drive(mut self: Pin<&mut Self>, index: i32) {
-        // Don't let drive selection interrupt local file playback.
+        // don't let drive selection interrupt local file playback.
         if self.state.lock().unwrap().is_file_mode {
             return;
         }
@@ -608,7 +612,7 @@ impl player_bridge::PlayerController {
 
     /// read the drive on a worker thread; poll_load picks the result up.
     /// `full` marks a user-driven load: its result is applied even when the
-    /// disc looks unchanged, and it retries a MusicBrainz miss. never blocks:
+    /// disc looks unchanged, and it retries a musicbrainz miss. never blocks:
     /// if a probe is already running, a full load is queued behind it.
     fn start_probe(mut self: Pin<&mut Self>, full: bool) {
         let (file_mode, not_audio) = {
@@ -645,7 +649,7 @@ impl player_bridge::PlayerController {
             self.as_mut().set_cd_scanning(true);
         }
         if full && !file_mode {
-            // Tell SMTC we're loading while the spinner shows.
+            // tell smtc we're loading while the spinner shows.
             let mut state = self.state.lock().unwrap();
             if let Some(ref mut h) = state.smtc_handle {
                 h.update(crate::smtc::SmtcUpdate::Metadata {
@@ -702,7 +706,7 @@ impl player_bridge::PlayerController {
             self.as_mut().start_playback();
             {
                 let mut state = self.state.lock().unwrap();
-                // Force an SMTC "Playing" push on the next position tick even if
+                // force an smtc "Playing" push on the next position tick even if
                 // the whole second hasn't changed since the pause.
                 state.last_progress_push_sec = -1;
             }
@@ -713,9 +717,9 @@ impl player_bridge::PlayerController {
         }
     }
 
-    // ── Queue ───────────────────────────────────────────────────────────────
+    // queue
 
-    /// Republish the queue to the frontends after any mutation.
+    /// republish the queue to the frontends after any mutation.
     fn refresh_queue(mut self: Pin<&mut Self>) {
         let (json, len) = {
             let state = self.state.lock().unwrap();
@@ -725,7 +729,7 @@ impl player_bridge::PlayerController {
         self.as_mut().set_queue_len(len);
     }
 
-    /// Append every audio file under `paths` — a song, an album folder, or a
+    /// append every audio file under `paths` - a song, an album folder, or a
     /// mix of both.
     pub fn enqueue_paths(self: Pin<&mut Self>, paths: QStringList) {
         let list: Vec<String> = (0..paths.len()).filter_map(|i| paths.get(i).map(|s| s.to_string())).collect();
@@ -751,7 +755,7 @@ impl player_bridge::PlayerController {
         self.refresh_queue();
     }
 
-    /// Skip straight to a queue entry, dropping the ones before it.
+    /// skip straight to a queue entry, dropping the ones before it.
     pub fn queue_play_at(mut self: Pin<&mut Self>, index: i32) {
         if index < 0 { return; }
         let entry = {
@@ -763,11 +767,11 @@ impl player_bridge::PlayerController {
         self.as_mut().capture_queue_resume();
         self.as_mut().play_queue_entry(entry);
         self.as_mut().refresh_queue();
-        // Clicking an entry means play it, unlike the load-only advance path.
+        // clicking an entry means play it, unlike the load-only advance path.
         self.start_playback();
     }
 
-    /// Remember the album to come back to, unless the queue already took over
+    /// remember the album to come back to, unless the queue already took over
     /// (in which case the original resume point is the one we want).
     fn capture_queue_resume(self: Pin<&mut Self>) {
         let current = *self.as_ref().current_track();
@@ -790,13 +794,10 @@ impl player_bridge::PlayerController {
         });
     }
 
-    /// Swap the session over to a queued song, loaded but not started — callers
-    /// decide whether playback continues, matching `load_track`.
-    ///
-    /// The song is loaded *in its album*, not on its own: a one-track session
-    /// would show up everywhere as a pseudo-album, so clicking the now-playing
-    /// title would open a fake album containing only that song instead of
-    /// landing on the track within its real one.
+    /// swap the session over to a queued song, loaded but not started. callers
+    /// decide whether playback continues, matching `load_track`. the song loads
+    /// inside its album rather than alone, so clicking the now-playing title lands
+    /// on the track within its real album instead of a fake one-track album.
     fn play_queue_entry(mut self: Pin<&mut Self>, entry: crate::queue::QueueEntry) {
         let (tracks, index) = crate::file_player::album_context_for(&entry.path);
         let is_single = tracks.len() == 1;
@@ -806,9 +807,9 @@ impl player_bridge::PlayerController {
         self.as_mut().load_track_at(index);
     }
 
-    /// Load whatever should play next: queued songs first, then the rest of the
-    /// album, then the album the queue interrupted. Like `load_track`, this
-    /// leaves playback stopped; the caller starts it. Returns false when there
+    /// load whatever should play next: queued songs first, then the rest of the
+    /// album, then the album the queue interrupted. like `load_track`, this
+    /// leaves playback stopped; the caller starts it. returns false when there
     /// is nothing left to play.
     fn advance(mut self: Pin<&mut Self>) -> bool {
         let next_queued = self.state.lock().unwrap().queue.pop_front();
@@ -819,7 +820,7 @@ impl player_bridge::PlayerController {
             return true;
         }
 
-        // Queue just drained — go back to where it interrupted.
+        // queue just drained - go back to where it interrupted.
         let resume = self.state.lock().unwrap().queue_resume.take();
         if let Some(r) = resume {
             let count = r.tracks.len() as i32;
@@ -838,7 +839,7 @@ impl player_bridge::PlayerController {
         }
     }
 
-    /// The next index within the current track list, honouring repeat and
+    /// the next index within the current track list, honouring repeat and
     /// shuffle. `None` means playback has run out.
     fn pick_next_index(self: Pin<&mut Self>) -> Option<i32> {
         let current = *self.as_ref().current_track();
@@ -847,7 +848,7 @@ impl player_bridge::PlayerController {
         let shuffle = *self.as_ref().shuffle();
         if total <= 0 { return None; }
 
-        // Repeat-one wins over everything: the same track again.
+        // repeat-one wins over everything: the same track again.
         if repeat == 2 { return Some(current.max(0)); }
 
         if shuffle && total > 1 {
@@ -856,7 +857,7 @@ impl player_bridge::PlayerController {
             if !st.shuffle_history.contains(&current) && current >= 0 {
                 st.shuffle_history.push(current);
             }
-            // A full pass is done; either stop or start a fresh one.
+            // a full pass is done; either stop or start a fresh one.
             if st.shuffle_history.len() as i32 >= total {
                 st.shuffle_history.clear();
                 if repeat != 1 { return None; }
@@ -872,7 +873,7 @@ impl player_bridge::PlayerController {
     }
 
     pub fn next_track(mut self: Pin<&mut Self>) {
-        // An explicit skip should move on even in repeat-one.
+        // an explicit skip should move on even in repeat-one.
         let repeat = *self.as_ref().repeat_mode();
         if repeat == 2 {
             self.as_mut().set_repeat_mode(1);
@@ -883,15 +884,13 @@ impl player_bridge::PlayerController {
         self.advance();
     }
 
-    /// Hand the current track over to the next one with an overlap.
-    ///
-    /// The outgoing thread keeps playing, so it must stop sharing state with the
-    /// player: it is moved aside with its own stop flag and given orphaned copies
-    /// of the progress atomics, otherwise it would keep publishing its position
-    /// and would raise `playback_ended` for a track that is no longer current.
+    /// hand the current track over to the next one with an overlap. the outgoing
+    /// thread is moved aside with its own stop flag and orphaned copies of the
+    /// progress atomics, so it cannot keep publishing its position or raise
+    /// `playback_ended` for a track that is no longer current.
     fn begin_crossfade(mut self: Pin<&mut Self>) {
-        // Check there is something to fade into before telling the current track
-        // to ramp out — the ramp ends its stream early, so asking for one with
+        // check there is something to fade into before telling the current track
+        // to ramp out - the ramp ends its stream early, so asking for one with
         // nothing to follow would just truncate the last track.
         let has_next = {
             let st = self.state.lock().unwrap();
@@ -907,7 +906,7 @@ impl player_bridge::PlayerController {
             return;
         }
 
-        // Reap a previous crossfade before starting another.
+        // reap a previous crossfade before starting another.
         let prev = {
             let mut state = self.state.lock().unwrap();
             if let Some(flag) = state.fading_stop.take() { flag.store(true, Ordering::Relaxed); }
@@ -915,7 +914,7 @@ impl player_bridge::PlayerController {
         };
         if let Some(h) = prev { let _ = h.join(); }
 
-        // Hold the outgoing thread in a local across `advance`, which calls
+        // hold the outgoing thread in a local across `advance`, which calls
         // stop_playback_internal and would otherwise reap it right back.
         let (outgoing, outgoing_stop) = {
             let mut state = self.state.lock().unwrap();
@@ -925,7 +924,7 @@ impl player_bridge::PlayerController {
             let t = state.playback_thread.take();
             let flag = state.stop_playback.clone();
 
-            // Fresh atomics for the incoming track; the outgoing thread keeps
+            // fresh atomics for the incoming track; the outgoing thread keeps
             // writing to the old ones, which nothing reads any more.
             state.stop_playback    = Arc::new(AtomicBool::new(false));
             state.playback_ended   = Arc::new(AtomicBool::new(false));
@@ -945,7 +944,7 @@ impl player_bridge::PlayerController {
             state.fading_thread = outgoing;
             state.fading_stop = Some(outgoing_stop);
         } else {
-            // Nothing follows, so let the outgoing track play out in full.
+            // nothing follows, so let the outgoing track play out in full.
             let mut state = self.state.lock().unwrap();
             state.fade_out_secs.store(0f64.to_bits(), Ordering::Relaxed);
             state.pending_fade_in = false;
@@ -1006,7 +1005,7 @@ impl player_bridge::PlayerController {
         }
     }
 
-    /// Track selection from the UI. Choosing a track by hand supersedes the
+    /// track selection from the ui. choosing a track by hand supersedes the
     /// album the queue was going to return to.
     pub fn load_track(self: Pin<&mut Self>, index: i32) {
         self.state.lock().unwrap().queue_resume = None;
@@ -1066,7 +1065,7 @@ impl player_bridge::PlayerController {
 
         let current_track = *self.as_ref().current_track();
 
-        // File mode: decode local audio file instead of reading CD.
+        // file mode: decode local audio file instead of reading cd.
         if self.state.lock().unwrap().is_file_mode {
             let (file_path, stop_flag, start_offset, current_position, volume_arc,
                  playback_ended_arc, heard_position_arc, vis_tap) = {
@@ -1090,7 +1089,7 @@ impl player_bridge::PlayerController {
                 let state = self.state.lock().unwrap();
                 (state.seek_signal.clone(), state.seek_signal.generation())
             };
-            // A crossfaded start ramps in over the same span the outgoing track
+            // a crossfaded start ramps in over the same span the outgoing track
             // ramps out; `fade_out_secs` is how the player later asks *this*
             // track to hand over in turn.
             let (fade_in, fade_out_arc) = {
@@ -1128,7 +1127,7 @@ impl player_bridge::PlayerController {
                 Some(p) => p,
                 None => { eprintln!("No drive selected"); return; }
             };
-            // Guard: tracks must be loaded (toc is no longer kept after load)
+            // guard: tracks must be loaded (toc is no longer kept after load)
             if state.tracks.is_empty() {
                 eprintln!("No tracks loaded"); return;
             }
@@ -1147,13 +1146,13 @@ impl player_bridge::PlayerController {
             let playback_ended_arc = state.playback_ended.clone();
             let playback_error_arc  = state.playback_disc_error.clone();
             let heard_position_arc = state.heard_position.clone();
-            // Seed heard_position to the start offset so the seek bar is correct immediately.
+            // seed heard_position to the start offset so the seek bar is correct immediately.
             heard_position_arc.store(start_offset.to_bits(), Ordering::Relaxed);
             (drive_path, track_number, stop_flag, start_offset, current_position, volume_arc, playback_ended_arc, playback_error_arc, heard_position_arc, state.vis_tap.clone())
         };
 
         let handle = thread::spawn(move || {
-            // Create audio controller owned by this thread.
+            // create audio controller owned by this thread.
             let audio_controller = match AudioController::new() {
                 Ok(c) => c,
                 Err(e) => {
@@ -1163,9 +1162,9 @@ impl player_bridge::PlayerController {
                 }
             };
 
-            // Open an exclusive CD reader handle for this thread.
-            // Retry up to 10 times with increasing delays to let the disc
-            // spin up — a freshly-inserted or just-stopped disc may not be
+            // open an exclusive cd reader handle for this thread.
+            // retry up to 10 times with increasing delays to let the disc
+            // spin up - a freshly-inserted or just-stopped disc may not be
             // ready to open for a second or two.
             let reader = {
                 let mut last_err = String::new();
@@ -1193,7 +1192,7 @@ impl player_bridge::PlayerController {
                 }
             };
 
-            // Read TOC — also retry; the drive may be readable but the TOC
+            // read toc - also retry; the drive may be readable but the toc
             // not yet available immediately after spin-up.
             let toc = {
                 let mut last_err = String::new();
@@ -1249,22 +1248,22 @@ impl player_bridge::PlayerController {
                 }
             }
 
-            // Software volume: apply as a per-chunk linear ramp to avoid audible
-            // clicks when the user moves the volume slider. Never touch rodio's
+            // software volume: apply as a per-chunk linear ramp to avoid audible
+            // clicks when the user moves the volume slider. never touch rodio's
             // own set_volume (which would apply gain mid-stream and pop).
             let mut current_vol = f64::from_bits(volume_arc.load(Ordering::Relaxed)) as f32;
 
             // heard_position tracking: we maintain a small ring of chunk-start
-            // positions parallel to what's queued in rodio. The front of the ring
-            // is the start of the chunk currently being played — this is what we
+            // positions parallel to what's queued in rodio. the front of the ring
+            // is the start of the chunk currently being played - this is what we
             // show on the seek bar and use as the pause resume point.
-            // Each entry is (chunk start seconds, chunk length in frames); the
+            // each entry is (chunk start seconds, chunk length in frames); the
             // frame counts let the visualizer subtract what is still queued so
             // it shows the audio being heard rather than the one just read.
             let mut pending: std::collections::VecDeque<(f64, u64)> = std::collections::VecDeque::new();
 
-            // Frames the visualizer has been fed, and how many of those have
-            // actually reached the device. The tap is attached with a channel
+            // frames the visualizer has been fed, and how many of those have
+            // actually reached the device. the tap is attached with a channel
             // count of 1 because the counter is already in mono frames.
             let mut vis_written: u64 = 0;
             let vis_played = Arc::new(AtomicU64::new(0));
@@ -1282,17 +1281,17 @@ impl player_bridge::PlayerController {
 
                 match stream.next_chunk() {
                     Ok(Some(chunk)) => {
-                        // Compute the track-relative seconds span of this chunk.
-                        // chunk is raw CD audio: 16-bit LE stereo at 44100 Hz.
+                        // compute the track-relative seconds span of this chunk.
+                        // chunk is raw cd audio: 16-bit le stereo at 44100 hz.
                         let chunk_secs = chunk.len() as f64 / (4.0 * 44100.0); // 4 = 2ch * 2 bytes
                         let chunk_end   = stream.current_seconds() as f64;
                         let chunk_start = chunk_end - chunk_secs;
 
-                        // Apply a smooth volume ramp over all samples in this chunk.
-                        // Ramping from current_vol → target_vol avoids discontinuities.
+                        // apply a smooth volume ramp over all samples in this chunk.
+                        // ramping from current_vol -> target_vol avoids discontinuities.
                         let target_vol = f64::from_bits(volume_arc.load(Ordering::Relaxed)) as f32;
                         let raw = audio_player::bytes_to_f32_samples(&chunk);
-                        // Feed the visualizer with pre-volume samples so bar
+                        // feed the visualizer with pre-volume samples so bar
                         // heights are independent of the playback volume.
                         if let Ok(mut tap) = vis_tap.lock() { tap.push(&raw, 2); }
                         let chunk_frames = (raw.len() / 2) as u64;
@@ -1306,17 +1305,17 @@ impl player_bridge::PlayerController {
 
                         audio_controller.append_samples(samples, 44100, 2);
 
-                        // Register this chunk in the heard-position ring.
+                        // register this chunk in the heard-position ring.
                         pending.push_back((chunk_start, chunk_frames));
                         publish_vis(&pending, vis_written);
 
-                        // Throttle: keep at most 1 chunk queued ahead so volume
+                        // throttle: keep at most 1 chunk queued ahead so volume
                         // changes take effect quickly (within one chunk, ~80 ms).
                         while audio_controller.queue_len() > 1
                             && !stop_flag.load(Ordering::Relaxed)
                         {
                             thread::sleep(std::time::Duration::from_millis(50));
-                            // During the wait, rodio may finish chunks. Prune the ring
+                            // during the wait, rodio may finish chunks. prune the ring
                             // so its length matches the actual queue depth and the
                             // heard position stays fresh.
                             let q = audio_controller.queue_len();
@@ -1328,26 +1327,26 @@ impl player_bridge::PlayerController {
                             thread::sleep(std::time::Duration::from_millis(20));
                         }
 
-                        // Prune ring to match current queue depth.
+                        // prune ring to match current queue depth.
                         let q = audio_controller.queue_len();
                         while pending.len() > q.max(1) { pending.pop_front(); }
 
-                        // Publish heard position (oldest queued chunk's start).
+                        // publish heard position (oldest queued chunk's start).
                         let heard = pending.front().map(|&(hp, _)| hp).unwrap_or(chunk_start);
                         heard_position_arc.store(heard.to_bits(), Ordering::Relaxed);
                         publish_vis(&pending, vis_written);
 
-                        // Also publish read-ahead for any code that still uses it.
+                        // also publish read-ahead for any code that still uses it.
                         current_position.store(chunk_end.to_bits(), Ordering::Relaxed);
                     }
                     Ok(None) => {
-                        // All CD data read — drain the audio device before dropping.
+                        // all cd data read - drain the audio device before dropping.
                         while !audio_controller.is_empty() {
                             if stop_flag.load(Ordering::Relaxed) {
                                 audio_controller.stop();
                                 break;
                             }
-                            // Keep heard position advancing toward the track end.
+                            // keep heard position advancing toward the track end.
                             let q = audio_controller.queue_len();
                             while pending.len() > q.max(1) { pending.pop_front(); }
                             if let Some(&(hp, _)) = pending.front() {
@@ -1388,7 +1387,7 @@ impl player_bridge::PlayerController {
             let state = self.state.lock().unwrap();
             state.stop_playback.store(true, Ordering::Relaxed);
         }
-        // An outgoing crossfade is still audible on its own thread and its own
+        // an outgoing crossfade is still audible on its own thread and its own
         // stop flag; it has to be cut too or it would outlive the stop.
         let fading = {
             let mut state = self.state.lock().unwrap();
@@ -1405,20 +1404,14 @@ impl player_bridge::PlayerController {
         self.as_mut().set_is_playing(false);
     }
 
-    /// Drain the spectrum tap and publish the bar heights as a `QStringList` of
-    /// `0..1` values for the GUI. Called on a ~60 fps timer while playing.
-    ///
-    /// Processing (audioviz / crav-inspired), on the volume-independent samples
-    /// captured pre-gain in the decode threads:
-    /// 1. **Auto-gain** — a reference level tracks current loudness so quiet and
-    ///    loud tracks both fill the display; it rises fast, relaxes slowly, and
-    ///    has a floor so silence isn't amplified into noise.
-    /// 2. **Logarithmic (dB) scaling** — the loudest band maps to full height and
-    ///    anything below `FLOOR_DB` maps to 0, diminishing quiet noise.
-    /// 3. **Gravity** — bars snap up to new energy, then fall under acceleration
-    ///    (delta-time driven) so they glide instead of shaking.
+    /// drain the spectrum tap and publish the bar heights as a `QStringList` of
+    /// `0..1` values for the gui, called on a ~60 fps timer while playing. the bars
+    /// come from the volume-independent samples captured pre-gain, using auto-gain
+    /// (a reference level that rises fast and relaxes slowly, floored so silence
+    /// is not amplified), db scaling (anything below `FLOOR_DB` maps to 0), and
+    /// gravity (bars snap up to new energy, then fall under acceleration).
     pub fn update_visualizer(mut self: Pin<&mut Self>) {
-        // The frontend picks the bar count from the width it has to draw in.
+        // the frontend picks the bar count from the width it has to draw in.
         let want_bands = (*self.as_ref().vis_band_count()).max(1) as usize;
         let smoothed = {
             let mut guard = self.state.lock().unwrap();
@@ -1431,7 +1424,7 @@ impl player_bridge::PlayerController {
             if st.vis_smooth.len() != n { st.vis_smooth = vec![0.0; n]; }
             if st.vis_vel.len()    != n { st.vis_vel    = vec![0.0; n]; }
 
-            // Real delta-time keeps motion smooth regardless of timer jitter;
+            // real delta-time keeps motion smooth regardless of timer jitter;
             // clamp guards against a big gap after a pause (the timer is idle
             // while stopped, so `now - last` can be large on resume).
             let now = std::time::Instant::now();
@@ -1441,7 +1434,7 @@ impl player_bridge::PlayerController {
             };
             st.vis_last_update = Some(now);
 
-            // 1. Auto-gain reference: rise fast (~50 ms) to catch a louder
+            // 1. auto-gain reference: rise fast (~50 ms) to catch a louder
             //    passage, relax slowly (~1.2 s) when it quiets, floored so dead
             //    silence can't crank the gain up into background noise.
             const REF_FLOOR: f32 = 1.0e-3;
@@ -1454,7 +1447,7 @@ impl player_bridge::PlayerController {
             st.vis_ref += (frame_peak - st.vis_ref) * k;
             if st.vis_ref < REF_FLOOR { st.vis_ref = REF_FLOOR; }
 
-            // 2. + 3. dB scaling then gravity. FLOOR_DB sets the visible dynamic
+            // 2. + 3. db scaling then gravity. FLOOR_DB sets the visible dynamic
             //    range (more negative = show quieter detail); GRAVITY sets the
             //    falloff speed (higher = shorter tails).
             const FLOOR_DB: f32 = -42.0;
@@ -1485,7 +1478,7 @@ impl player_bridge::PlayerController {
     }
 
     pub fn update_position(mut self: Pin<&mut Self>) {
-        // Reap a finished crossfade tail. Without this `fading_thread` stays
+        // reap a finished crossfade tail. without this `fading_thread` stays
         // occupied and the guard in the tick below blocks every later overlap.
         {
             let mut state = self.state.lock().unwrap();
@@ -1498,7 +1491,7 @@ impl player_bridge::PlayerController {
             }
         }
 
-        // Drain SMTC commands regardless of play state so buttons work when paused.
+        // drain smtc commands regardless of play state so buttons work when paused.
         let smtc_cmds: Vec<crate::smtc::SmtcCommand> = {
             let state = self.state.lock().unwrap();
             state.smtc_handle.as_ref()
@@ -1515,17 +1508,22 @@ impl player_bridge::PlayerController {
                     if was_playing { self.as_mut().play_pause(); }
                 }
                 SmtcCommand::Previous => {
-                    let was_playing = *self.as_ref().is_playing();
-                    self.as_mut().previous_track();
-                    if was_playing { self.as_mut().play_pause(); }
+                    // same as the in-app prev button: restart the track past 4s.
+                    if *self.as_ref().current_time() > 4.0 {
+                        self.as_mut().seek(0.0);
+                    } else {
+                        let was_playing = *self.as_ref().is_playing();
+                        self.as_mut().previous_track();
+                        if was_playing { self.as_mut().play_pause(); }
+                    }
                 }
                 SmtcCommand::Seek(s) => { self.as_mut().seek(s); }
             }
         }
 
         if !*self.as_ref().is_playing() {
-            // Discord's cover art finishes uploading on a background thread, and
-            // only sync_discord collects it. Keep ticking it while paused or the
+            // discord's cover art finishes uploading on a background thread, and
+            // only sync_discord collects it. keep ticking it while paused or the
             // art never lands until playback resumes. update() is a cheap no-op
             // once the presence it pushed is up to date.
             let current_track = *self.as_ref().current_track();
@@ -1539,8 +1537,8 @@ impl player_bridge::PlayerController {
         if ended {
             let handle = self.state.lock().unwrap().playback_thread.take();
             if let Some(h) = handle { let _ = h.join(); }
-            // Check if the thread exited due to a disc error (ejection) rather than
-            // a natural track end.  If so, clear tracks and let check_drive recover.
+            // check if the thread exited due to a disc error (ejection) rather than
+            // a natural track end.  if so, clear tracks and let check_drive recover.
             let disc_error = self.state.lock().unwrap()
                 .playback_disc_error.swap(false, Ordering::Relaxed);
             {
@@ -1582,7 +1580,7 @@ impl player_bridge::PlayerController {
                 return;
             }
 
-            // Queue entries come before the rest of the album; `advance` also
+            // queue entries come before the rest of the album; `advance` also
             // handles returning to the album once the queue drains.
             if self.as_mut().advance() {
                 self.start_playback();
@@ -1600,8 +1598,8 @@ impl player_bridge::PlayerController {
         };
         self.as_mut().set_current_time(pos);
 
-        // Start the overlap once the track is within a crossfade of its end.
-        // File mode only: CD playback streams from the drive and can't have two
+        // start the overlap once the track is within a crossfade of its end.
+        // file mode only: cd playback streams from the drive and can't have two
         // reads in flight, and repeat-one has nothing to fade into.
         {
             let total = *self.as_ref().total_time();
@@ -1621,8 +1619,8 @@ impl player_bridge::PlayerController {
             }
         }
 
-        // SMTC progress and Discord presence only need second-level granularity;
-        // pushing them on every 100 ms tick costs a WinRT/IPC call each time.
+        // smtc progress and discord presence only need second-level granularity;
+        // pushing them on every 100 ms tick costs a winrt/ipc call each time.
         let sec = pos.max(0.0) as i64;
         let should_push = {
             let mut state = self.state.lock().unwrap();
@@ -1649,7 +1647,7 @@ impl player_bridge::PlayerController {
         if *self.as_ref().is_loading() {
             return;
         }
-        // CD playback owns the drive; file playback doesn't touch it.
+        // cd playback owns the drive; file playback doesn't touch it.
         if *self.as_ref().is_playing() && !self.state.lock().unwrap().is_file_mode {
             return;
         }
@@ -1797,7 +1795,7 @@ impl player_bridge::PlayerController {
                 self.as_mut().set_track_names(dur_list);
                 self.as_mut().set_track_titles(title_list);
                 self.as_mut().set_track_artists(artist_list);
-                // CD tracks have no queueable path.
+                // cd tracks have no queueable path.
                 self.as_mut().set_track_paths(QStringList::default());
                 self.as_mut().set_total_tracks(track_count);
                 self.as_mut().set_drive_status(QString::from(""));
@@ -1903,6 +1901,12 @@ impl player_bridge::PlayerController {
         state.volume.store(v.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
     }
 
+    /// windows only: maximize/restore the main window natively (see win_frame).
+    pub fn toggle_maximize(self: Pin<&mut Self>) {
+        #[cfg(windows)]
+        crate::win_frame::toggle_maximize();
+    }
+
     pub fn init_smtc(self: Pin<&mut Self>) {
         println!("[smtc] init_smtc() called from QML");
         eprintln!("[smtc] initialising...");
@@ -1948,7 +1952,7 @@ impl player_bridge::PlayerController {
 
         let disc_id   = self.state.lock().unwrap().current_disc_id.clone();
         let track_idx = *self.as_ref().current_track();
-        // For file tracks, grab the path for a better cache key.
+        // for file tracks, grab the path for a better cache key.
         let file_path: String = {
             let st = self.state.lock().unwrap();
             if st.is_file_mode && track_idx >= 0 {
@@ -1976,7 +1980,7 @@ impl player_bridge::PlayerController {
         let handle = thread::spawn(move || {
             use crate::lyric_cache::{LyricContentCache, cd_key, file_key};
 
-            // A sidecar .lrc next to the audio file always wins over web/cached lyrics.
+            // a sidecar .lrc next to the audio file always wins over web/cached lyrics.
             if let Some(lines) = crate::lrclib::load_local_lrc(&file_path) {
                 if gen_arc.load(Ordering::SeqCst) == generation {
                     *result_slot.lock().unwrap() = Some(Some(lines));
@@ -1992,7 +1996,7 @@ impl player_bridge::PlayerController {
 
             let mut content_cache = LyricContentCache::load();
 
-            // Fast-reject: track previously had no lyrics.
+            // fast-reject: track previously had no lyrics.
             if content_cache.has_no_lyrics(&cache_key) {
                 eprintln!("[lrclib] no-lyrics cache hit for key {}", cache_key);
                 if gen_arc.load(Ordering::SeqCst) == generation {
@@ -2001,7 +2005,7 @@ impl player_bridge::PlayerController {
                 return;
             }
 
-            // Content cache hit: re-parse the cached raw LRC.
+            // content cache hit: re-parse the cached raw lrc.
             if let Some(raw_lrc) = content_cache.get_lrc(&cache_key) {
                 eprintln!("[lrclib] lrc content cache hit for key {}", cache_key);
                 content_cache.save();
@@ -2012,7 +2016,7 @@ impl player_bridge::PlayerController {
                 return;
             }
 
-            // Cache miss → call the API.
+            // cache miss -> call the api.
             let result: Option<Vec<crate::lrclib::LyricLine>> =
                 match crate::lrclib::fetch_synced_lyrics(&track_name, &artist_name, &album_name, duration_secs) {
                     Some((_id, raw_lrc, lines)) => {
@@ -2027,7 +2031,7 @@ impl player_bridge::PlayerController {
                     }
                 };
 
-            // Only publish the result if this fetch is still the current one.
+            // only publish the result if this fetch is still the current one.
             if gen_arc.load(Ordering::SeqCst) == generation {
                 *result_slot.lock().unwrap() = Some(result);
             } else {
@@ -2059,9 +2063,9 @@ impl player_bridge::PlayerController {
         }
     }
 
-    /// Rebuild the displayed lyric lists from the stored originals, applying the
-    /// current romanize-lyrics setting. Invoked from QML when the user toggles
-    /// the setting, and internally after each fetch — no re-fetch required.
+    /// rebuild the displayed lyric lists from the stored originals, applying the
+    /// current romanize-lyrics setting. invoked from qml when the user toggles
+    /// the setting, and internally after each fetch - no re-fetch required.
     pub fn reapply_lyrics(mut self: Pin<&mut Self>) {
         let romanize = crate::library_cache::load_settings().romanize_lyrics;
         let mut lines = self.state.lock().unwrap().lyrics_src.clone();
@@ -2076,7 +2080,7 @@ impl player_bridge::PlayerController {
         self.as_mut().set_lyric_times(times);
     }
 
-    /// Toggle Discord Rich Presence at runtime, applying immediately (clears the
+    /// toggle discord rich presence at runtime, applying immediately (clears the
     /// presence when disabled, re-publishes the current track when enabled).
     pub fn set_discord_enabled(self: Pin<&mut Self>, value: bool) {
         let current_track = *self.as_ref().current_track();
@@ -2116,8 +2120,8 @@ impl player_bridge::PlayerController {
             .filter_map(|i| {
                 let s = urls.get(i).map(|qs| qs.to_string())?;
                 let path = if let Some(p) = s.strip_prefix("file:///") {
-                    // Windows:  file:///C:/...  → C:/...
-                    // Unix:     file:///home/... → /home/...  (re-add the leading /)
+                    // windows:  file:///C:/...  -> C:/...
+                    // unix:     file:///home/... -> /home/...  (re-add the leading /)
                     #[cfg(target_os = "windows")]
                     { p.to_string() }
                     #[cfg(not(target_os = "windows"))]
@@ -2175,8 +2179,8 @@ impl player_bridge::PlayerController {
         self.load_local_tracks(paths, is_single);
     }
 
-    /// Switch back to CD mode from file mode.
-    /// Clears file-mode state, restores CD mode, and triggers a disc load
+    /// switch back to cd mode from file mode.
+    /// clears file-mode state, restores cd mode, and triggers a disc load
     /// so the track list is repopulated from the previously selected drive.
     pub fn load_disc(mut self: Pin<&mut Self>) {
         self.as_mut().stop_playback_internal();
@@ -2243,7 +2247,7 @@ impl player_bridge::PlayerController {
             self.as_mut().set_lyric_lines(QStringList::default());
             self.as_mut().set_lyric_times(QStringList::default());
             self.as_mut().set_drive_status(QString::from("No disc inserted"));
-            // Trigger a fresh drive scan so the CD path resumes normally.
+            // trigger a fresh drive scan so the cd path resumes normally.
             self.as_mut().scan_drives();
         } else {
             self.as_mut().stop_playback_internal();
@@ -2254,7 +2258,7 @@ impl player_bridge::PlayerController {
         }
     }
 
-    /// Physically eject the selected drive's tray. Unlike eject_or_close this
+    /// physically eject the selected drive's tray. unlike eject_or_close this
     /// never touches file-mode state: local playback keeps running while the
     /// tray opens.
     pub fn eject_disc(mut self: Pin<&mut Self>) {
@@ -2276,7 +2280,7 @@ impl player_bridge::PlayerController {
         for (i, p) in input_paths.iter().enumerate() {
             eprintln!("[dbg]   input[{}]: {}", i, p);
         }
-        // Local files have no disc ID — clear it so the lyric cache is never
+        // local files have no disc id - clear it so the lyric cache is never
         // read from or written to during file-mode playback.
         self.state.lock().unwrap().current_disc_id.clear();
 
@@ -2287,7 +2291,7 @@ impl player_bridge::PlayerController {
             return;
         }
 
-        // Picking an album by hand supersedes anything the queue was going to
+        // picking an album by hand supersedes anything the queue was going to
         // come back to.
         self.state.lock().unwrap().queue_resume = None;
 
@@ -2295,8 +2299,8 @@ impl player_bridge::PlayerController {
         self.apply_local_tracks(tracks, is_single, meta);
     }
 
-    /// Publish a already-collected set of local tracks as the active session.
-    /// Split out of `load_local_tracks` so the queue can swap sessions in and
+    /// publish a already-collected set of local tracks as the active session.
+    /// split out of `load_local_tracks` so the queue can swap sessions in and
     /// out without re-reading metadata from disk.
     fn apply_local_tracks(mut self: Pin<&mut Self>, tracks: Vec<crate::file_player::LocalTrack>, is_single: bool, meta: AlbumMeta) {
         if tracks.is_empty() { return; }
@@ -2319,9 +2323,9 @@ impl player_bridge::PlayerController {
             artist_plain.push(track.artist.clone());
         }
 
-        // Set file mode flag before stopping playback so stop_playback_internal
-        // does not attempt to reopen a CD drive (it checks is_file_mode).
-        // Intentionally keep current_drive_path so the user can switch back to
+        // set file mode flag before stopping playback so stop_playback_internal
+        // does not attempt to reopen a cd drive (it checks is_file_mode).
+        // intentionally keep current_drive_path so the user can switch back to
         // the disc without losing the selected drive.
         {
             let mut state = self.state.lock().unwrap();

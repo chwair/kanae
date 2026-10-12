@@ -1,7 +1,7 @@
 [env]
-# Homebrew Qt's qyieldcpu.h implicitly declares __yield, which newer Apple
-# clang rejects. Scoped to the mac targets via cc-rs's CXXFLAGS_<target>
-# lookup — a plain CXXFLAGS would also reach MSVC, which errors on the flag.
+# homebrew qt's qyieldcpu.h implicitly declares __yield, which newer apple
+# clang rejects. scoped to the mac targets via cc-rs's CXXFLAGS_<target>
+# lookup - a plain CXXFLAGS would also reach msvc, which errors on the flag.
 CXXFLAGS_aarch64-apple-darwin = "-Wno-implicit-function-declaration"
 CXXFLAGS_x86_64-apple-darwin = "-Wno-implicit-function-declaration"
 

@@ -1,7 +1,4 @@
-/// Music library scanner.
-///
-/// Scans one or more root paths, discovers audio files grouped by album,
-/// and delivers incremental progress via a channel so the UI can show a toast.
+/// scans library roots for audio files grouped by album, streaming progress to the ui.
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -9,34 +6,31 @@ use std::collections::HashMap;
 use rayon::prelude::*;
 use crate::file_player::{cover_for, is_audio_file, read_file_metadata_light};
 
-// ─── Public types ────────────────────────────────────────────────────────────
+// public types
 
-/// A scanned album: one or more audio files found inside the same directory.
-///
-/// Tracks are grouped by their album tag. Tracks with **no** album tag are each
-/// treated as their own single — two untagged files in the same folder are two
-/// separate albums, never merged together.
+/// a scanned album: one or more audio files in the same directory, grouped by album
+/// tag. untagged tracks each become their own single, never merged together.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct LibraryAlbum {
-    /// Stable unique identifier for this album. Distinguishes multiple albums
+    /// stable unique identifier for this album. distinguishes multiple albums
     /// (or singles) that live in the same directory, where `dir` alone is
-    /// ambiguous. Used as the navigation/browse key by both frontends.
+    /// ambiguous. used as the navigation/browse key by both frontends.
     #[serde(default)]
     pub id: String,
-    /// Absolute path of the containing directory.
+    /// absolute path of the containing directory.
     pub dir: PathBuf,
     pub album:        String,
     pub album_artist: String,
     pub year:         String,
     pub cover_url:    Option<String>,
     pub track_paths:  Vec<PathBuf>,
-    /// True when this album is a standalone single (an untagged track shown on
+    /// true when this album is a standalone single (an untagged track shown on
     /// its own rather than grouped with siblings).
     #[serde(default)]
     pub is_single:    bool,
 }
 
-/// A node in the library tree that the UI navigates.
+/// a node in the library tree that the ui navigates.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum LibraryNode {
     Folder(PathBuf),
@@ -45,44 +39,44 @@ pub enum LibraryNode {
 
 fn default_true() -> bool { true }
 fn default_crossfade_secs() -> f64 { 4.0 }
-/// Bounds the UI and playback both clamp to.
+/// bounds the ui and playback both clamp to.
 pub const CROSSFADE_MIN_SECS: f64 = 1.0;
 pub const CROSSFADE_MAX_SECS: f64 = 12.0;
 
-/// Settings that control scanning behaviour.
+/// settings that control scanning behaviour.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct LibrarySettings {
-    /// Root directories to scan.
+    /// root directories to scan.
     pub search_paths:  Vec<PathBuf>,
-    /// Folders to treat as if their contents were in the parent ("merge").
+    /// folders to treat as if their contents were in the parent ("merge").
     pub merged_folders: Vec<PathBuf>,
-    /// Folders to hide entirely.
+    /// folders to hide entirely.
     pub ignored_folders: Vec<PathBuf>,
-    /// Pinned folders/albums (always shown first).
+    /// pinned folders/albums (always shown first).
     pub pinned_paths:  Vec<PathBuf>,
-    /// When true, only albums are shown – sub-folders are traversed silently.
+    /// when true, only albums are shown - sub-folders are traversed silently.
     #[serde(default)]
     pub merge_all_folders: bool,
-    /// When true the lyric content cache has no entry limit.
+    /// when true the lyric content cache has no entry limit.
     #[serde(default)]
     pub lrc_limit_disabled: bool,
-    /// When true, Japanese lyric lines are romanized (kana + kanji → romaji).
+    /// when true, japanese lyric lines are romanized (kana + kanji -> romaji).
     #[serde(default)]
     pub romanize_lyrics: bool,
-    /// When true, publish Discord Rich Presence. On by default.
+    /// when true, publish discord rich presence. on by default.
     #[serde(default = "default_true")]
     pub discord_rpc: bool,
-    /// When true, draw the spectrum visualizer in the GUI. On by default.
+    /// when true, draw the spectrum visualizer in the gui. on by default.
     #[serde(default = "default_true")]
     pub visualizer: bool,
-    /// When true, overlap the end of a track with the start of the next.
+    /// when true, overlap the end of a track with the start of the next.
     #[serde(default)]
     pub crossfade: bool,
-    /// Length of that overlap in seconds.
+    /// length of that overlap in seconds.
     #[serde(default = "default_crossfade_secs")]
     pub crossfade_secs: f64,
-    /// Album sort order: "artist" (default), "album", "year_desc", "year_asc".
-    /// Empty string means the default.
+    /// album sort order: "artist" (default), "artist_desc", "album", "album_desc",
+    /// "year_desc", "year_asc". empty string means the default.
     #[serde(default)]
     pub album_sort: String,
 }
@@ -106,22 +100,25 @@ impl Default for LibrarySettings {
     }
 }
 
-// ─── Album sorting ───────────────────────────────────────────────────────────
+// album sorting
 
-/// The album sort modes, in the order the UIs cycle through them.
-pub const ALBUM_SORT_MODES: [&str; 4] = ["artist", "album", "year_desc", "year_asc"];
+/// the album sort modes, in the order the uis cycle through them.
+pub const ALBUM_SORT_MODES: [&str; 6] =
+    ["artist", "artist_desc", "album", "album_desc", "year_desc", "year_asc"];
 
-/// Human-readable label for an album sort mode.
+/// human-readable label for an album sort mode.
 pub fn album_sort_label(mode: &str) -> &'static str {
     match mode {
-        "album"     => "Album",
-        "year_desc" => "Year (newest)",
-        "year_asc"  => "Year (oldest)",
-        _           => "Artist",
+        "artist_desc" => "Artist (Z-A)",
+        "album"       => "Album (A-Z)",
+        "album_desc"  => "Album (Z-A)",
+        "year_desc"   => "Year (newest)",
+        "year_asc"    => "Year (oldest)",
+        _             => "Artist (A-Z)",
     }
 }
 
-/// Next / previous mode in the cycle (unknown or empty modes count as "artist").
+/// next / previous mode in the cycle (unknown or empty modes count as "artist").
 pub fn album_sort_next(mode: &str) -> &'static str {
     let i = ALBUM_SORT_MODES.iter().position(|m| *m == mode).unwrap_or(0);
     ALBUM_SORT_MODES[(i + 1) % ALBUM_SORT_MODES.len()]
@@ -131,14 +128,14 @@ pub fn album_sort_prev(mode: &str) -> &'static str {
     ALBUM_SORT_MODES[(i + ALBUM_SORT_MODES.len() - 1) % ALBUM_SORT_MODES.len()]
 }
 
-/// Leading numeric part of a year tag ("2003-05-01" → 2003). None when absent.
+/// leading numeric part of a year tag ("2003-05-01" -> 2003). none when absent.
 fn year_num(y: &str) -> Option<i64> {
     let digits: String = y.trim().chars().take_while(|c| c.is_ascii_digit()).collect();
     if digits.is_empty() { None } else { digits.parse().ok() }
 }
 
-/// Compare two albums for display under the given sort mode. Each side is
-/// `(album_artist, album_name, year)`. Albums with an unknown year sort after
+/// compare two albums for display under the given sort mode. each side is
+/// `(album_artist, album_name, year)`. albums with an unknown year sort after
 /// dated ones in both year modes.
 pub fn compare_albums(
     mode: &str,
@@ -149,7 +146,9 @@ pub fn compare_albums(
     let artist = || a.0.to_lowercase().cmp(&b.0.to_lowercase());
     let name   = || a.1.to_lowercase().cmp(&b.1.to_lowercase());
     match mode {
-        "album" => name().then_with(artist),
+        "artist_desc" => artist().reverse().then_with(name),
+        "album"       => name().then_with(artist),
+        "album_desc"  => name().reverse().then_with(artist),
         "year_desc" | "year_asc" => {
             let ord = match (year_num(a.2), year_num(b.2)) {
                 (Some(x), Some(y)) => if mode == "year_desc" { y.cmp(&x) } else { x.cmp(&y) },
@@ -163,41 +162,41 @@ pub fn compare_albums(
     }
 }
 
-/// Progress snapshot delivered during a scan.
+/// progress snapshot delivered during a scan.
 #[derive(Clone, Debug)]
 pub struct ScanProgress {
     pub files_found: usize,
     pub dirs_visited: usize,
     pub current_dir: PathBuf,
-    /// Albums newly discovered since the last progress event (may be empty).
+    /// albums newly discovered since the last progress event (may be empty).
     pub new_albums: Vec<LibraryAlbum>,
 }
 
-/// Final result of a completed scan.
+/// final result of a completed scan.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct LibraryScanResult {
     pub albums: Vec<LibraryAlbum>,
-    /// All directories that were visited (including leaf dirs with no tracks).
+    /// all directories that were visited (including leaf dirs with no tracks).
     pub dirs:   Vec<PathBuf>,
-    /// Mtime (Unix seconds) of each scanned directory, captured at scan time.
-    /// Used by `library_cache::needs_rescan` to detect filesystem changes without
+    /// mtime (unix seconds) of each scanned directory, captured at scan time.
+    /// used by `library_cache::needs_rescan` to detect filesystem changes without
     /// re-walking the tree on every startup.
     #[serde(default)]
     pub dir_mtimes: std::collections::HashMap<PathBuf, u64>,
 }
 
-// ─── Scanner ─────────────────────────────────────────────────────────────────
+// scanner
 
-/// Result of the cheap directory-tree walk (phase 1 of a scan).
+/// result of the cheap directory-tree walk (phase 1 of a scan).
 #[derive(Default)]
 struct WalkAccum {
-    /// Every navigable directory (has audio and/or sub-directories).
+    /// every navigable directory (has audio and/or sub-directories).
     dirs: Vec<PathBuf>,
-    /// Directories that directly contain audio files, with those files.
+    /// directories that directly contain audio files, with those files.
     audio_dirs: Vec<(PathBuf, Vec<PathBuf>)>,
 }
 
-/// Read a directory's modification time as Unix seconds, if available.
+/// read a directory's modification time as unix seconds, if available.
 fn dir_mtime(dir: &Path) -> Option<u64> {
     std::fs::metadata(dir)
         .and_then(|m| m.modified())
@@ -206,29 +205,25 @@ fn dir_mtime(dir: &Path) -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
-/// Scan all `search_paths` and return a `LibraryScanResult`.
-///
-/// Phase 1 walks the directory tree (cheap `read_dir` only). Phase 2 reads file
-/// metadata in parallel via rayon, streaming each directory's albums to the UI.
-///
-/// When `prev` is supplied, directories whose mtime is unchanged since that
-/// previous result reuse their cached albums instead of re-reading metadata —
-/// this makes startup rescans and live rescans near-instant.
-///
-/// Respects `stop_flag` for early cancellation.
+/// scan all `search_paths` and return a `LibraryScanResult`. phase 1 walks the
+/// directory tree (cheap `read_dir` only), phase 2 reads file metadata in parallel
+/// via rayon, streaming each directory's albums to the ui. when `prev` is supplied,
+/// directories whose mtime is unchanged reuse their cached albums instead of
+/// re-reading metadata, which makes startup and live rescans near-instant. respects
+/// `stop_flag` for early cancellation.
 pub fn scan(
     settings: &LibrarySettings,
     stop_flag: Arc<AtomicBool>,
     progress_tx: std::sync::mpsc::SyncSender<ScanProgress>,
     prev: Option<&LibraryScanResult>,
 ) -> LibraryScanResult {
-    // ── Phase 1: walk the tree (serial, just read_dir — fast). ──────────────
+    // phase 1: walk the tree (serial, just read_dir - fast).
     let mut walk = WalkAccum::default();
     let dirs_visited = Arc::new(AtomicUsize::new(0));
     for root in &settings.search_paths {
         if stop_flag.load(Ordering::Relaxed) { break; }
         walk_dir(root, settings, &stop_flag, &progress_tx, &dirs_visited, &mut walk);
-        // Always record an existing root, even if it currently holds no music or
+        // always record an existing root, even if it currently holds no music or
         // sub-folders, so the live-change check treats it as "covered" rather
         // than perpetually out of date.
         let ignored = settings.ignored_folders.iter().any(|ig| root.starts_with(ig) || root == ig);
@@ -237,13 +232,13 @@ pub fn scan(
         }
     }
 
-    // Group previous albums by directory so unchanged dirs can be reused
-    // without re-reading any metadata. Keyed by dir, O(albums) to build.
+    // group previous albums by directory so unchanged dirs can be reused
+    // without re-reading any metadata. keyed by dir, o(albums) to build.
     let mut prev_by_dir: HashMap<PathBuf, Vec<LibraryAlbum>> = HashMap::new();
     if let Some(p) = prev {
         for album in &p.albums {
-            // Never reuse id-less albums (legacy cache) — they'd carry empty ids
-            // forward and break browsing. Re-reading the dir assigns proper ids.
+            // never reuse id-less albums (legacy cache) - they'd carry empty ids
+            // forward and break browsing. re-reading the dir assigns proper ids.
             if album.id.is_empty() { continue; }
             prev_by_dir.entry(album.dir.clone()).or_default().push(album.clone());
         }
@@ -252,13 +247,13 @@ pub fn scan(
     let files_found = Arc::new(AtomicUsize::new(0));
     let dirs_total = walk.dirs.len();
 
-    // ── Phase 2: read metadata + group, in parallel across directories. ─────
+    // phase 2: read metadata + group, in parallel across directories.
     let albums: Vec<LibraryAlbum> = walk.audio_dirs
         .par_iter()
         .flat_map(|(dir, files)| {
             if stop_flag.load(Ordering::Relaxed) { return Vec::new(); }
 
-            // Reuse cached albums when this dir's mtime hasn't changed.
+            // reuse cached albums when this dir's mtime hasn't changed.
             let reused = prev.and_then(|p| {
                 let cur = dir_mtime(dir)?;
                 let was = p.dir_mtimes.get(dir).copied()?;
@@ -268,7 +263,7 @@ pub fn scan(
             let (albums, was_reused) = match reused {
                 Some(cached) => (cached, true),
                 None => {
-                    // Cover art is read separately below, so the per-track pass
+                    // cover art is read separately below, so the per-track pass
                     // skips it: every file of an album carries the same picture
                     // and grouping keeps only one of them.
                     let tracks: Vec<_> = files.par_iter().map(|p| read_file_metadata_light(p)).collect();
@@ -280,8 +275,8 @@ pub fn scan(
                 }
             };
 
-            // Only stream freshly-read directories. On an incremental rescan the
-            // UI already holds the reused (unchanged) albums, so re-streaming them
+            // only stream freshly-read directories. on an incremental rescan the
+            // ui already holds the reused (unchanged) albums, so re-streaming them
             // would just churn the node list for no benefit.
             if !was_reused {
                 let fc = files_found.fetch_add(files.len(), Ordering::Relaxed) + files.len();
@@ -310,7 +305,7 @@ pub fn scan(
     result.dirs.sort();
     result.dirs.dedup();
 
-    // Snapshot directory mtimes so needs_rescan() can detect changes in O(n_dirs)
+    // snapshot directory mtimes so needs_rescan() can detect changes in o(n_dirs)
     // without re-walking the filesystem tree on the next startup.
     for dir in &result.dirs {
         if let Some(secs) = dir_mtime(dir) {
@@ -321,7 +316,7 @@ pub fn scan(
     result
 }
 
-/// Phase-1 walk: discover directories and the audio files they contain.
+/// phase-1 walk: discover directories and the audio files they contain.
 fn walk_dir(
     dir: &Path,
     settings: &LibrarySettings,
@@ -355,8 +350,8 @@ fn walk_dir(
     audio_files.sort();
     sub_dirs.sort();
 
-    // Record this dir if it has audio or sub-directories (so navigation works).
-    // Empty leaf directories are skipped.
+    // record this dir if it has audio or sub-directories (so navigation works).
+    // empty leaf directories are skipped.
     if !audio_files.is_empty() {
         walk.dirs.push(dir.to_path_buf());
         walk.audio_dirs.push((dir.to_path_buf(), audio_files));
@@ -370,7 +365,7 @@ fn walk_dir(
     }
 }
 
-/// Build a stable unique id for an album from its directory and a discriminator
+/// build a stable unique id for an album from its directory and a discriminator
 /// (album tag, or `single:<filename>` for an untagged standalone track).
 fn album_id(dir: &Path, key: &str) -> String {
     // U+001F (unit separator) cannot appear in a path or tag, so this is unambiguous.
@@ -383,7 +378,7 @@ fn group_into_albums(dir: &Path, tracks: &[crate::file_player::LocalTrack]) -> V
     let mut singles: Vec<LibraryAlbum> = Vec::new();
 
     for t in tracks {
-        // An untagged track is its own single — never merged with other untagged
+        // an untagged track is its own single - never merged with other untagged
         // tracks that happen to share a directory (e.g. loose files in Music/).
         if t.album.trim().is_empty() {
             let file_key = t.path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -403,7 +398,7 @@ fn group_into_albums(dir: &Path, tracks: &[crate::file_player::LocalTrack]) -> V
             continue;
         }
 
-        // Tracks sharing an album tag in the same directory form one album.
+        // tracks sharing an album tag in the same directory form one album.
         let key = t.album.clone();
         let entry = map.entry(key.clone()).or_insert_with(|| LibraryAlbum {
             id: album_id(dir, &key),
@@ -426,9 +421,9 @@ fn group_into_albums(dir: &Path, tracks: &[crate::file_player::LocalTrack]) -> V
     out
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// helpers
 
-/// Return the OS default music directory, or None if unavailable.
+/// return the os default music directory, or none if unavailable.
 pub fn default_music_dir() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
@@ -437,7 +432,7 @@ pub fn default_music_dir() -> Option<PathBuf> {
             if p.exists() { return Some(p); }
         }
         // SHGetKnownFolderPath for FOLDERID_Music via winapi would be ideal but
-        // the env var is reliable on all supported Windows versions.
+        // the env var is reliable on all supported windows versions.
         None
     }
     #[cfg(target_os = "macos")]
@@ -489,7 +484,7 @@ mod tests {
         assert_eq!(albums.len(), 2, "two untagged files must be two singles");
         assert!(albums.iter().all(|a| a.is_single));
         assert_ne!(albums[0].id, albums[1].id, "singles need distinct ids");
-        // Each single owns exactly its own track.
+        // each single owns exactly its own track.
         assert!(albums.iter().all(|a| a.track_paths.len() == 1));
     }
 
@@ -525,5 +520,17 @@ mod tests {
         let first = group_into_albums(dir, &tracks);
         let second = group_into_albums(dir, &tracks);
         assert_eq!(first[0].id, second[0].id, "ids must be deterministic");
+    }
+
+    #[test]
+    fn desc_modes_reverse_only_the_primary_key() {
+        use std::cmp::Ordering;
+        let (a, b, c) = (("abba", "x", ""), ("zed", "a", ""), ("abba", "y", ""));
+        assert_eq!(compare_albums("artist", a, b), Ordering::Less);
+        assert_eq!(compare_albums("artist_desc", a, b), Ordering::Greater);
+        assert_eq!(compare_albums("album", a, b), Ordering::Greater);
+        assert_eq!(compare_albums("album_desc", a, b), Ordering::Less);
+        // ties on the reversed key still fall back to ascending.
+        assert_eq!(compare_albums("artist_desc", a, c), Ordering::Less);
     }
 }

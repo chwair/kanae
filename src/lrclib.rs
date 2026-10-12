@@ -30,9 +30,9 @@ struct GetResult {
 
 const USER_AGENT: &str = concat!("Kanae v", env!("CARGO_PKG_VERSION"), " (https://github.com/chwair/kanae)");
 
-/// Load a sidecar `.lrc` file that sits next to the audio file (same name,
-/// `.lrc` extension). Returns parsed lines, or None when there is no such file
-/// or it contains no timestamped lines — callers then fall back to the
+/// load a sidecar `.lrc` file that sits next to the audio file (same name,
+/// `.lrc` extension). returns parsed lines, or None when there is no such file
+/// or it contains no timestamped lines - callers then fall back to the
 /// cache/web path.
 pub fn load_local_lrc(audio_path: &str) -> Option<Vec<LyricLine>> {
     if audio_path.is_empty() { return None; }
@@ -49,7 +49,7 @@ pub fn load_local_lrc(audio_path: &str) -> Option<Vec<LyricLine>> {
     }
 }
 
-/// Fetch lyrics for a known lrclib ID.  Returns `(raw_lrc, parsed_lines)` on success.
+/// fetch lyrics for a known lrclib id.  returns `(raw_lrc, parsed_lines)` on success.
 pub fn fetch_by_id(id: u64) -> Option<(String, Vec<LyricLine>)> {
     let url = format!("https://lrclib.net/api/get/{}", id);
     eprintln!("[lrclib] GET {} (by id)", url);
@@ -85,7 +85,7 @@ pub fn fetch_by_id(id: u64) -> Option<(String, Vec<LyricLine>)> {
     }
 }
 
-/// Search for synced lyrics.  Returns `(lrclib_id, raw_lrc, parsed_lines)` on success.
+/// search for synced lyrics.  returns `(lrclib_id, raw_lrc, parsed_lines)` on success.
 pub fn fetch_synced_lyrics(
     track_name: &str,
     artist_name: &str,

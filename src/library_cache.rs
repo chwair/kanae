@@ -1,28 +1,24 @@
-/// Persistence for library scan results and settings.
-///
-/// Stored as JSON in the OS app-data directory so they survive restarts
-/// without a full rescan.  On the next boot we use the cache and only do an
-/// incremental check for new / removed files.
+/// persistence for library scan results and settings, so restarts skip a full rescan.
 use std::path::PathBuf;
 use crate::library::{LibraryScanResult, LibrarySettings};
 
-// ─── TUI-specific settings ────────────────────────────────────────────────────
+// tui-specific settings
 
-/// How album-art images are rendered in the TUI.
+/// how album-art images are rendered in the tui.
 #[derive(Clone, Copy, PartialEq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub enum TuiImageMethod {
-    /// Automatically detect the best supported protocol at startup.
+    /// automatically detect the best supported protocol at startup.
     #[default]
     Auto,
-    /// Unicode half-block / chafa character-art (works everywhere; uses chafa when available).
+    /// unicode half-block / chafa character-art (works everywhere; uses chafa when available).
     Halfblocks,
-    /// Sixel graphics (xterm, mlterm, etc.).
+    /// sixel graphics (xterm, mlterm, etc.).
     Sixel,
-    /// Kitty graphics protocol.
+    /// kitty graphics protocol.
     Kitty,
-    /// iTerm2 inline images (iTerm2, WezTerm, etc.).
+    /// iterm2 inline images (iterm2, wezterm, etc.).
     Iterm2,
-    /// Disable album-art display entirely.
+    /// disable album-art display entirely.
     None,
 }
 
@@ -61,15 +57,15 @@ impl TuiImageMethod {
     }
 }
 
-/// Which icon style to use in the TUI.
+/// which icon style to use in the tui.
 #[derive(Clone, Copy, PartialEq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub enum TuiIconSet {
-    /// Nerd Fonts patched font icons (requires a Nerd Fonts terminal font).
+    /// nerd fonts patched font icons (requires a nerd fonts terminal font).
     #[default]
     NerdFonts,
-    /// Standard Unicode symbols (works on most terminals).
+    /// standard unicode symbols (works on most terminals).
     Unicode,
-    /// Plain ASCII text fallback (works on any terminal).
+    /// plain ascii text fallback (works on any terminal).
     PlainText,
 }
 
@@ -97,7 +93,7 @@ impl TuiIconSet {
     }
 }
 
-/// TUI-specific persistent settings.
+/// tui-specific persistent settings.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct TuiSettings {
     #[serde(default)]
@@ -146,20 +142,19 @@ fn ensure_dir() -> PathBuf {
     dir
 }
 
-/// Persistent directory for extracted album-art images.
-///
-/// Cover art embedded in audio files is written here (keyed by a hash of the
+/// persistent directory for extracted album-art images.
+/// cover art embedded in audio files is written here (keyed by a hash of the
 /// source path) so the `cover_url` stored in the scan cache survives restarts.
-/// Using the temp dir instead would leave reused/cached albums pointing at files
-/// the OS has since cleared, showing missing covers.
+/// using the temp dir instead would leave reused/cached albums pointing at files
+/// the os has since cleared, showing missing covers.
 pub fn cover_cache_dir() -> PathBuf {
     let dir = cache_dir().join("covers");
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
 
-/// True if the cached result predates the album `id` field (every album has an
-/// empty id). Such a cache must be fully re-scanned — not incrementally reused —
+/// true if the cached result predates the album `id` field (every album has an
+/// empty id). such a cache must be fully re-scanned - not incrementally reused -
 /// so albums get stable ids and untagged singles split apart correctly.
 pub fn is_legacy_cache(result: &LibraryScanResult) -> bool {
     !result.albums.is_empty() && result.albums.iter().all(|a| a.id.is_empty())
@@ -192,21 +187,19 @@ pub fn save_cache(r: &LibraryScanResult) {
     }
 }
 
-/// Returns true if the cached scan result is out of date and a rescan is needed.
-///
-/// Fast O(n_dirs) check: each directory in the cache is stat()ed and its current
-/// mtime is compared against the mtime stored at scan time.  A changed mtime means
-/// files were added or removed from that directory.  If the stored mtime map is
+/// returns true if the cached scan result is out of date and a rescan is needed.
+/// fast o(n_dirs) check: each directory in the cache is stat()ed and its current
+/// mtime is compared against the mtime stored at scan time.  a changed mtime means
+/// files were added or removed from that directory.  if the stored mtime map is
 /// absent (old cache format) the check falls back to verifying directories exist.
 pub fn needs_rescan(settings: &LibrarySettings, result: &LibraryScanResult) -> bool {
     dirs_changed(&settings.search_paths, &result.dirs, &result.dir_mtimes)
 }
 
-/// Lightweight filesystem-change check used by both `needs_rescan` and the live
-/// library watcher. Operates on plain slices/maps so callers can clone just the
+/// lightweight filesystem-change check used by both `needs_rescan` and the live
+/// library watcher. operates on plain slices/maps so callers can clone just the
 /// directory list and mtimes (not the whole album set) for off-thread polling.
-///
-/// Returns true if: a search root is uncovered, a known dir was removed, or any
+/// returns true if: a search root is uncovered, a known dir was removed, or any
 /// known dir's mtime changed (files added/removed/renamed inside it).
 pub fn dirs_changed(
     search_paths: &[PathBuf],
@@ -231,7 +224,7 @@ pub fn dirs_changed(
                     if let Some(&stored_secs) = dir_mtimes.get(dir) {
                         if now_secs != stored_secs { return true; }
                     }
-                    // If dir_mtimes is absent (old cache), just confirm the dir exists.
+                    // if dir_mtimes is absent (old cache), just confirm the dir exists.
                 }
             }
         }

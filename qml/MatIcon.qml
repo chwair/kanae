@@ -19,7 +19,7 @@ Text {
 
     FontLoader { id: _matFont; source: "qrc:/fonts/MaterialSymbolsSharp-Filled.ttf" }
 
-    // Internal icon name → Material Symbols codepoint.
+    // internal icon name -> material symbols codepoint.
     readonly property var _glyphs: ({
         "settings":      "\ue8b8",
         "search":        "\ue8b6",

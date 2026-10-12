@@ -1,7 +1,6 @@
-// On Windows, hide the console window in release GUI-only builds.
-// TUI and hybrid builds stay console-subsystem: hybrid needs a console to
-// detect being run from a terminal (it frees the console again before showing
-// the GUI — see detach_own_console below).
+// on windows, hide the console window in release gui-only builds.
+// tui and hybrid builds stay console-subsystem: hybrid needs a console to detect a
+// terminal launch (see detach_own_console).
 #![cfg_attr(
     all(not(debug_assertions), feature = "gui", not(feature = "tui")),
     windows_subsystem = "windows"
@@ -27,6 +26,8 @@ mod discord;
 mod player;
 #[cfg(feature = "gui")]
 mod library_controller;
+#[cfg(all(feature = "gui", windows))]
+mod win_frame;
 
 #[cfg(feature = "tui")]
 mod tui;
@@ -34,17 +35,17 @@ mod tui;
 #[cfg(feature = "gui")]
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 
-// Needed to call is_terminal() in hybrid mode.
+// needed to call is_terminal() in hybrid mode.
 #[cfg(all(feature = "gui", feature = "tui"))]
 use std::io::IsTerminal;
 
-/// Give the process an explicit AppUserModelID and register a display name
-/// for it, so the Windows media flyout (SMTC) shows "Kanae" instead of
-/// "Unknown app". Must run before any window is created.
+/// give the process an explicit appusermodelid and register a display name
+/// for it, so the windows media flyout (smtc) shows "Kanae" instead of
+/// "unknown app". must run before any window is created.
 #[cfg(windows)]
 fn setup_windows_app_identity() {
     const AUMID: &str = "Kanae.Player";
-    // Per-user registration (no admin): maps the AUMID to a display name.
+    // per-user registration (no admin): maps the AUMID to a display name.
     let _ = (|| -> std::io::Result<()> {
         use winreg::{enums::HKEY_CURRENT_USER, RegKey};
         let (key, _) = RegKey::predef(HKEY_CURRENT_USER)
@@ -59,18 +60,18 @@ fn setup_windows_app_identity() {
     unsafe { SetCurrentProcessExplicitAppUserModelID(wide.as_ptr()); }
 }
 
-// ── Hybrid helpers: decide desktop vs terminal at runtime ────────────────────
+// hybrid helpers: decide desktop vs terminal at runtime
 
-/// True when the user launched us from an interactive terminal (as opposed to
-/// a double-click / desktop launcher / Finder / Explorer).
+/// true when the user launched us from an interactive terminal (as opposed to
+/// a double-click / desktop launcher / finder / explorer).
 #[cfg(all(feature = "gui", feature = "tui"))]
 fn launched_from_terminal() -> bool {
     if !std::io::stdout().is_terminal() {
         return false;
     }
-    // On Windows a double-clicked console-subsystem exe is given a brand-new
-    // console, so stdout still looks like a terminal. If we are the only
-    // process attached to the console, it was created for us → desktop launch.
+    // on windows a double-clicked console-subsystem exe is given a brand-new
+    // console, so stdout still looks like a terminal. if we are the only
+    // process attached to the console, it was created for us -> desktop launch.
     #[cfg(windows)]
     unsafe {
         let mut pids = [0u32; 2];
@@ -81,8 +82,8 @@ fn launched_from_terminal() -> bool {
     true
 }
 
-/// Close the auto-allocated console before showing the GUI so the flash window
-/// from a double-click launch disappears. A console shared with a shell (e.g.
+/// close the auto-allocated console before showing the gui so the flash window
+/// from a double-click launch disappears. a console shared with a shell (e.g.
 /// `kanae --gui` from cmd) is kept, so logs stay visible there.
 #[cfg(all(feature = "gui", feature = "tui", windows))]
 fn detach_own_console() {
@@ -97,12 +98,12 @@ fn detach_own_console() {
     }
 }
 
-/// Point the console-backed standard handles at the NUL device. FreeConsole
+/// point the console-backed standard handles at the nul device. FreeConsole
 /// leaves them pointing at the console it just closed; writing to one of those
 /// fails, and print!/eprintln! panic when the write fails, so the first log
-/// line after the GUI comes up would kill the process. (A windows-subsystem
-/// build has null std handles, which std silently discards writes to — this
-/// restores the same behaviour for a detached console build.) Handles the
+/// line after the gui comes up would kill the process. (a windows-subsystem
+/// build has null std handles, which std silently discards writes to - this
+/// restores the same behaviour for a detached console build.) handles the
 /// parent redirected to a file or pipe are left alone, so `kanae > log.txt`
 /// still collects logs.
 #[cfg(all(feature = "gui", feature = "tui", windows))]
@@ -135,7 +136,7 @@ unsafe fn redirect_std_to_nul(was_console: [bool; 3]) {
     }
 }
 
-/// Which of stdin/stdout/stderr are backed by the console we are about to free.
+/// which of stdin/stdout/stderr are backed by the console we are about to free.
 #[cfg(all(feature = "gui", feature = "tui", windows))]
 unsafe fn console_backed_std_handles() -> [bool; 3] {
     use winapi::um::consoleapi::GetConsoleMode;
@@ -156,7 +157,7 @@ fn main() {
     #[cfg(windows)]
     setup_windows_app_identity();
 
-    // ── Hybrid: TUI in a terminal, GUI otherwise; --gui / --tui override ──
+    // hybrid: tui in a terminal, gui otherwise; --gui / --tui override
     #[cfg(all(feature = "gui", feature = "tui"))]
     {
         let force_gui = std::env::args().any(|a| a == "--gui" || a == "-g");
@@ -172,7 +173,7 @@ fn main() {
         detach_own_console();
     }
 
-    // ── TUI-only build ────────────────────────────────────────────────────
+    // tui-only build
     #[cfg(all(not(feature = "gui"), feature = "tui"))]
     {
         if let Err(e) = tui::run_tui() {
@@ -182,7 +183,7 @@ fn main() {
         return;
     }
 
-    // ── GUI (gui-only build, or hybrid falling through to Qt) ─────────────
+    // gui (gui-only build, or hybrid falling through to qt)
     #[cfg(feature = "gui")]
     {
         let mut app = QGuiApplication::new();
@@ -191,6 +192,8 @@ fn main() {
         if let Some(engine) = engine.as_mut() {
             engine.load(&QUrl::from("qrc:/qt/qml/com/kdab/kanae/qml/main.qml"));
         }
+        #[cfg(windows)]
+        win_frame::install();
 
         if let Some(app) = app.as_mut() {
             app.exec();
@@ -198,6 +201,6 @@ fn main() {
     }
 }
 
-// Pull in the generated CXX-Qt code for the library controller.
+// pull in the generated cxx-qt code for the library controller.
 #[cfg(feature = "gui")]
 use library_controller::library_bridge;
