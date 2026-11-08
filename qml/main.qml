@@ -591,10 +591,12 @@ ApplicationWindow {
                 Rectangle { anchors.left:parent.left;anchors.right:parent.right;anchors.bottom:parent.bottom;height:parent.height/2;color:"transparent" }
                 Rectangle { anchors.bottom:parent.bottom;anchors.left:parent.left;anchors.right:parent.right;height:1;color:clrBorder }
 
-                MouseArea {
-                    anchors.fill: parent; acceptedButtons: Qt.LeftButton
-                    propagateComposedEvents: true
-                    onPressed: function(mouse) { settingsWindow.startSystemMove(); mouse.accepted = false }
+                // start the move once a drag is under way rather than on press: macos
+                // only honours startSystemMove while it holds the matching mouse event,
+                // which a press handed back unaccepted often misses on a trackpad.
+                DragHandler {
+                    target: null; acceptedButtons: Qt.LeftButton
+                    onActiveChanged: if (active) settingsWindow.startSystemMove()
                 }
 
                 Text {
@@ -877,10 +879,12 @@ ApplicationWindow {
             anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
             height: 30; color: "transparent"; z: 10
 
-            MouseArea {
-                anchors.fill: parent; acceptedButtons: Qt.LeftButton
-                propagateComposedEvents: true
-                onPressed: function(mouse) { window.startSystemMove(); mouse.accepted = false }
+            // start the move once a drag is under way rather than on press: macos
+            // only honours startSystemMove while it holds the matching mouse event,
+            // which a press handed back unaccepted often misses on a trackpad.
+            DragHandler {
+                target: null; acceptedButtons: Qt.LeftButton
+                onActiveChanged: if (active) window.startSystemMove()
             }
 
             // macos traffic lights
@@ -1020,9 +1024,12 @@ ApplicationWindow {
                 handle: Item {
                     id: splitHandle
                     implicitWidth: 1; implicitHeight: 1
-                    // which pane this divider sizes. the sidebar sits left of its
-                    // handle, the queue pane right of its own.
-                    readonly property bool forSidebar: x < queuePane.x
+                    // which pane this divider sizes. both side panes are capped
+                    // below half the window, so the sidebar's divider is always in
+                    // the left half and the queue's in the right. comparing with
+                    // queuePane.x breaks: a hidden queue is never laid out (x 0),
+                    // and an open one sits just right of its own divider.
+                    readonly property bool forSidebar: parent && x + width / 2 < parent.width / 2
                     readonly property Item pane: forSidebar ? sidebarColumn : queuePane
 
                     Rectangle {
@@ -2237,21 +2244,33 @@ ApplicationWindow {
                 spacing:10;visible:_view==="album"||player.is_playing
                 Text{text:formatTime(player.current_time);color:clrText;font.pixelSize:11;font.family:Qt.platform.os==="osx"?"Menlo":"Consolas";Layout.preferredWidth:timeMetrics.advanceWidth;horizontalAlignment:Text.AlignLeft}
                 Slider{id:seekSlider;Layout.fillWidth:true
-                    implicitHeight:20;padding:0;from:0;to:Math.max(player.total_time,1);value:pressed?value:player.current_time
+                    implicitHeight:20;padding:0;from:0;to:Math.max(player.total_time,1)
                     enabled:player.total_tracks>0;onPressedChanged:{if(!pressed)player.seek(value)}
+                    // value is pushed in rather than bound: a self-referencing
+                    // `pressed?value:...` binding is a loop that newer qt drops,
+                    // leaving the handle frozen and snapping back on release.
+                    function syncValue(){if(!pressed)value=player.current_time}
+                    Component.onCompleted:syncValue()
+                    onToChanged:syncValue()
+                    Connections{target:player;function onCurrent_timeChanged(){seekSlider.syncValue()}}
+                    // the slider maps the pointer over availableWidth minus the
+                    // handle, so the track is inset by the knob radius to match;
+                    // otherwise the knob drifts off the cursor toward either end.
+                    readonly property real knobR:5.5
+                    readonly property real trackW:Math.max(1,availableWidth-2*knobR)
                     background:Item{implicitHeight:20
-                        Rectangle{anchors.verticalCenter:parent.verticalCenter;width:parent.width;height:3;radius:1;color:clrSurf2
-                            Rectangle{id:seekFill;width:parent.width*seekSlider.visualPosition;height:parent.height;radius:1;color:clrAccent
+                        Rectangle{anchors.verticalCenter:parent.verticalCenter;x:seekSlider.knobR;width:seekSlider.trackW;height:3;radius:1;color:clrSurf2
+                            Rectangle{id:seekFill;width:seekSlider.trackW*seekSlider.visualPosition;height:parent.height;radius:1;color:clrAccent
                                 Behavior on width{enabled:!seekSlider.pressed;NumberAnimation{duration:60;easing.type:Easing.OutSine}}
                                 Rectangle{anchors.top:parent.top;anchors.left:parent.left;anchors.right:parent.right;height:1;radius:1;color:"#ffffff";opacity:0.08}}
                             // ghost fill spanning playhead to previewed point.
                             Rectangle{
                                 visible:seekSlider.previewOn&&!seekSlider.pressed
-                                x:Math.min(seekFill.width,seekSlider.previewX)
-                                width:Math.abs(seekSlider.previewX-seekFill.width)
+                                x:Math.min(seekFill.width,seekSlider.previewX-seekSlider.knobR)
+                                width:Math.abs(seekSlider.previewX-seekSlider.knobR-seekFill.width)
                                 height:parent.height;color:clrAccent;opacity:0.28
                             }}}
-                    handle:Rectangle{x:seekSlider.visualPosition*seekSlider.availableWidth-width/2;y:seekSlider.availableHeight/2-height/2
+                    handle:Rectangle{x:seekSlider.knobR+seekSlider.visualPosition*seekSlider.trackW-width/2;y:seekSlider.availableHeight/2-height/2
                         width:11;height:11;radius:5.5;color:seekSlider.pressed?"#ffffff":clrAccent;visible:player.total_tracks>0
                         opacity:seekSlider.hovered||seekSlider.pressed?1.0:0.0
                         Behavior on opacity{NumberAnimation{duration:130}}
@@ -2261,15 +2280,15 @@ ApplicationWindow {
                     // hover scrub preview
                     // the handle tracks playback, not the cursor, so the time
                     // under the pointer needs its own readout.
-                    HoverHandler{id:seekHover;acceptedDevices:PointerDevice.Mouse;cursorShape:Qt.PointingHandCursor}
-                    readonly property real hoverFrac:Math.max(0,Math.min(1,seekHover.point.position.x/Math.max(1,seekSlider.availableWidth)))
+                    HoverHandler{id:seekHover;acceptedDevices:PointerDevice.Mouse|PointerDevice.TouchPad;cursorShape:Qt.PointingHandCursor}
+                    readonly property real hoverFrac:Math.max(0,Math.min(1,(seekHover.point.position.x-knobR)/trackW))
                     // while dragging, follow the handle: the pointer can leave
                     // the slider mid-drag and the preview should still lead it.
                     readonly property real previewTime:pressed?value:hoverFrac*player.total_time
                     readonly property bool previewOn:(seekHover.hovered||pressed)&&player.total_tracks>0&&player.total_time>0
 
                     // position being previewed, in pixels along the track.
-                    readonly property real previewX:(pressed?visualPosition:hoverFrac)*availableWidth
+                    readonly property real previewX:knobR+(pressed?visualPosition:hoverFrac)*trackW
 
                     Rectangle{
                         id:seekTip
@@ -2408,10 +2427,25 @@ ApplicationWindow {
                 }
                 Slider{id:volSlider;Layout.preferredWidth:88;implicitHeight:30;padding:0;from:0;to:1;value:1.0
                     Component.onCompleted:player.setVolumeLevel(1.0);onMoved:player.setVolumeLevel(value)
-                    background:Item{implicitHeight:30;Rectangle{anchors.verticalCenter:parent.verticalCenter;width:parent.width;height:3;radius:1;color:clrSurf2
-                        Rectangle{width:parent.width*volSlider.value;height:parent.height;radius:1;color:clrText2
+                    // inset by the knob radius so the knob stays under the cursor
+                    // (see seekSlider).
+                    readonly property real knobR:4.5
+                    readonly property real trackW:Math.max(1,availableWidth-2*knobR)
+                    // 5% per wheel notch. trackpads send many small deltas that add
+                    // up the same way; `inverted` (natural scrolling) is undone so
+                    // pushing up always means louder.
+                    WheelHandler{
+                        acceptedDevices:PointerDevice.Mouse|PointerDevice.TouchPad
+                        onWheel:function(ev){
+                            var d=Math.abs(ev.angleDelta.y)>=Math.abs(ev.angleDelta.x)?ev.angleDelta.y:-ev.angleDelta.x
+                            if(ev.inverted)d=-d
+                            window.volumeBy(d/120*0.05)
+                        }
+                    }
+                    background:Item{implicitHeight:30;Rectangle{anchors.verticalCenter:parent.verticalCenter;x:volSlider.knobR;width:volSlider.trackW;height:3;radius:1;color:clrSurf2
+                        Rectangle{width:volSlider.trackW*volSlider.visualPosition;height:parent.height;radius:1;color:clrText2
                             Rectangle{anchors.top:parent.top;anchors.left:parent.left;anchors.right:parent.right;height:1;radius:1;color:"#ffffff";opacity:0.08}}}}
-                    handle:Rectangle{x:volSlider.visualPosition*volSlider.availableWidth-width/2;y:volSlider.availableHeight/2-height/2;width:9;height:9;radius:4.5
+                    handle:Rectangle{x:volSlider.knobR+volSlider.visualPosition*volSlider.trackW-width/2;y:volSlider.availableHeight/2-height/2;width:9;height:9;radius:4.5
                         color:volSlider.pressed?"#ffffff":clrText2;opacity:volSlider.hovered||volSlider.pressed?1.0:0.0
                         Behavior on opacity{NumberAnimation{duration:130}}
                         Behavior on color{ColorAnimation{duration:80}}}}

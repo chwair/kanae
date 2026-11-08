@@ -93,13 +93,130 @@ impl TuiIconSet {
     }
 }
 
+/// step `cur` by `step` places through `all`, wrapping at either end.
+fn cycle<T: Copy + PartialEq>(all: &[T], cur: T, step: isize) -> T {
+    let i = all.iter().position(|v| *v == cur).unwrap_or(0) as isize;
+    let n = all.len() as isize;
+    all[(i + step).rem_euclid(n) as usize]
+}
+
+/// colour scheme for the tui.
+#[derive(Clone, Copy, PartialEq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum TuiTheme {
+    /// the terminal's own palette and default colours, so light and dark
+    /// terminal schemes both keep their contrast.
+    #[default]
+    Terminal,
+    /// kanae's fixed dark palette (mirrors the gui), painted over the terminal background.
+    Kanae,
+}
+
+impl TuiTheme {
+    const ALL: [Self; 2] = [Self::Terminal, Self::Kanae];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Terminal => "Terminal",
+            Self::Kanae    => "Kanae Dark",
+        }
+    }
+    pub fn next(self) -> Self { cycle(&Self::ALL, self, 1) }
+    pub fn prev(self) -> Self { cycle(&Self::ALL, self, -1) }
+}
+
+/// highlight colour for the tui, taken from the terminal's ansi palette.
+#[derive(Clone, Copy, PartialEq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum TuiAccent {
+    /// no colour, emphasis by weight only (the gui's neutral accent).
+    #[default]
+    Mono,
+    Blue,
+    Cyan,
+    Green,
+    Yellow,
+    Magenta,
+    Red,
+}
+
+impl TuiAccent {
+    const ALL: [Self; 7] = [Self::Mono, Self::Blue, Self::Cyan, Self::Green, Self::Yellow, Self::Magenta, Self::Red];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Blue    => "Blue",
+            Self::Cyan    => "Cyan",
+            Self::Green   => "Green",
+            Self::Yellow  => "Yellow",
+            Self::Magenta => "Magenta",
+            Self::Red     => "Red",
+            Self::Mono    => "Monochrome",
+        }
+    }
+    pub fn next(self) -> Self { cycle(&Self::ALL, self, 1) }
+    pub fn prev(self) -> Self { cycle(&Self::ALL, self, -1) }
+}
+
+/// how the library is laid out in the tui.
+#[derive(Clone, Copy, PartialEq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum TuiLibraryView {
+    /// cover tiles, like the gui.
+    #[default]
+    Grid,
+    /// one row per item.
+    List,
+}
+
+impl TuiLibraryView {
+    const ALL: [Self; 2] = [Self::Grid, Self::List];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Grid => "Grid",
+            Self::List => "List",
+        }
+    }
+    pub fn next(self) -> Self { cycle(&Self::ALL, self, 1) }
+    pub fn prev(self) -> Self { cycle(&Self::ALL, self, -1) }
+}
+
+fn default_true() -> bool { true }
+
 /// tui-specific persistent settings.
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TuiSettings {
     #[serde(default)]
     pub image_method: TuiImageMethod,
     #[serde(default)]
     pub icon_set: TuiIconSet,
+    #[serde(default)]
+    pub theme: TuiTheme,
+    /// stored under a new key: the first builds wrote a blue default to
+    /// "accent" that nobody chose, which this leaves behind.
+    #[serde(default, rename = "accent_color")]
+    pub accent: TuiAccent,
+    #[serde(default)]
+    pub library_view: TuiLibraryView,
+    /// draw album covers on grid tiles (off falls back to icons).
+    #[serde(default = "default_true")]
+    pub grid_covers: bool,
+    /// show the key hint line under the controls.
+    #[serde(default = "default_true")]
+    pub show_hints: bool,
+    /// show the now-playing sidebar (cover, details, lyrics).
+    #[serde(default = "default_true")]
+    pub show_sidebar: bool,
+}
+
+impl Default for TuiSettings {
+    fn default() -> Self {
+        Self {
+            image_method: TuiImageMethod::default(),
+            icon_set:     TuiIconSet::default(),
+            theme:        TuiTheme::default(),
+            accent:       TuiAccent::default(),
+            library_view: TuiLibraryView::default(),
+            grid_covers:  true,
+            show_hints:   true,
+            show_sidebar: true,
+        }
+    }
 }
 
 pub fn load_tui_settings() -> TuiSettings {

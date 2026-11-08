@@ -35,23 +35,23 @@ impl LocalTrack {
     }
 }
 
-/// collect audio tracks from a mixed list of file and folder paths.
+/// collect audio tracks from a mixed list of file and folder paths. cover art
+/// is left unset: albums can embed hundreds of megabytes of artwork, so covers
+/// are resolved on demand with `album_cover` / `track_cover` instead.
 pub fn collect_files_from_paths(input_paths: &[String]) -> Vec<LocalTrack> {
-    let mut tracks = Vec::new();
+    let mut paths = Vec::new();
     for p in input_paths {
         let path = PathBuf::from(p);
         if path.is_dir() {
-            let mut dir_tracks = collect_dir(&path);
-            dir_tracks.sort_by(|a, b| a.path.cmp(&b.path));
-            tracks.extend(dir_tracks);
+            paths.extend(collect_dir(&path));
         } else if path.is_file() && is_audio_file(&path) {
-            tracks.push(read_file_metadata(&path));
+            paths.push(path);
         }
     }
-    tracks
+    read_album_metadata(&paths)
 }
 
-fn collect_dir(dir: &Path) -> Vec<LocalTrack> {
+fn collect_dir(dir: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
@@ -62,7 +62,20 @@ fn collect_dir(dir: &Path) -> Vec<LocalTrack> {
         }
     }
     files.sort();
-    files.iter().map(|f| read_file_metadata(f)).collect()
+    files
+}
+
+/// cover for a track, resolved once and remembered on the track.
+pub fn track_cover(track: &mut LocalTrack) -> Option<String> {
+    if track.cover_art_path.is_none() {
+        track.cover_art_path = cover_for(&track.path);
+    }
+    track.cover_art_path.clone()
+}
+
+/// cover for a whole session: the first track that has any art.
+pub fn album_cover(tracks: &mut [LocalTrack]) -> Option<String> {
+    tracks.iter_mut().find_map(track_cover)
 }
 
 /// the album a file belongs to, as the sibling audio files in its directory
@@ -70,7 +83,7 @@ fn collect_dir(dir: &Path) -> Vec<LocalTrack> {
 /// the file on its own when it has no album siblings, so an untagged loose
 /// file still plays.
 pub fn album_context_for(path: &Path) -> (Vec<LocalTrack>, i32) {
-    let this = read_file_metadata(path);
+    let this = read_album_metadata(&[path.to_path_buf()]).remove(0);
     let Some(dir) = path.parent() else { return (vec![this], 0) };
 
     let siblings = collect_files_from_paths(&[dir.to_string_lossy().into_owned()]);
@@ -295,13 +308,6 @@ pub fn read_album_metadata(paths: &[PathBuf]) -> Vec<LocalTrack> {
     out.into_iter().zip(paths)
         .map(|(t, p)| t.unwrap_or_else(|| LocalTrack { path: p.clone(), ..Default::default() }))
         .collect()
-}
-
-/// full metadata for one track, cover art included.
-pub fn read_file_metadata(path: &Path) -> LocalTrack {
-    let mut track = read_file_metadata_light(path);
-    track.cover_art_path = cover_for(path);
-    track
 }
 
 /// decode and play back a local audio file on a background thread.
@@ -560,4 +566,3 @@ pub fn play_local_file(
 
     playback_ended_arc.store(true, Ordering::Relaxed);
 }
-

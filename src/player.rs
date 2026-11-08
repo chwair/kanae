@@ -209,17 +209,18 @@ struct AlbumMeta {
 /// for a single file, show the track's own title/artist. for multiple files,
 /// use a common album when they share one and fall back to the folder name.
 fn derive_album_meta(
-    tracks: &[crate::file_player::LocalTrack],
+    tracks: &mut [crate::file_player::LocalTrack],
     input_paths: &[String],
     is_single: bool,
 ) -> AlbumMeta {
+    let cover = crate::file_player::album_cover(tracks);
     if is_single {
         let t = &tracks[0];
         return AlbumMeta {
             title: t.title.clone(),
             artist: t.artist.clone(),
             year: t.year.clone(),
-            cover: t.cover_art_path.clone(),
+            cover,
         };
     }
     let first_album = tracks[0].album.clone();
@@ -241,7 +242,7 @@ fn derive_album_meta(
         title,
         artist: if same_aa && !first_aa.is_empty() { first_aa } else { String::new() },
         year:   if same_year { first_year } else { String::new() },
-        cover:  tracks[0].cover_art_path.clone(),
+        cover,
     }
 }
 
@@ -308,6 +309,9 @@ pub struct PlayerState {
     smtc_album:        String,
     smtc_album_artist: String,
     smtc_cover_url:    String,
+    /// album-level cover for the loaded file session; smtc_cover_url follows the
+    /// playing track, which can carry its own art.
+    album_cover_url:   String,
     is_file_mode: bool,
     file_tracks: Vec<crate::file_player::LocalTrack>,
     discord: Option<crate::discord::DiscordPresence>,
@@ -390,6 +394,7 @@ impl Default for PlayerState {
             smtc_album:        String::new(),
             smtc_album_artist: String::new(),
             smtc_cover_url:    String::new(),
+            album_cover_url:   String::new(),
             is_file_mode: false,
             file_tracks: Vec::new(),
             discord: crate::discord::DiscordPresence::new(),
@@ -786,7 +791,7 @@ impl player_bridge::PlayerController {
                 title:  state.smtc_album.clone(),
                 artist: state.smtc_album_artist.clone(),
                 year:   String::new(),
-                cover:  if state.smtc_cover_url.is_empty() { None } else { Some(state.smtc_cover_url.clone()) },
+                cover:  if state.album_cover_url.is_empty() { None } else { Some(state.album_cover_url.clone()) },
             },
             tracks,
             is_single,
@@ -799,10 +804,10 @@ impl player_bridge::PlayerController {
     /// inside its album rather than alone, so clicking the now-playing title lands
     /// on the track within its real album instead of a fake one-track album.
     fn play_queue_entry(mut self: Pin<&mut Self>, entry: crate::queue::QueueEntry) {
-        let (tracks, index) = crate::file_player::album_context_for(&entry.path);
+        let (mut tracks, index) = crate::file_player::album_context_for(&entry.path);
         let is_single = tracks.len() == 1;
         let dir = entry.path.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-        let meta = derive_album_meta(&tracks, &[dir], is_single);
+        let meta = derive_album_meta(&mut tracks, &[dir], is_single);
         self.as_mut().apply_local_tracks(tracks, is_single, meta);
         self.as_mut().load_track_at(index);
     }
@@ -1034,6 +1039,25 @@ impl player_bridge::PlayerController {
         self.as_mut().set_current_track(index);
         self.as_mut().set_total_time(duration);
         self.as_mut().set_current_time(0.0);
+        // tracks with their own art show it while playing; the rest fall back
+        // to the album cover.
+        let track_cover = {
+            let mut state = self.state.lock().unwrap();
+            if state.is_file_mode {
+                let cover = state.file_tracks.get_mut(index as usize)
+                    .and_then(crate::file_player::track_cover)
+                    .unwrap_or_else(|| state.album_cover_url.clone());
+                state.smtc_cover_url = cover.clone();
+                Some(cover)
+            } else {
+                None
+            }
+        };
+        if let Some(cover) = track_cover {
+            if *self.as_ref().cover_art_path() != QString::from(cover.as_str()) {
+                self.as_mut().set_cover_art_path(QString::from(cover.as_str()));
+            }
+        }
         {
             let mut state = self.state.lock().unwrap();
             let idx     = index as usize;
@@ -2284,7 +2308,7 @@ impl player_bridge::PlayerController {
         // read from or written to during file-mode playback.
         self.state.lock().unwrap().current_disc_id.clear();
 
-        let tracks = crate::file_player::collect_files_from_paths(&input_paths);
+        let mut tracks = crate::file_player::collect_files_from_paths(&input_paths);
         eprintln!("[dbg] load_local_tracks: collect_files_from_paths found {} track(s)", tracks.len());
         if tracks.is_empty() {
             eprintln!("[file] no audio files found in provided paths");
@@ -2295,7 +2319,7 @@ impl player_bridge::PlayerController {
         // come back to.
         self.state.lock().unwrap().queue_resume = None;
 
-        let meta = derive_album_meta(&tracks, &input_paths, is_single);
+        let meta = derive_album_meta(&mut tracks, &input_paths, is_single);
         self.apply_local_tracks(tracks, is_single, meta);
     }
 
@@ -2341,6 +2365,7 @@ impl player_bridge::PlayerController {
             state.smtc_album         = album_title.clone();
             state.smtc_album_artist  = album_artist.clone();
             state.smtc_cover_url     = cover_art.clone().unwrap_or_default();
+            state.album_cover_url    = cover_art.clone().unwrap_or_default();
             state.track_titles_plain = title_plain;
             state.track_artists_plain = artist_plain;
         }
