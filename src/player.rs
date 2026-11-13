@@ -52,6 +52,9 @@ mod player_bridge {
         #[qproperty(QString, cd_cover)]
         #[qproperty(QStringList, lyric_lines)]
         #[qproperty(QStringList, lyric_times)]
+        #[qproperty(QString, lyric_words)]
+        #[qproperty(bool, lyrics_synced)]
+        #[qproperty(bool, lyrics_instrumental)]
         #[qproperty(bool, lyrics_loading)]
         #[qproperty(bool, is_file_mode)]
         #[qproperty(bool, is_single_file)]
@@ -297,12 +300,12 @@ pub struct PlayerState {
     meta_cache: Option<(String, Option<AlbumMetadata>)>,
     metadata_loaded: bool,
     current_disc_id: String,
-    lyric_result: Arc<Mutex<Option<Option<Vec<crate::lrclib::LyricLine>>>>>,
+    lyric_result: Arc<Mutex<Option<Option<crate::lrclib::Lyrics>>>>,
     lyric_fetch_thread: Option<thread::JoinHandle<()>>,
     lyric_fetch_generation: Arc<AtomicU64>,
     /// original (non-romanized) lyric lines for the current track, kept so the
     /// romanize toggle can be re-applied live without re-fetching.
-    lyrics_src: Vec<crate::lrclib::LyricLine>,
+    lyrics_src: crate::lrclib::Lyrics,
     smtc_handle: Option<crate::smtc::SmtcHandle>,
     track_titles_plain:  Vec<String>,
     track_artists_plain: Vec<String>,
@@ -387,7 +390,7 @@ impl Default for PlayerState {
             lyric_result: Arc::new(Mutex::new(None)),
             lyric_fetch_thread: None,
             lyric_fetch_generation: Arc::new(AtomicU64::new(0)),
-            lyrics_src: Vec::new(),
+            lyrics_src: Default::default(),
             smtc_handle: None,
             track_titles_plain:  Vec::new(),
             track_artists_plain: Vec::new(),
@@ -481,6 +484,13 @@ pub struct PlayerControllerRust {
     cd_cover: QString,
     lyric_lines: QStringList,
     lyric_times: QStringList,
+    /// json array, one entry per lyric line: [] when line-synced, otherwise
+    /// [[start_secs, end_secs, text], ...] word timings.
+    lyric_words: QString,
+    /// false for plain (untimed) lyrics
+    lyrics_synced: bool,
+    /// the current track is known to have no vocals
+    lyrics_instrumental: bool,
     lyrics_loading: bool,
     is_file_mode: bool,
     is_single_file: bool,
@@ -524,6 +534,9 @@ impl Default for PlayerControllerRust {
             cd_cover: QString::default(),
             lyric_lines: QStringList::default(),
             lyric_times: QStringList::default(),
+            lyric_words: QString::default(),
+            lyrics_synced: false,
+            lyrics_instrumental: false,
             lyrics_loading: false,
             is_file_mode: false,
             is_single_file: false,
@@ -1600,6 +1613,8 @@ impl player_bridge::PlayerController {
                 self.as_mut().set_drive_status(QString::from("No disc inserted"));
                 self.as_mut().set_lyric_lines(QStringList::default());
                 self.as_mut().set_lyric_times(QStringList::default());
+                self.as_mut().set_lyric_words(QString::default());
+                self.as_mut().set_lyrics_instrumental(false);
                 self.as_mut().publish_cd_info(None, false);
                 return;
             }
@@ -1893,6 +1908,8 @@ impl player_bridge::PlayerController {
                     self.as_mut().set_cover_art_path(QString::from(""));
                     self.as_mut().set_lyric_lines(QStringList::default());
                     self.as_mut().set_lyric_times(QStringList::default());
+                    self.as_mut().set_lyric_words(QString::default());
+                    self.as_mut().set_lyrics_instrumental(false);
                     {
                         let mut state = self.state.lock().unwrap();
                         state.metadata_loaded = false;
@@ -1963,6 +1980,8 @@ impl player_bridge::PlayerController {
     ) {
         self.as_mut().set_lyric_lines(QStringList::default());
         self.as_mut().set_lyric_times(QStringList::default());
+        self.as_mut().set_lyric_words(QString::default());
+        self.as_mut().set_lyrics_instrumental(false);
         self.as_mut().set_lyrics_loading(true);
 
         let track_name = track_name.to_string();
@@ -2005,9 +2024,9 @@ impl player_bridge::PlayerController {
             use crate::lyric_cache::{LyricContentCache, cd_key, file_key};
 
             // a sidecar .lrc next to the audio file always wins over web/cached lyrics.
-            if let Some(lines) = crate::lrclib::load_local_lrc(&file_path) {
+            if let Some(lyrics) = crate::lrclib::load_local_lrc(&file_path) {
                 if gen_arc.load(Ordering::SeqCst) == generation {
-                    *result_slot.lock().unwrap() = Some(Some(lines));
+                    *result_slot.lock().unwrap() = Some(Some(lyrics));
                 }
                 return;
             }
@@ -2033,20 +2052,20 @@ impl player_bridge::PlayerController {
             if let Some(raw_lrc) = content_cache.get_lrc(&cache_key) {
                 eprintln!("[lrclib] lrc content cache hit for key {}", cache_key);
                 content_cache.save();
-                let lines = crate::lrclib::parse_lrc(&raw_lrc);
+                let lyrics = crate::lrclib::parse_lyrics(&raw_lrc);
                 if gen_arc.load(Ordering::SeqCst) == generation {
-                    *result_slot.lock().unwrap() = Some(if lines.is_empty() { None } else { Some(lines) });
+                    *result_slot.lock().unwrap() = Some(if lyrics.is_empty() { None } else { Some(lyrics) });
                 }
                 return;
             }
 
             // cache miss -> call the api.
-            let result: Option<Vec<crate::lrclib::LyricLine>> =
-                match crate::lrclib::fetch_synced_lyrics(&track_name, &artist_name, &album_name, duration_secs) {
-                    Some((_id, raw_lrc, lines)) => {
+            let result: Option<crate::lrclib::Lyrics> =
+                match crate::lrclib::fetch_lyrics(&track_name, &artist_name, &album_name, duration_secs) {
+                    Some((_id, raw_lrc, lyrics)) => {
                         content_cache.insert_lrc(&cache_key, &raw_lrc, lrc_limit_disabled);
                         content_cache.save();
-                        Some(lines)
+                        Some(lyrics)
                     }
                     None => {
                         content_cache.insert_no_lyrics(&cache_key, lrc_limit_disabled);
@@ -2077,12 +2096,12 @@ impl player_bridge::PlayerController {
             drop(t);
         }
         match maybe_lines {
-            Some(lines) => {
-                self.state.lock().unwrap().lyrics_src = lines;
+            Some(lyrics) => {
+                self.state.lock().unwrap().lyrics_src = lyrics;
                 self.reapply_lyrics();
             }
             None => {
-                self.state.lock().unwrap().lyrics_src.clear();
+                self.state.lock().unwrap().lyrics_src = Default::default();
             }
         }
     }
@@ -2092,14 +2111,26 @@ impl player_bridge::PlayerController {
     /// the setting, and internally after each fetch - no re-fetch required.
     pub fn reapply_lyrics(mut self: Pin<&mut Self>) {
         let romanize = crate::library_cache::load_settings().romanize_lyrics;
-        let mut lines = self.state.lock().unwrap().lyrics_src.clone();
-        crate::romaji::romanize_lines(&mut lines, romanize);
+        let mut lyrics = self.state.lock().unwrap().lyrics_src.clone();
+        crate::romaji::romanize_lyrics(&mut lyrics, romanize);
+        let lines = lyrics.lines;
         let mut texts = QStringList::default();
         let mut times = QStringList::default();
+        let mut words: Vec<Vec<(f64, f64, &str)>> = Vec::with_capacity(lines.len());
         for line in &lines {
             texts.append(QString::from(line.text.as_str()));
             times.append(QString::from(line.time_secs.to_string().as_str()));
+            words.push(line.words.iter().map(|w| (w.time_secs, w.end_secs, w.text.as_str())).collect());
         }
+        // skip the json entirely for line-synced lyrics
+        let words_json = if words.iter().any(|w| !w.is_empty()) {
+            serde_json::to_string(&words).unwrap_or_default()
+        } else {
+            String::new()
+        };
+        self.as_mut().set_lyric_words(QString::from(words_json.as_str()));
+        self.as_mut().set_lyrics_synced(lyrics.synced);
+        self.as_mut().set_lyrics_instrumental(lyrics.instrumental);
         self.as_mut().set_lyric_lines(texts);
         self.as_mut().set_lyric_times(times);
     }
@@ -2198,6 +2229,8 @@ impl player_bridge::PlayerController {
         self.as_mut().set_cover_art_path(QString::from(""));
         self.as_mut().set_lyric_lines(QStringList::default());
         self.as_mut().set_lyric_times(QStringList::default());
+        self.as_mut().set_lyric_words(QString::default());
+        self.as_mut().set_lyrics_instrumental(false);
 
         let is_single = paths.len() == 1 && !std::path::Path::new(&paths[0]).is_dir();
         self.load_local_tracks(paths, is_single);
@@ -2270,6 +2303,8 @@ impl player_bridge::PlayerController {
             self.as_mut().set_cover_art_path(QString::from(""));
             self.as_mut().set_lyric_lines(QStringList::default());
             self.as_mut().set_lyric_times(QStringList::default());
+            self.as_mut().set_lyric_words(QString::default());
+            self.as_mut().set_lyrics_instrumental(false);
             self.as_mut().set_drive_status(QString::from("No disc inserted"));
             // trigger a fresh drive scan so the cd path resumes normally.
             self.as_mut().scan_drives();
@@ -2387,6 +2422,8 @@ impl player_bridge::PlayerController {
         self.as_mut().set_drive_status(QString::from(""));
         self.as_mut().set_lyric_lines(QStringList::default());
         self.as_mut().set_lyric_times(QStringList::default());
+        self.as_mut().set_lyric_words(QString::default());
+        self.as_mut().set_lyrics_instrumental(false);
 
         {
             let mut state = self.state.lock().unwrap();

@@ -108,6 +108,8 @@ struct Icons {
     repeat:       &'static str,
     repeat_one:   &'static str,
     lyric_gap:    &'static str,
+    // one cell of the instrumental break progress bar
+    lyric_bar:    &'static str,
     crumb:        &'static str,
     grid:         &'static str,
     list:         &'static str,
@@ -147,6 +149,7 @@ impl Icons {
                 repeat:      "\u{F0456}",  // nf-md-repeat
                 repeat_one:  "\u{F0458}",  // nf-md-repeat_once
                 lyric_gap:   "\u{F075A}",  // nf-md-music_note
+                lyric_bar:   "\u{2501}",
                 crumb:       "\u{203A}",
                 grid:        "\u{F0570}",  // nf-md-view_grid
                 list:        "\u{F0572}",  // nf-md-view_list
@@ -180,6 +183,7 @@ impl Icons {
                 repeat:      "\u{21BB}",
                 repeat_one:  "\u{21BB}1",
                 lyric_gap:   "\u{266A}",
+                lyric_bar:   "\u{2501}",
                 crumb:       "\u{203A}",
                 grid:        "\u{25A6}",
                 list:        "\u{2261}",
@@ -213,6 +217,7 @@ impl Icons {
                 repeat:      "Rp",
                 repeat_one:  "R1",
                 lyric_gap:   "~",
+                lyric_bar:   "-",
                 crumb:       ">",
                 grid:        "#",
                 list:        "=",
@@ -341,10 +346,15 @@ struct TuiPlayerState {
     // lyrics
     lyric_lines:        Vec<String>,
     // original (non-romanized) lyric text, kept so the romanize toggle applies live.
-    lyric_lines_src:    Vec<String>,
+    lyric_lines_src:    crate::lrclib::Lyrics,
+    // per displayed line word timings (start secs, end secs, chars); empty when line-synced.
+    lyric_words:        Vec<Vec<(f64, f64, usize)>>,
+    // false for plain lyrics, which have no current line
+    lyric_synced:       bool,
+    lyric_instrumental: bool,
     lyric_times:        Vec<f64>,
     lyrics_fetch_done:  bool,
-    lyric_result:       Arc<Mutex<Option<Option<Vec<crate::lrclib::LyricLine>>>>>,
+    lyric_result:       Arc<Mutex<Option<Option<crate::lrclib::Lyrics>>>>,
     lyric_fetch_thread: Option<thread::JoinHandle<()>>,
     lyric_fetch_gen:    Arc<AtomicU64>,
 }
@@ -394,7 +404,10 @@ impl Default for TuiPlayerState {
             track_artists:       vec![],
             track_durations:     vec![],
             lyric_lines:         vec![],
-            lyric_lines_src:     vec![],
+            lyric_lines_src:     Default::default(),
+            lyric_words:         vec![],
+            lyric_synced:        false,
+            lyric_instrumental:  false,
             lyric_times:         vec![],
             lyrics_fetch_done:   false,
             lyric_result:        Arc::new(Mutex::new(None)),
@@ -595,7 +608,9 @@ impl TuiPlayerState {
                 self.disc_count  = 0;
                 self.current_cover_url.clear();
                 self.lyric_lines.clear();
-                self.lyric_lines_src.clear();
+                self.lyric_lines_src = Default::default();
+                self.lyric_words.clear();
+                self.lyric_instrumental = false;
                 self.lyric_times.clear();
                 self.lyrics_fetch_done = false;
             }
@@ -660,7 +675,9 @@ impl TuiPlayerState {
         self.is_playing    = false;
         self.metadata_loaded = true;
         self.lyric_lines.clear();
-        self.lyric_lines_src.clear();
+        self.lyric_lines_src = Default::default();
+        self.lyric_words.clear();
+        self.lyric_instrumental = false;
         self.lyric_times.clear();
         self.lyrics_fetch_done = false;
         self.heard_position.store(0u64, Ordering::Relaxed);
@@ -1032,7 +1049,9 @@ impl TuiPlayerState {
                 self.track_durations.clear();
                 self.metadata_loaded = false;
                 self.lyric_lines.clear();
-                self.lyric_lines_src.clear();
+                self.lyric_lines_src = Default::default();
+                self.lyric_words.clear();
+                self.lyric_instrumental = false;
                 self.lyric_times.clear();
                 self.lyrics_fetch_done = false;
                 return;
@@ -1066,7 +1085,9 @@ impl TuiPlayerState {
         if title.is_empty() { return; }
 
         self.lyric_lines.clear();
-        self.lyric_lines_src.clear();
+        self.lyric_lines_src = Default::default();
+        self.lyric_words.clear();
+        self.lyric_instrumental = false;
         self.lyric_times.clear();
         self.lyrics_fetch_done = false;
 
@@ -1079,9 +1100,9 @@ impl TuiPlayerState {
             use crate::lyric_cache::{LyricContentCache, cd_key, file_key};
 
             // a sidecar .lrc next to the audio file always wins over web/cached lyrics.
-            if let Some(lines) = crate::lrclib::load_local_lrc(&file_path) {
+            if let Some(lyrics) = crate::lrclib::load_local_lrc(&file_path) {
                 if gen_arc.load(Ordering::SeqCst) == gen {
-                    *result_slot.lock().unwrap() = Some(Some(lines));
+                    *result_slot.lock().unwrap() = Some(Some(lyrics));
                 }
                 return;
             }
@@ -1105,18 +1126,18 @@ impl TuiPlayerState {
             if let Some(raw_lrc) = content_cache.get_lrc(&cache_key) {
                 eprintln!("[lrclib] lrc content cache hit for key {}", cache_key);
                 content_cache.save();
-                let lines = crate::lrclib::parse_lrc(&raw_lrc);
+                let lyrics = crate::lrclib::parse_lyrics(&raw_lrc);
                 if gen_arc.load(Ordering::SeqCst) == gen {
-                    *result_slot.lock().unwrap() = Some(if lines.is_empty() { None } else { Some(lines) });
+                    *result_slot.lock().unwrap() = Some(if lyrics.is_empty() { None } else { Some(lyrics) });
                 }
                 return;
             }
 
-            let result = match crate::lrclib::fetch_synced_lyrics(&title, &artist, &album, dur) {
-                Some((_id, raw_lrc, lines)) => {
+            let result = match crate::lrclib::fetch_lyrics(&title, &artist, &album, dur) {
+                Some((_id, raw_lrc, lyrics)) => {
                     content_cache.insert_lrc(&cache_key, &raw_lrc, lrc_limit_disabled);
                     content_cache.save();
-                    Some(lines)
+                    Some(lyrics)
                 }
                 None => {
                     content_cache.insert_no_lyrics(&cache_key, lrc_limit_disabled);
@@ -1137,9 +1158,11 @@ impl TuiPlayerState {
         if let Some(maybe_lines) = result {
             if let Some(t) = self.lyric_fetch_thread.take() { drop(t); }
             self.lyrics_fetch_done = true;
-            if let Some(lines) = maybe_lines {
-                self.lyric_lines_src = lines.iter().map(|l| l.text.clone()).collect();
-                self.lyric_times = lines.iter().map(|l| l.time_secs).collect();
+            if let Some(lyrics) = maybe_lines {
+                self.lyric_times = lyrics.lines.iter().map(|l| l.time_secs).collect();
+                self.lyric_synced = lyrics.synced;
+                self.lyric_instrumental = lyrics.instrumental;
+                self.lyric_lines_src = lyrics;
                 let romanize = crate::library_cache::load_settings().romanize_lyrics;
                 self.apply_romanization(romanize);
             }
@@ -1149,14 +1172,41 @@ impl TuiPlayerState {
     /// re-derive the displayed lyric lines from the stored originals, romanizing
     /// japanese lines when `romanize` is set. cheap enough to call on toggle.
     fn apply_romanization(&mut self, romanize: bool) {
-        self.lyric_lines = if romanize {
-            self.lyric_lines_src.iter().map(|l| crate::romaji::romanize_line(l)).collect()
-        } else {
-            self.lyric_lines_src.clone()
-        };
+        let mut lyrics = self.lyric_lines_src.clone();
+        crate::romaji::romanize_lyrics(&mut lyrics, romanize);
+        self.lyric_words = lyrics.lines.iter()
+            .map(|l| l.words.iter().map(|w| (w.time_secs, w.end_secs, w.text.chars().count())).collect())
+            .collect();
+        self.lyric_lines = lyrics.lines.into_iter().map(|l| l.text).collect();
+    }
+
+    /// how many characters of lyric line `li` are sung, fractional inside the
+    /// word being sung, or None when the line has no word timings.
+    fn sung_chars(&self, li: usize) -> Option<f64> {
+        let words = self.lyric_words.get(li).filter(|w| !w.is_empty())?;
+        let t = self.current_time();
+        let mut sung = 0.0;
+        for &(start, end, chars) in words {
+            if t >= end {
+                sung += chars as f64;
+            } else {
+                if t > start { sung += chars as f64 * (t - start) / (end - start); }
+                break;
+            }
+        }
+        Some(sung)
+    }
+
+    /// how far into the instrumental break at line `li` playback is (0..1), or
+    /// None when that line is not a break.
+    fn break_progress(&self, li: usize) -> Option<f64> {
+        if !self.lyric_synced { return None; }
+        let len = crate::lrclib::break_len(&self.lyric_times, &self.lyric_lines, li)?;
+        Some(((self.current_time() - self.lyric_times[li]) / len).clamp(0.0, 1.0))
     }
 
     fn active_lyric_idx(&self) -> i32 {
+        if !self.lyric_synced { return -1; }
         let t = self.current_time();
         let mut best = -1i32;
         for (i, &ts) in self.lyric_times.iter().enumerate() {

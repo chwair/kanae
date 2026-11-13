@@ -548,7 +548,7 @@ fn left_click(app: &mut TuiApp, x: u16, y: u16) {
     let lyric_hit = app.lyric_item_rects.iter().position(|r| rect_contains(*r, x, y));
     if let Some(i) = lyric_hit {
         let li = app.lyric_row_lyric_idx.get(i).copied().unwrap_or(i);
-        if let Some(&ts) = app.player.lyric_times.get(li) {
+        if let Some(&ts) = app.player.lyric_times.get(li).filter(|_| app.player.lyric_synced) {
             app.player.seek(ts);
             app.lyrics_user_scroll = None;
         }

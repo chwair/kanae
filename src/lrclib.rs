@@ -4,6 +4,76 @@ use serde::Deserialize;
 pub struct LyricLine {
     pub time_secs: f64,
     pub text: String,
+    /// per-word timings, empty for line-synced lyrics. when present, `text` is
+    /// exactly the concatenation of the word texts.
+    pub words: Vec<LyricWord>,
+    /// when the line stops being sung, if the source says so
+    pub end_secs: Option<f64>,
+}
+
+#[derive(Clone)]
+pub struct LyricWord {
+    pub time_secs: f64,
+    /// when the word is fully sung; always >= time_secs once parsing is done
+    pub end_secs: f64,
+    /// includes the trailing space, except on the last word of a line
+    pub text: String,
+}
+
+/// the parsed lyrics of one track.
+#[derive(Clone, Default)]
+pub struct Lyrics {
+    pub lines: Vec<LyricLine>,
+    /// false for plain lyrics, whose lines carry no usable timing
+    pub synced: bool,
+    /// the track is known to have no vocals; `lines` is then empty
+    pub instrumental: bool,
+    /// iso 639-1 code, when a lyricsfile states one
+    pub language: Option<String>,
+}
+
+impl Lyrics {
+    fn synced(lines: Vec<LyricLine>) -> Self {
+        Self { synced: !lines.is_empty(), lines, ..Default::default() }
+    }
+
+    fn instrumental() -> Self {
+        Self { instrumental: true, ..Default::default() }
+    }
+
+    /// true when there is nothing to show, not even an instrumental notice
+    pub fn is_empty(&self) -> bool {
+        self.lines.is_empty() && !self.instrumental
+    }
+
+    pub fn word_synced(&self) -> bool {
+        self.lines.iter().any(|l| !l.words.is_empty())
+    }
+
+    pub fn kind(&self) -> &'static str {
+        if self.instrumental { "instrumental" }
+        else if self.word_synced() { "word synced" }
+        else if self.synced { "line synced" }
+        else { "plain" }
+    }
+}
+
+// cached in place of real lyrics for a track lrclib marks as instrumental
+const INSTRUMENTAL_DOC: &str = "version: '1.0'\nmetadata:\n  instrumental: true\nlines: []\n";
+
+// a line's last word with no known end is assumed sung within this long
+const MAX_LAST_WORD_SECS: f64 = 1.0;
+
+/// an empty line lasting at least this long is an instrumental break, shown
+/// with a progress bar. qml/main.qml mirrors this value.
+pub const BREAK_MIN_SECS: f64 = 6.0;
+
+/// length of the break starting at line `i`, when that line is an empty one
+/// lasting at least `BREAK_MIN_SECS` before the next line.
+pub fn break_len(times: &[f64], texts: &[String], i: usize) -> Option<f64> {
+    if !texts.get(i)?.trim().is_empty() { return None; }
+    let len = times.get(i + 1)? - times.get(i)?;
+    (len >= BREAK_MIN_SECS).then_some(len)
 }
 
 #[derive(Deserialize)]
@@ -16,41 +86,124 @@ struct SearchResult {
     duration: Option<f64>,
     #[serde(rename = "syncedLyrics")]
     synced_lyrics: Option<String>,
+    #[serde(rename = "plainLyrics")]
+    plain_lyrics: Option<String>,
+    lyricsfile: Option<String>,
+    #[serde(rename = "hasWordSync")]
+    has_word_sync: Option<bool>,
     #[serde(rename = "instrumental")]
     instrumental: Option<bool>,
+}
+
+impl SearchResult {
+    fn word_synced(&self) -> bool {
+        self.has_word_sync
+            .unwrap_or_else(|| self.lyricsfile.as_deref().is_some_and(|s| s.contains("words:")))
+    }
+
+    fn is_synced(&self) -> bool {
+        // a lyricsfile only counts as synced when it has timed lines
+        self.synced_lyrics.as_deref().is_some_and(|s| !s.trim().is_empty())
+            || self.lyricsfile.as_deref().is_some_and(|s| s.contains("start_ms"))
+    }
+
+    fn is_instrumental(&self) -> bool {
+        self.instrumental.unwrap_or(false)
+            || self.lyricsfile.as_deref().is_some_and(|s| s.contains("instrumental: true"))
+    }
+
+    fn has_plain(&self) -> bool {
+        self.plain_lyrics.as_deref().is_some_and(|s| !s.trim().is_empty())
+            || self.lyricsfile.as_deref().is_some_and(|s| s.contains("plain:"))
+    }
+
+    /// ranking bonus for richer lyrics. lrclib often has several near identical
+    /// uploads of a song; among plausible ones this prefers word over line sync
+    /// over plain text, but cannot rescue a poor match.
+    fn richness(&self) -> Option<f64> {
+        if self.is_synced() {
+            Some(if self.word_synced() { 0.4 } else { 0.3 })
+        } else if self.is_instrumental() {
+            Some(0.0)
+        } else if self.has_plain() {
+            Some(0.15)
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Deserialize)]
 struct GetResult {
     #[serde(rename = "syncedLyrics")]
     synced_lyrics: Option<String>,
+    #[serde(rename = "plainLyrics")]
+    plain_lyrics: Option<String>,
+    lyricsfile: Option<String>,
     #[serde(rename = "instrumental")]
     instrumental: Option<bool>,
+}
+
+// lyricsfile (yaml) documents, see lrcget's LYRICSFILE_CONCEPT.md. all times are
+// integer milliseconds, read as f64 to be lenient.
+#[derive(Deserialize)]
+struct Lyricsfile {
+    #[serde(default)]
+    metadata: LyricsfileMeta,
+    #[serde(default)]
+    lines: Option<Vec<LyricsfileLine>>,
+    #[serde(default)]
+    plain: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct LyricsfileMeta {
+    offset_ms: Option<f64>,
+    instrumental: Option<bool>,
+    language: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct LyricsfileLine {
+    #[serde(default)]
+    text: String,
+    start_ms: f64,
+    end_ms: Option<f64>,
+    #[serde(default)]
+    words: Vec<LyricsfileWord>,
+}
+
+#[derive(Deserialize)]
+struct LyricsfileWord {
+    #[serde(default)]
+    text: String,
+    start_ms: f64,
+    end_ms: Option<f64>,
 }
 
 const USER_AGENT: &str = concat!("Kanae v", env!("CARGO_PKG_VERSION"), " (https://github.com/chwair/kanae)");
 
 /// load a sidecar `.lrc` file that sits next to the audio file (same name,
-/// `.lrc` extension). returns parsed lines, or None when there is no such file
-/// or it contains no timestamped lines - callers then fall back to the
-/// cache/web path.
-pub fn load_local_lrc(audio_path: &str) -> Option<Vec<LyricLine>> {
+/// `.lrc` extension, lrc or lyricsfile content). returns None when there is no
+/// such file or it has neither timed lines nor an instrumental mark - callers
+/// then fall back to the cache/web path.
+pub fn load_local_lrc(audio_path: &str) -> Option<Lyrics> {
     if audio_path.is_empty() { return None; }
     let lrc_path = std::path::Path::new(audio_path).with_extension("lrc");
     if !lrc_path.is_file() { return None; }
     let raw = std::fs::read_to_string(&lrc_path).ok()?;
-    let lines = parse_lrc(raw.trim_start_matches('\u{feff}'));
-    if lines.is_empty() {
-        eprintln!("[lrclib] sidecar {} has no timestamped lines — ignoring", lrc_path.display());
-        None
+    let lyrics = parse_lyrics(raw.trim_start_matches('\u{feff}'));
+    if lyrics.synced || lyrics.instrumental {
+        eprintln!("[lrclib] using sidecar lyrics: {} ({}, {} line(s))", lrc_path.display(), lyrics.kind(), lyrics.lines.len());
+        Some(lyrics)
     } else {
-        eprintln!("[lrclib] using sidecar lyrics: {} ({} line(s))", lrc_path.display(), lines.len());
-        Some(lines)
+        eprintln!("[lrclib] sidecar {} has no timestamped lines - ignoring", lrc_path.display());
+        None
     }
 }
 
-/// fetch lyrics for a known lrclib id.  returns `(raw_lrc, parsed_lines)` on success.
-pub fn fetch_by_id(id: u64) -> Option<(String, Vec<LyricLine>)> {
+/// fetch lyrics for a known lrclib id.  returns `(raw, parsed)` on success.
+pub fn fetch_by_id(id: u64) -> Option<(String, Lyrics)> {
     let url = format!("https://lrclib.net/api/get/{}", id);
     eprintln!("[lrclib] GET {} (by id)", url);
     let response = match ureq::get(&url)
@@ -70,28 +223,57 @@ pub fn fetch_by_id(id: u64) -> Option<(String, Vec<LyricLine>)> {
             return None;
         }
     };
-    if result.instrumental.unwrap_or(false) {
-        eprintln!("[lrclib] id {} is instrumental — no lyrics", id);
-        return None;
+    let found = best_lyrics(
+        result.lyricsfile.as_deref(),
+        result.synced_lyrics.as_deref(),
+        result.plain_lyrics.as_deref(),
+        result.instrumental.unwrap_or(false),
+    );
+    match &found {
+        Some((_, lyrics)) => eprintln!("[lrclib] {} lyrics from id {}", lyrics.kind(), id),
+        None => eprintln!("[lrclib] id {} has no parseable lyrics", id),
     }
-    let lrc = result.synced_lyrics.as_deref().filter(|s| !s.trim().is_empty())?;
-    let lines = parse_lrc(lrc);
-    if lines.is_empty() {
-        eprintln!("[lrclib] id {} has no parseable LRC lines", id);
-        None
-    } else {
-        eprintln!("[lrclib] {} lyric line(s) from id {}", lines.len(), id);
-        Some((lrc.to_string(), lines))
-    }
+    found
 }
 
-/// search for synced lyrics.  returns `(lrclib_id, raw_lrc, parsed_lines)` on success.
-pub fn fetch_synced_lyrics(
+/// picks the richest lyrics of a record: the lyricsfile when it parses (it may
+/// carry word timings, an instrumental mark or plain text), otherwise the
+/// legacy fields. returns the raw text to cache alongside the parsed lyrics;
+/// `parse_lyrics` tells the formats apart.
+fn best_lyrics(
+    lyricsfile: Option<&str>,
+    synced: Option<&str>,
+    plain: Option<&str>,
+    instrumental: bool,
+) -> Option<(String, Lyrics)> {
+    if let Some(doc) = lyricsfile.filter(|s| !s.trim().is_empty()) {
+        let lyrics = parse_lyricsfile(doc);
+        if !lyrics.is_empty() {
+            return Some((doc.to_string(), lyrics));
+        }
+    }
+    if instrumental {
+        return Some((INSTRUMENTAL_DOC.to_string(), Lyrics::instrumental()));
+    }
+    if let Some(lrc) = synced.filter(|s| !s.trim().is_empty()) {
+        let lines = parse_lrc(lrc);
+        if !lines.is_empty() {
+            return Some((lrc.to_string(), Lyrics::synced(lines)));
+        }
+    }
+    let plain = plain.filter(|s| !s.trim().is_empty())?;
+    let lyrics = parse_plain(plain);
+    if lyrics.is_empty() { None } else { Some((plain.to_string(), lyrics)) }
+}
+
+/// search for lyrics, preferring synced ones; plain or instrumental records are
+/// only used when no query finds synced lyrics. returns `(lrclib_id, raw, parsed)`.
+pub fn fetch_lyrics(
     track_name: &str,
     artist_name: &str,
     album_name: &str,
     duration_secs: f64,
-) -> Option<(u64, String, Vec<LyricLine>)> {
+) -> Option<(u64, String, Lyrics)> {
     if track_name.is_empty() {
         eprintln!("[lrclib] skipping fetch: track name is empty");
         return None;
@@ -110,6 +292,7 @@ pub fn fetch_synced_lyrics(
         queries.push(format!("q={}", url_encode(&format!("{} {}", track_name, artist_name))));
     }
 
+    let mut fallback: Option<(f64, (u64, String, Lyrics))> = None;
     for query in &queries {
         let results = search(query);
         let Some((best, score)) = pick_best(&results, track_name, artist_name, duration_secs) else {
@@ -124,18 +307,28 @@ pub fn fetch_synced_lyrics(
             score,
         );
 
-        let Some(lrc) = best.synced_lyrics.as_deref() else { continue };
-        let lines = parse_lrc(lrc);
-        if lines.is_empty() {
-            eprintln!("[lrclib] matched entry has no parseable LRC lines");
+        let Some((raw, lyrics)) = best_lyrics(
+            best.lyricsfile.as_deref(),
+            best.synced_lyrics.as_deref(),
+            best.plain_lyrics.as_deref(),
+            best.instrumental.unwrap_or(false),
+        ) else {
+            eprintln!("[lrclib] matched entry has no parseable lyrics");
             continue;
+        };
+        eprintln!("[lrclib] {} lyrics, {} line(s) (id {})", lyrics.kind(), lyrics.lines.len(), best.id);
+        if lyrics.synced {
+            return Some((best.id, raw, lyrics));
         }
-        eprintln!("[lrclib] {} lyric line(s) parsed (id {})", lines.len(), best.id);
-        return Some((best.id, lrc.to_string(), lines));
+        if fallback.as_ref().is_none_or(|(s, _)| score > *s) {
+            fallback = Some((score, (best.id, raw, lyrics)));
+        }
     }
 
-    eprintln!("[lrclib] no acceptable synced lyrics for \"{}\" / \"{}\"", track_name, artist_name);
-    None
+    if fallback.is_none() {
+        eprintln!("[lrclib] no acceptable lyrics for \"{}\" / \"{}\"", track_name, artist_name);
+    }
+    fallback.map(|(_, found)| found)
 }
 
 fn search(query: &str) -> Vec<SearchResult> {
@@ -166,11 +359,8 @@ fn pick_best<'a>(
 ) -> Option<(&'a SearchResult, f64)> {
     results
         .iter()
-        .filter(|r| {
-            !r.instrumental.unwrap_or(false)
-                && r.synced_lyrics.as_deref().is_some_and(|s| !s.trim().is_empty())
-        })
         .filter_map(|r| {
+            let bonus = r.richness()?;
             let score = score_result(
                 r.track_name.as_deref(),
                 r.artist_name.as_deref(),
@@ -187,7 +377,7 @@ fn pick_best<'a>(
                     r.duration,
                 );
             }
-            score.map(|s| (r, s))
+            score.map(|s| (r, s + bonus))
         })
         .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
 }
@@ -353,6 +543,205 @@ fn url_encode(s: &str) -> String {
     out
 }
 
+/// parses a lyricsfile (yaml) document, plain/enhanced lrc text, or failing
+/// both, untimed plain lyrics.
+pub fn parse_lyrics(raw: &str) -> Lyrics {
+    if is_lyricsfile(raw) {
+        return parse_lyricsfile(raw);
+    }
+    let lines = parse_lrc(raw);
+    if lines.is_empty() { parse_plain(raw) } else { Lyrics::synced(lines) }
+}
+
+/// untimed lyrics, one line per row. lrc id tags like `[ar:...]` are dropped and
+/// blank lines kept only between verses.
+fn parse_plain(raw: &str) -> Lyrics {
+    let mut lines: Vec<LyricLine> = Vec::new();
+    for l in raw.lines().map(str::trim) {
+        let is_tag = l.starts_with('[') && l.ends_with(']') && l.contains(':');
+        if is_tag || (l.is_empty() && lines.last().is_none_or(|p| p.text.is_empty())) {
+            continue;
+        }
+        lines.push(LyricLine { time_secs: 0.0, text: l.to_string(), words: Vec::new(), end_secs: None });
+    }
+    while lines.last().is_some_and(|l| l.text.is_empty()) {
+        lines.pop();
+    }
+    Lyrics { lines, ..Default::default() }
+}
+
+fn is_lyricsfile(raw: &str) -> bool {
+    raw.lines()
+        .map(str::trim_start)
+        .find(|l| !l.is_empty() && !l.starts_with('#') && l != &"---")
+        .is_some_and(|l| l.starts_with("version:") || l.starts_with("metadata:") || l.starts_with("lines:"))
+}
+
+pub fn parse_lyricsfile(doc: &str) -> Lyrics {
+    let file: Lyricsfile = match serde_yaml_ng::from_str(doc) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("[lrclib] failed to parse lyricsfile: {}", e);
+            return Lyrics::default();
+        }
+    };
+    if file.metadata.instrumental.unwrap_or(false) {
+        return Lyrics::instrumental();
+    }
+    let language = file.metadata.language.filter(|l| !l.trim().is_empty());
+    // same sign as lrc's [offset:] tag: a positive offset shows lyrics sooner
+    let offset = file.metadata.offset_ms.unwrap_or(0.0);
+    let secs = |ms: f64| ((ms - offset) / 1000.0).max(0.0);
+
+    let mut lines: Vec<LyricLine> = file
+        .lines
+        .unwrap_or_default()
+        .into_iter()
+        .map(|l| {
+            let line_end = l.end_ms.map(secs).unwrap_or(f64::NAN);
+            let raw: Vec<LyricsfileWord> = l.words.into_iter().filter(|w| !w.text.is_empty()).collect();
+            // a word without an end lasts until the next one starts, or the line ends
+            let mut words: Vec<LyricWord> = raw
+                .iter()
+                .enumerate()
+                .map(|(i, w)| LyricWord {
+                    time_secs: secs(w.start_ms),
+                    end_secs: w.end_ms.map(secs)
+                        .or_else(|| raw.get(i + 1).map(|n| secs(n.start_ms)))
+                        .unwrap_or(line_end),
+                    text: w.text.clone(),
+                })
+                .collect();
+            let text = if words.is_empty() {
+                l.text.trim().to_string()
+            } else {
+                normalize_words(&mut words)
+            };
+            LyricLine { time_secs: secs(l.start_ms), text, words, end_secs: l.end_ms.map(secs) }
+        })
+        .collect();
+
+    if lines.is_empty() {
+        // unsynced document: fall back to its plain text
+        let mut plain = parse_plain(file.plain.as_deref().unwrap_or(""));
+        plain.language = language;
+        return plain;
+    }
+    sort_and_finish(&mut lines);
+    Lyrics { lines, synced: true, instrumental: false, language }
+}
+
+/// orders lines by time and settles word ends left open by the parsers.
+/// orders lines by time, settles word ends left open by the parsers and turns
+/// long silences into explicit empty lines, so they can show as breaks.
+fn sort_and_finish(lines: &mut Vec<LyricLine>) {
+    lines.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+    for i in 0..lines.len() {
+        let next_line = lines.get(i + 1).map(|l| l.time_secs);
+        let line = &mut lines[i];
+        for w in line.words.iter_mut() {
+            if !w.end_secs.is_finite() {
+                let cap = w.time_secs + MAX_LAST_WORD_SECS;
+                w.end_secs = next_line.map_or(cap, |n| n.min(cap));
+            }
+            w.end_secs = w.end_secs.max(w.time_secs);
+        }
+        if line.end_secs.is_none() {
+            line.end_secs = line.words.last().map(|w| w.end_secs);
+        }
+    }
+    insert_breaks(lines);
+}
+
+fn break_line(at: f64) -> LyricLine {
+    LyricLine { time_secs: at, text: String::new(), words: Vec::new(), end_secs: None }
+}
+
+/// adds an empty line where a sung line ends long before the next one starts,
+/// and before a late first line (the intro). lines without a known end are
+/// left alone, since their silence can't be told from a long held note.
+fn insert_breaks(lines: &mut Vec<LyricLine>) {
+    let sung = |l: &LyricLine| !l.text.trim().is_empty();
+    let mut out: Vec<LyricLine> = Vec::with_capacity(lines.len());
+    if lines.first().is_some_and(|l| sung(l) && l.time_secs >= BREAK_MIN_SECS) {
+        out.push(break_line(0.0));
+    }
+    for i in 0..lines.len() {
+        let line = lines[i].clone();
+        let gap_from = line.end_secs.filter(|_| sung(&line));
+        out.push(line);
+        if let (Some(end), Some(next)) = (gap_from, lines.get(i + 1)) {
+            if sung(next) && next.time_secs - end >= BREAK_MIN_SECS {
+                out.push(break_line(end));
+            }
+        }
+    }
+    *lines = out;
+}
+
+/// trims the outer whitespace of a word run and returns the line text, which
+/// then equals the concatenated words so renderers can count sung characters.
+fn normalize_words(words: &mut Vec<LyricWord>) -> String {
+    words.retain(|w| !w.text.is_empty());
+    // leading spaces belong to the previous word, so a word starts where it is sung
+    for i in 1..words.len() {
+        if words[i].text.starts_with(char::is_whitespace) {
+            words[i].text = words[i].text.trim_start().to_string();
+            if !words[i - 1].text.ends_with(char::is_whitespace) {
+                words[i - 1].text.push(' ');
+            }
+        }
+    }
+    words.retain(|w| !w.text.is_empty());
+    if let Some(first) = words.first_mut() {
+        first.text = first.text.trim_start().to_string();
+    }
+    if let Some(last) = words.last_mut() {
+        last.text = last.text.trim_end().to_string();
+    }
+    words.retain(|w| !w.text.is_empty());
+    words.iter().map(|w| w.text.as_str()).collect()
+}
+
+/// splits enhanced lrc word tags (`<mm:ss.xx>word <mm:ss.xx>word`) out of the
+/// text after a line's timestamps. text before the first tag stays untimed and
+/// joins the first word; a trailing bare tag only marks the end of the line.
+fn parse_enhanced_words(rest: &str) -> (String, Vec<LyricWord>) {
+    let mut words: Vec<LyricWord> = Vec::new();
+    let mut lead = String::new();
+    let mut s = rest;
+    while !s.is_empty() {
+        let tag = s.starts_with('<').then(|| s.find('>')).flatten()
+            .and_then(|end| parse_timestamp(&s[1..end]).map(|t| (t, end)));
+        if let Some((t, end)) = tag {
+            s = &s[end + 1..];
+            let next = s.find('<').unwrap_or(s.len());
+            // the previous word ends where this tag starts, even an empty end marker
+            if let Some(prev) = words.last_mut() {
+                prev.end_secs = t;
+            }
+            words.push(LyricWord { time_secs: t, end_secs: f64::NAN, text: s[..next].to_string() });
+            s = &s[next..];
+            continue;
+        }
+        // not a tag: copy up to the next '<' as plain text
+        let next = s[1..].find('<').map(|i| i + 1).unwrap_or(s.len());
+        match words.last_mut() {
+            Some(w) => w.text.push_str(&s[..next]),
+            None => lead.push_str(&s[..next]),
+        }
+        s = &s[next..];
+    }
+    if words.is_empty() {
+        return (lead.trim().to_string(), words);
+    }
+    if !lead.trim().is_empty() {
+        words[0].text.insert_str(0, &lead);
+    }
+    let text = normalize_words(&mut words);
+    (text, words)
+}
+
 pub fn parse_lrc(lrc: &str) -> Vec<LyricLine> {
     let mut lines: Vec<LyricLine> = Vec::new();
 
@@ -384,22 +773,21 @@ pub fn parse_lrc(lrc: &str) -> Vec<LyricLine> {
             continue;
         }
 
-        let text = raw_line[pos..].trim().to_string();
+        let (text, words) = parse_enhanced_words(&raw_line[pos..]);
 
+        // enhanced word tags are absolute, so they only fit a line with a single time
+        let words = if times.len() == 1 { words } else { Vec::new() };
         for t in times {
             lines.push(LyricLine {
                 time_secs: t,
                 text: text.clone(),
+                words: words.clone(),
+                end_secs: None,
             });
         }
     }
 
-    lines.sort_by(|a, b| {
-        a.time_secs
-            .partial_cmp(&b.time_secs)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
+    sort_and_finish(&mut lines);
     lines
 }
 
@@ -420,6 +808,98 @@ mod tests {
 
     fn score(track: &str, artist: &str, dur: f64) -> Option<f64> {
         score_result(Some(track), Some(artist), Some(dur), "Enigma", "sanmal", 168.0)
+    }
+
+    #[test]
+    fn parses_lyricsfile_words() {
+        let doc = "version: '1.0'\nmetadata:\n  title: 'x'\n  artist: 'y'\n  offset_ms: 0\nlines:\n  - text: 'The club'\n    start_ms: 12450\n    end_ms: 13500\n    words:\n      - text: 'The '\n        start_ms: 12450\n      - text: 'club'\n        start_ms: 12900\n  - text: 'plain line'\n    start_ms: 15000\n";
+        assert!(is_lyricsfile(doc));
+        let lyrics = parse_lyrics(doc);
+        assert!(lyrics.synced && !lyrics.instrumental);
+        // the first line comes 12 s in, so an intro break leads
+        assert_eq!(lyrics.lines[0].text, "");
+        let lines = &lyrics.lines[1..];
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].text, "The club");
+        assert_eq!(lines[0].words.len(), 2);
+        assert!((lines[0].words[1].time_secs - 12.9).abs() < 1e-9);
+        // the last word without an end takes the line's end
+        assert!((lines[0].words[0].end_secs - 12.9).abs() < 1e-9);
+        assert!((lines[0].words[1].end_secs - 13.5).abs() < 1e-9);
+        assert!(lines[1].words.is_empty());
+        assert_eq!(lines[1].text, "plain line");
+    }
+
+    #[test]
+    fn parses_enhanced_lrc_words() {
+        let lines = parse_lrc("[00:12.00] <00:12.00> The <00:12.50> club <00:13.00>\n[00:14.00]plain");
+        assert_eq!(lines[0].text, "");
+        let lines = &lines[1..];
+        assert_eq!(lines[0].text, "The club");
+        assert_eq!(lines[0].words.len(), 2);
+        assert_eq!(lines[0].words[0].text, "The ");
+        assert!((lines[0].words[1].time_secs - 12.5).abs() < 1e-9);
+        // a trailing bare tag closes the last word
+        assert!((lines[0].words[1].end_secs - 13.0).abs() < 1e-9);
+        assert!(lines[1].words.is_empty());
+        assert_eq!(lines[1].text, "plain");
+    }
+
+    fn result(id: u64, artist: &str, word_sync: bool) -> SearchResult {
+        SearchResult {
+            id,
+            track_name: Some("Testify".into()),
+            artist_name: Some(artist.into()),
+            duration: Some(210.0),
+            synced_lyrics: Some("[00:01.00]x".into()),
+            plain_lyrics: None,
+            lyricsfile: None,
+            has_word_sync: Some(word_sync),
+            instrumental: Some(false),
+        }
+    }
+
+    #[test]
+    fn prefers_word_synced_among_equals() {
+        let results = vec![
+            result(2, "void (Mournfinale) feat. Hoshikuma Minami", true),
+            result(1, "void (Mournfinale) feat. \u{661f}\u{718a}\u{5357}\u{5deb}", false),
+        ];
+        let (best, _) = pick_best(&results, "Testify (feat. \u{661f}\u{718a}\u{5357}\u{5deb})", "void (Mournfinale)", 210.0).unwrap();
+        assert_eq!(best.id, 2);
+    }
+
+    #[test]
+    fn parses_instrumental_and_plain_lyricsfiles() {
+        let inst = parse_lyrics("version: '1.0'\nmetadata:\n  title: x\n  artist: y\n  instrumental: true\nlines: []\nplain: ''\n");
+        assert!(inst.instrumental && inst.lines.is_empty() && !inst.is_empty());
+        assert!(parse_lyrics(INSTRUMENTAL_DOC).instrumental);
+
+        let plain = parse_lyrics("version: '1.0'\nmetadata:\n  title: x\n  artist: y\n  language: zh\nlines: []\nplain: |\n  one\n\n  two\n");
+        assert!(!plain.synced && !plain.instrumental);
+        assert_eq!(plain.language.as_deref(), Some("zh"));
+        let texts: Vec<&str> = plain.lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, ["one", "", "two"]);
+    }
+
+    #[test]
+    fn plain_text_cache_entries_parse_as_plain() {
+        let lyrics = parse_lyrics("[ar:someone]\nfirst line\nsecond line\n");
+        assert!(!lyrics.synced);
+        assert_eq!(lyrics.lines.len(), 2);
+    }
+
+    #[test]
+    fn inserts_breaks_on_long_silences() {
+        let doc = "version: '1.0'\nmetadata:\n  title: x\n  artist: y\nlines:\n- text: a\n  start_ms: 8000\n  end_ms: 9000\n- text: b\n  start_ms: 20000\n  end_ms: 21000\n- text: c\n  start_ms: 23000\n";
+        let lyrics = parse_lyrics(doc);
+        let got: Vec<(f64, &str)> = lyrics.lines.iter().map(|l| (l.time_secs, l.text.as_str())).collect();
+        assert_eq!(got, [(0.0, ""), (8.0, "a"), (9.0, ""), (20.0, "b"), (23.0, "c")]);
+        let times: Vec<f64> = lyrics.lines.iter().map(|l| l.time_secs).collect();
+        let texts: Vec<String> = lyrics.lines.iter().map(|l| l.text.clone()).collect();
+        assert_eq!(break_len(&times, &texts, 0), Some(8.0));
+        assert_eq!(break_len(&times, &texts, 2), Some(11.0));
+        assert_eq!(break_len(&times, &texts, 1), None);
     }
 
     #[test]

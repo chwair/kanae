@@ -1168,7 +1168,37 @@ ApplicationWindow {
                     Item {
                         id:lyricsArea;Layout.fillWidth:true;Layout.fillHeight:true;clip:true
                         property var timesArr:{var a=[];for(var i=0;i<player.lyric_times.length;i++)a.push(parseFloat(player.lyric_times[i]));return a}
-                        property int activeIdx:{var t=player.current_time;var times=timesArr;var best=-1;for(var i=0;i<times.length;i++){if(times[i]<=t+0.05)best=i;else break};return best}
+                        property int activeIdx:{if(!player.lyrics_synced)return -1;var t=player.current_time;var times=timesArr;var best=-1;for(var i=0;i<times.length;i++){if(times[i]<=t+0.05)best=i;else break};return best}
+                        // word timings per line ([] for line-synced lines), empty when the lyrics have none
+                        property var wordsArr:{if(player.lyric_words.length===0)return [];try{return JSON.parse(player.lyric_words)}catch(e){return []}}
+                        function hasWords(idx){return idx>=0&&idx<wordsArr.length&&wordsArr[idx].length>0}
+                        // an empty line lasting at least this long is an instrumental break with a
+                        // progress bar; mirrors lrclib::BREAK_MIN_SECS
+                        readonly property real breakMinSecs:6
+                        function breakLen(idx){if(!player.lyrics_synced||idx<0||idx+1>=timesArr.length||player.lyric_lines[idx].trim().length>0)return 0;var d=timesArr[idx+1]-timesArr[idx];return d>=breakMinSecs?d:0}
+                        function escHtml(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
+                        function mixColor(a,b,f){return Qt.rgba(a.r+(b.r-a.r)*f,a.g+(b.g-a.g)*f,a.b+(b.b-a.b)*f,1).toString()}
+                        // sung words take the row colour `on`, upcoming ones stay dim, and the word
+                        // being sung fills in character by character with a two character soft edge
+                        function wordHtml(idx,t,on){var w=wordsArr[idx];var out="",dim="";var flush=function(){if(dim.length){out+='<font color="'+clrText2+'">'+escHtml(dim)+'</font>';dim=""}}
+                            for(var i=0;i<w.length;i++){var s=w[i][0],e=w[i][1],txt=w[i][2]
+                                if(t>=e){flush();out+=escHtml(txt)}
+                                else if(t<s){dim+=txt}
+                                else{flush();var ch=Array.from(txt);var head=(t-s)/Math.max(e-s,0.001)*(ch.length+2)
+                                    for(var k=0;k<ch.length;k++){var f=Math.max(0,Math.min(1,(head-k)/2));out+=f>=1?escHtml(ch[k]):'<font color="'+mixColor(clrText2,on,f)+'">'+escHtml(ch[k])+'</font>'}}}
+                            flush();return out}
+                        // player.current_time only moves every ~100 ms, so word-synced lines run their
+                        // own clock in between, gently pulled toward each new position update
+                        property real smoothTime:0;property real _baseT:0;property double _baseMs:0
+                        property real _ct:player.current_time
+                        on_CtChanged:{var now=Date.now();var d=_ct-(_baseT+(now-_baseMs)/1000)
+                            _baseT=(player.is_playing&&Math.abs(d)<0.3)?_ct-d*0.75:_ct;_baseMs=now
+                            if(!wipeClock.running)smoothTime=_ct}
+                        Timer{id:wipeClock;interval:16;repeat:true;running:player.is_playing&&lyricsArea.visible&&(lyricsArea.hasWords(lyricsArea.activeIdx)||lyricsArea.breakLen(lyricsArea.activeIdx)>0)
+                            onRunningChanged:{if(!running)lyricsArea.smoothTime=lyricsArea._ct}
+                            onTriggered:{var a=lyricsArea;var t=Math.min(a._baseT+(Date.now()-a._baseMs)/1000,a._ct+0.25)
+                                // never step backwards on jitter, only on a real seek
+                                if(t>a.smoothTime||a.smoothTime-t>0.3)a.smoothTime=t}}
                         property bool userScrolled:false;property bool _autoScrolling:false
                         Timer{id:resyncGuardTimer;interval:800;repeat:false;onTriggered:lyricsArea._autoScrolling=false}
                         function syncScroll(idx){if(idx<0||lyricsView.count===0)return;lyricsWheelAnim.stop();lyricsArea._autoScrolling=true;lyricsView.positionViewAtIndex(idx,ListView.Center);resyncGuardTimer.restart()}
@@ -1190,13 +1220,27 @@ ApplicationWindow {
                             header:Item{width:lyricsView.width;height:Math.max(0,lyricsView.height/2-24)}
                             footer:Item{width:lyricsView.width;height:Math.max(0,lyricsView.height/2)}
                             delegate:MouseArea{id:lyricRow;width:lyricsView.width;height:lyricRowText.implicitHeight+16;hoverEnabled:true;preventStealing:false
-                                onClicked:{var times=lyricsArea.timesArr;if(index<times.length){player.seek(times[index]);lyricsArea.userScrolled=false;lyricsArea.syncScroll(index)}}
-                                Text{id:lyricRowText;anchors.centerIn:parent;width:parent.width-24;text:modelData
-                                    color:{if(index===lyricsArea.activeIdx)return lyricRow.containsMouse?clrAccent:clrText;return lyricRow.containsMouse?clrText:clrText2}
+                                onClicked:{var times=lyricsArea.timesArr;if(player.lyrics_synced&&index<times.length){player.seek(times[index]);lyricsArea.userScrolled=false;lyricsArea.syncScroll(index)}}
+                                Text{id:lyricRowText;anchors.centerIn:parent;width:parent.width-24
+                                    property bool wordSync:index===lyricsArea.activeIdx&&lyricsArea.hasWords(index)
+                                    textFormat:wordSync?Text.StyledText:Text.PlainText
+                                    text:wordSync?lyricsArea.wordHtml(index,lyricsArea.smoothTime,color):modelData
+                                    // plain lyrics have no current line, so every row reads at full strength
+                                    color:{if(index===lyricsArea.activeIdx||!player.lyrics_synced)return lyricRow.containsMouse?clrAccent:clrText;return lyricRow.containsMouse?clrText:clrText2}
                                     font.pixelSize:index===lyricsArea.activeIdx?12:11;font.bold:index===lyricsArea.activeIdx;font.family:"Segoe UI"
                                     wrapMode:Text.WordWrap;horizontalAlignment:Text.AlignHCenter
                                     Behavior on color{ColorAnimation{duration:150}}
                                     Behavior on font.pixelSize{NumberAnimation{duration:150}}
+                                }
+                                // instrumental break: a short bar filling up over the break's length
+                                Rectangle{id:breakBar;anchors.centerIn:parent;width:48;height:3;radius:1.5
+                                    property real len:lyricsArea.breakLen(index)
+                                    property bool current:index===lyricsArea.activeIdx
+                                    visible:len>0;color:clrBorder
+                                    opacity:current?1:0.5;Behavior on opacity{NumberAnimation{duration:300}}
+                                    Rectangle{height:parent.height;radius:parent.radius;color:breakBar.current?clrText:clrText2
+                                        width:{if(index<lyricsArea.activeIdx)return parent.width;if(!breakBar.current||breakBar.len<=0)return 0
+                                            return parent.width*Math.max(0,Math.min(1,(lyricsArea.smoothTime-lyricsArea.timesArr[index])/breakBar.len))}}
                                 }
                             }
                         }
@@ -1225,7 +1269,7 @@ ApplicationWindow {
                             Text {
                                 id: noLyricsText
                                 anchors.centerIn: parent
-                                text: "No lyrics found."
+                                text: player.lyrics_instrumental ? "Instrumental" : "No lyrics found."
                                 font.pixelSize: 11; font.family: "Segoe UI"
                                 visible: !player.lyrics_loading
                                 color: clrText2

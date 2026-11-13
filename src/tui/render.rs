@@ -550,7 +550,8 @@ fn render_lyrics(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
             spans.extend(shimmer_spans(&t, LOADING_TEXT, app.lyric_shimmer_phase));
             frame.render_widget(Paragraph::new(Line::from(spans)), mid);
         } else if app.player.lyrics_fetch_done && app.player.total_tracks > 0 {
-            frame.render_widget(Paragraph::new(center_text("No lyrics found", w)).style(t.muted), mid);
+            let msg = if app.player.lyric_instrumental { "Instrumental" } else { "No lyrics found" };
+            frame.render_widget(Paragraph::new(center_text(msg, w)).style(t.muted), mid);
         }
         return;
     }
@@ -558,21 +559,35 @@ fn render_lyrics(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     // rows: (lyric index, text). a blank row separates lines when there is
     // room, like the gui's spacing; empty lyric lines (instrumental breaks)
     // show a note so the gap reads as intentional.
+    // each row also keeps its char offset in the trimmed line, for word sync.
     let gap = h >= 10;
-    let mut rows: Vec<(Option<usize>, String)> = Vec::new();
+    let mut rows: Vec<(Option<usize>, String, usize)> = Vec::new();
     for (li, line) in app.player.lyric_lines.iter().enumerate() {
-        if gap && li > 0 { rows.push((None, String::new())); }
-        if line.trim().is_empty() {
-            rows.push((Some(li), app.icons.lyric_gap.to_string()));
+        if gap && li > 0 { rows.push((None, String::new(), 0)); }
+        let line = line.trim();
+        if line.is_empty() {
+            rows.push((Some(li), app.icons.lyric_gap.to_string(), 0));
         } else {
-            for chunk in wrap_to_width(line.trim(), w) { rows.push((Some(li), chunk)); }
+            let mut byte = 0;
+            for chunk in wrap_to_width(line, w) {
+                byte = line[byte..].find(chunk.as_str()).map(|i| byte + i).unwrap_or(byte);
+                let off = line[..byte].chars().count();
+                byte += chunk.len();
+                rows.push((Some(li), chunk, off));
+            }
         }
     }
 
     let active = app.player.active_lyric_idx();
+    // the sung prefix of the current line, counted from its trimmed start
+    let sung = (active >= 0).then(|| {
+        let li = active as usize;
+        let lead = app.player.lyric_lines.get(li).map(|l| l.chars().count() - l.trim_start().chars().count()).unwrap_or(0);
+        app.player.sung_chars(li).map(|n| (n - lead as f64).max(0.0))
+    }).flatten();
     let follow = active.max(0) as usize;
     if app.lyrics_user_scroll.is_none() {
-        app.sidebar_scroll = rows.iter().position(|(li, _)| *li == Some(follow)).unwrap_or(0);
+        app.sidebar_scroll = rows.iter().position(|(li, _, _)| *li == Some(follow)).unwrap_or(0);
     }
     app.sidebar_scroll = app.sidebar_scroll.min(rows.len().saturating_sub(1));
     // the followed line sits on the middle row, with blank space above the
@@ -586,12 +601,15 @@ fn render_lyrics(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     for screen_row in 0..visible_h {
         let idx = start + screen_row as isize;
         let row = if idx >= 0 { rows.get(idx as usize) } else { None };
-        let Some((li, text)) = row else { lines.push(Line::raw("")); continue };
+        let Some((li, text, off)) = row else { lines.push(Line::raw("")); continue };
         let Some(li) = *li else { lines.push(Line::raw("")); continue };
         // lines fade with their distance from the current one, both ways, and
         // the rows nearest the pane's top and bottom edges fade further still.
         let dist = if active >= 0 { (li as i32 - active).unsigned_abs() } else { li as u32 + 1 };
-        let mut strength: f32 = match dist { 0 => 1.0, 1 => 0.62, 2 => 0.52, _ => 0.44 };
+        // plain lyrics have no current line, so every row reads alike
+        let mut strength: f32 = if !app.player.lyric_synced { 0.85 } else {
+            match dist { 0 => 1.0, 1 => 0.62, 2 => 0.52, _ => 0.44 }
+        };
         if text == app.icons.lyric_gap { strength = strength.min(0.45); }
         let edge = screen_row.min(visible_h - 1 - screen_row);
         if edge < fade_rows {
@@ -599,7 +617,49 @@ fn render_lyrics(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         }
         let mut style = t.fade(strength);
         if dist == 0 && active >= 0 { style = style.add_modifier(Modifier::BOLD); }
-        lines.push(Line::from(Span::styled(center_text(text, w), style)));
+        if let Some(progress) = app.player.break_progress(li) {
+            // instrumental break: a short bar, full once passed, filling while current
+            let progress = if (li as i32) < active { 1.0 } else if dist == 0 { progress } else { 0.0 };
+            let bar_w = w.min(10);
+            let fill = progress * bar_w as f64;
+            let full = fill.floor() as usize;
+            let frac = (fill - full as f64) as f32;
+            let base = if dist == 0 { 1.0 } else { strength };
+            let empty_style = t.fade(base * 0.35);
+            let edge_style = t.fade(base * (0.35 + 0.65 * frac));
+            let bar = app.icons.lyric_bar;
+            let mut spans = vec![Span::raw(" ".repeat((w - bar_w) / 2))];
+            spans.push(Span::styled(bar.repeat(full), t.fade(base)));
+            if full < bar_w {
+                spans.push(Span::styled(bar.to_string(), edge_style));
+                spans.push(Span::styled(bar.repeat(bar_w - full - 1), empty_style));
+            }
+            lines.push(Line::from(spans));
+            app.lyric_item_rects.push(Rect { x: inner.x, y: inner.y + screen_row as u16, width: inner.width, height: 1 });
+            app.lyric_row_lyric_idx.push(li);
+            continue;
+        }
+        match sung.filter(|_| dist == 0 && display_width(text) <= w) {
+            // word-synced current line: sung part bright, the rest like a neighbour
+            // line, and the character being sung part way between the two
+            Some(sung) => {
+                let n = text.chars().count();
+                let local = (sung - *off as f64).clamp(0.0, n as f64);
+                let full = local.floor() as usize;
+                let frac = (local - full as f64) as f32;
+                let byte = |c: usize| text.char_indices().nth(c).map(|(i, _)| i).unwrap_or(text.len());
+                let (a, b) = (byte(full), byte((full + 1).min(n)));
+                let rest_style = t.fade(strength * 0.62);
+                let edge_style = if frac > 0.0 { t.fade(strength * (0.62 + 0.38 * frac)) } else { rest_style };
+                lines.push(Line::from(vec![
+                    Span::raw(" ".repeat((w - display_width(text)) / 2)),
+                    Span::styled(text[..a].to_string(), style),
+                    Span::styled(text[a..b].to_string(), edge_style),
+                    Span::styled(text[b..].to_string(), rest_style),
+                ]));
+            }
+            None => lines.push(Line::from(Span::styled(center_text(text, w), style))),
+        }
         app.lyric_item_rects.push(Rect { x: inner.x, y: inner.y + screen_row as u16, width: inner.width, height: 1 });
         app.lyric_row_lyric_idx.push(li);
     }
