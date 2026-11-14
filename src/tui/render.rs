@@ -579,12 +579,6 @@ fn render_lyrics(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     }
 
     let active = app.player.active_lyric_idx();
-    // the sung prefix of the current line, counted from its trimmed start
-    let sung = (active >= 0).then(|| {
-        let li = active as usize;
-        let lead = app.player.lyric_lines.get(li).map(|l| l.chars().count() - l.trim_start().chars().count()).unwrap_or(0);
-        app.player.sung_chars(li).map(|n| (n - lead as f64).max(0.0))
-    }).flatten();
     let follow = active.max(0) as usize;
     if app.lyrics_user_scroll.is_none() {
         app.sidebar_scroll = rows.iter().position(|(li, _, _)| *li == Some(follow)).unwrap_or(0);
@@ -605,7 +599,8 @@ fn render_lyrics(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         let Some(li) = *li else { lines.push(Line::raw("")); continue };
         // lines fade with their distance from the current one, both ways, and
         // the rows nearest the pane's top and bottom edges fade further still.
-        let dist = if active >= 0 { (li as i32 - active).unsigned_abs() } else { li as u32 + 1 };
+        let current = app.player.lyric_line_active(li, active);
+        let dist = if current { 0 } else if active >= 0 { (li as i32 - active).unsigned_abs() } else { li as u32 + 1 };
         // plain lyrics have no current line, so every row reads alike
         let mut strength: f32 = if !app.player.lyric_synced { 0.85 } else {
             match dist { 0 => 1.0, 1 => 0.62, 2 => 0.52, _ => 0.44 }
@@ -616,7 +611,9 @@ fn render_lyrics(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
             strength *= (edge as f32 + 1.0) / (fade_rows as f32 + 1.0);
         }
         let mut style = t.fade(strength);
-        if dist == 0 && active >= 0 { style = style.add_modifier(Modifier::BOLD); }
+        if current { style = style.add_modifier(Modifier::BOLD); }
+        // a second voice singing over another line reads as a different singer
+        if app.player.lyric_second_voice(li) { style = style.add_modifier(Modifier::ITALIC); }
         if let Some(progress) = app.player.break_progress(li) {
             // instrumental break: a short bar, full once passed, filling while current
             let progress = if (li as i32) < active { 1.0 } else if dist == 0 { progress } else { 0.0 };
@@ -639,7 +636,12 @@ fn render_lyrics(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
             app.lyric_row_lyric_idx.push(li);
             continue;
         }
-        match sung.filter(|_| dist == 0 && display_width(text) <= w) {
+        // the sung prefix of a current line, counted from its trimmed start
+        let sung = current.then(|| {
+            let lead = app.player.lyric_lines.get(li).map(|l| l.chars().count() - l.trim_start().chars().count()).unwrap_or(0);
+            app.player.sung_chars(li).map(|n| (n - lead as f64).max(0.0))
+        }).flatten();
+        match sung.filter(|_| display_width(text) <= w) {
             // word-synced current line: sung part bright, the rest like a neighbour
             // line, and the character being sung part way between the two
             Some(sung) => {

@@ -52,7 +52,7 @@ mod player_bridge {
         #[qproperty(QString, cd_cover)]
         #[qproperty(QStringList, lyric_lines)]
         #[qproperty(QStringList, lyric_times)]
-        #[qproperty(QString, lyric_words)]
+        #[qproperty(QString, lyric_meta)]
         #[qproperty(bool, lyrics_synced)]
         #[qproperty(bool, lyrics_instrumental)]
         #[qproperty(bool, lyrics_loading)]
@@ -484,9 +484,11 @@ pub struct PlayerControllerRust {
     cd_cover: QString,
     lyric_lines: QStringList,
     lyric_times: QStringList,
-    /// json array, one entry per lyric line: [] when line-synced, otherwise
-    /// [[start_secs, end_secs, text], ...] word timings.
-    lyric_words: QString,
+    /// json object with per-line extras, or empty when no line has any:
+    /// `words` ([] when line-synced, otherwise [[start_secs, end_secs, text], ...]),
+    /// `held` (secs a line stays current past the next line's start, or null)
+    /// and `second` (the line is a second voice over an earlier one).
+    lyric_meta: QString,
     /// false for plain (untimed) lyrics
     lyrics_synced: bool,
     /// the current track is known to have no vocals
@@ -534,7 +536,7 @@ impl Default for PlayerControllerRust {
             cd_cover: QString::default(),
             lyric_lines: QStringList::default(),
             lyric_times: QStringList::default(),
-            lyric_words: QString::default(),
+            lyric_meta: QString::default(),
             lyrics_synced: false,
             lyrics_instrumental: false,
             lyrics_loading: false,
@@ -1613,7 +1615,7 @@ impl player_bridge::PlayerController {
                 self.as_mut().set_drive_status(QString::from("No disc inserted"));
                 self.as_mut().set_lyric_lines(QStringList::default());
                 self.as_mut().set_lyric_times(QStringList::default());
-                self.as_mut().set_lyric_words(QString::default());
+                self.as_mut().set_lyric_meta(QString::default());
                 self.as_mut().set_lyrics_instrumental(false);
                 self.as_mut().publish_cd_info(None, false);
                 return;
@@ -1908,7 +1910,7 @@ impl player_bridge::PlayerController {
                     self.as_mut().set_cover_art_path(QString::from(""));
                     self.as_mut().set_lyric_lines(QStringList::default());
                     self.as_mut().set_lyric_times(QStringList::default());
-                    self.as_mut().set_lyric_words(QString::default());
+                    self.as_mut().set_lyric_meta(QString::default());
                     self.as_mut().set_lyrics_instrumental(false);
                     {
                         let mut state = self.state.lock().unwrap();
@@ -1980,7 +1982,7 @@ impl player_bridge::PlayerController {
     ) {
         self.as_mut().set_lyric_lines(QStringList::default());
         self.as_mut().set_lyric_times(QStringList::default());
-        self.as_mut().set_lyric_words(QString::default());
+        self.as_mut().set_lyric_meta(QString::default());
         self.as_mut().set_lyrics_instrumental(false);
         self.as_mut().set_lyrics_loading(true);
 
@@ -2122,13 +2124,19 @@ impl player_bridge::PlayerController {
             times.append(QString::from(line.time_secs.to_string().as_str()));
             words.push(line.words.iter().map(|w| (w.time_secs, w.end_secs, w.text.as_str())).collect());
         }
-        // skip the json entirely for line-synced lyrics
-        let words_json = if words.iter().any(|w| !w.is_empty()) {
-            serde_json::to_string(&words).unwrap_or_default()
+        // skip the json entirely for line-synced, single voice lyrics
+        let has_words = words.iter().any(|w| !w.is_empty());
+        let has_voices = lines.iter().any(|l| l.held_until.is_some() || l.second_voice);
+        let meta_json = if has_words || has_voices {
+            serde_json::json!({
+                "words": if has_words { words } else { Vec::new() },
+                "held": lines.iter().map(|l| l.held_until).collect::<Vec<_>>(),
+                "second": lines.iter().map(|l| l.second_voice).collect::<Vec<_>>(),
+            }).to_string()
         } else {
             String::new()
         };
-        self.as_mut().set_lyric_words(QString::from(words_json.as_str()));
+        self.as_mut().set_lyric_meta(QString::from(meta_json.as_str()));
         self.as_mut().set_lyrics_synced(lyrics.synced);
         self.as_mut().set_lyrics_instrumental(lyrics.instrumental);
         self.as_mut().set_lyric_lines(texts);
@@ -2229,7 +2237,7 @@ impl player_bridge::PlayerController {
         self.as_mut().set_cover_art_path(QString::from(""));
         self.as_mut().set_lyric_lines(QStringList::default());
         self.as_mut().set_lyric_times(QStringList::default());
-        self.as_mut().set_lyric_words(QString::default());
+        self.as_mut().set_lyric_meta(QString::default());
         self.as_mut().set_lyrics_instrumental(false);
 
         let is_single = paths.len() == 1 && !std::path::Path::new(&paths[0]).is_dir();
@@ -2303,7 +2311,7 @@ impl player_bridge::PlayerController {
             self.as_mut().set_cover_art_path(QString::from(""));
             self.as_mut().set_lyric_lines(QStringList::default());
             self.as_mut().set_lyric_times(QStringList::default());
-            self.as_mut().set_lyric_words(QString::default());
+            self.as_mut().set_lyric_meta(QString::default());
             self.as_mut().set_lyrics_instrumental(false);
             self.as_mut().set_drive_status(QString::from("No disc inserted"));
             // trigger a fresh drive scan so the cd path resumes normally.
@@ -2422,7 +2430,7 @@ impl player_bridge::PlayerController {
         self.as_mut().set_drive_status(QString::from(""));
         self.as_mut().set_lyric_lines(QStringList::default());
         self.as_mut().set_lyric_times(QStringList::default());
-        self.as_mut().set_lyric_words(QString::default());
+        self.as_mut().set_lyric_meta(QString::default());
         self.as_mut().set_lyrics_instrumental(false);
 
         {

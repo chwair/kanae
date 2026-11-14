@@ -1205,6 +1205,16 @@ impl TuiPlayerState {
         Some(((self.current_time() - self.lyric_times[li]) / len).clamp(0.0, 1.0))
     }
 
+    /// whether lyric line `li` is being sung, given the latest started line
+    /// `active`; with two voices an earlier line can still be current.
+    fn lyric_line_active(&self, li: usize, active: i32) -> bool {
+        self.lyric_synced && crate::lrclib::line_active(&self.lyric_lines_src.lines, li, active, self.current_time())
+    }
+
+    fn lyric_second_voice(&self, li: usize) -> bool {
+        self.lyric_lines_src.lines.get(li).is_some_and(|l| l.second_voice)
+    }
+
     fn active_lyric_idx(&self) -> i32 {
         if !self.lyric_synced { return -1; }
         let t = self.current_time();

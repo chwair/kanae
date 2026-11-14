@@ -1169,9 +1169,18 @@ ApplicationWindow {
                         id:lyricsArea;Layout.fillWidth:true;Layout.fillHeight:true;clip:true
                         property var timesArr:{var a=[];for(var i=0;i<player.lyric_times.length;i++)a.push(parseFloat(player.lyric_times[i]));return a}
                         property int activeIdx:{if(!player.lyrics_synced)return -1;var t=player.current_time;var times=timesArr;var best=-1;for(var i=0;i<times.length;i++){if(times[i]<=t+0.05)best=i;else break};return best}
-                        // word timings per line ([] for line-synced lines), empty when the lyrics have none
-                        property var wordsArr:{if(player.lyric_words.length===0)return [];try{return JSON.parse(player.lyric_words)}catch(e){return []}}
+                        // per-line extras: word timings ([] for line-synced lines) and voice overlaps
+                        property var metaObj:{if(player.lyric_meta.length===0)return {};try{return JSON.parse(player.lyric_meta)}catch(e){return {}}}
+                        property var wordsArr:metaObj.words||[]
+                        // two voices: a line stays current until held[i] while a later one is sung over it
+                        property var heldArr:metaObj.held||[]
+                        property var secondArr:metaObj.second||[]
                         function hasWords(idx){return idx>=0&&idx<wordsArr.length&&wordsArr[idx].length>0}
+                        function isActive(idx){if(idx<0||activeIdx<0||idx>activeIdx)return false;if(idx===activeIdx)return true
+                            var h=heldArr[idx];return h!==undefined&&h!==null&&player.current_time<h}
+                        function isSecondVoice(idx){return secondArr[idx]===true}
+                        // a held line can still be filling in behind the latest one
+                        function wipeNeeded(){for(var i=activeIdx;i>=0&&i>=activeIdx-3;i--){if(isActive(i)&&hasWords(i))return true};return breakLen(activeIdx)>0}
                         // an empty line lasting at least this long is an instrumental break with a
                         // progress bar; mirrors lrclib::BREAK_MIN_SECS
                         readonly property real breakMinSecs:6
@@ -1194,7 +1203,7 @@ ApplicationWindow {
                         on_CtChanged:{var now=Date.now();var d=_ct-(_baseT+(now-_baseMs)/1000)
                             _baseT=(player.is_playing&&Math.abs(d)<0.3)?_ct-d*0.75:_ct;_baseMs=now
                             if(!wipeClock.running)smoothTime=_ct}
-                        Timer{id:wipeClock;interval:16;repeat:true;running:player.is_playing&&lyricsArea.visible&&(lyricsArea.hasWords(lyricsArea.activeIdx)||lyricsArea.breakLen(lyricsArea.activeIdx)>0)
+                        Timer{id:wipeClock;interval:16;repeat:true;running:player.is_playing&&lyricsArea.visible&&lyricsArea.wipeNeeded()
                             onRunningChanged:{if(!running)lyricsArea.smoothTime=lyricsArea._ct}
                             onTriggered:{var a=lyricsArea;var t=Math.min(a._baseT+(Date.now()-a._baseMs)/1000,a._ct+0.25)
                                 // never step backwards on jitter, only on a real seek
@@ -1222,12 +1231,14 @@ ApplicationWindow {
                             delegate:MouseArea{id:lyricRow;width:lyricsView.width;height:lyricRowText.implicitHeight+16;hoverEnabled:true;preventStealing:false
                                 onClicked:{var times=lyricsArea.timesArr;if(player.lyrics_synced&&index<times.length){player.seek(times[index]);lyricsArea.userScrolled=false;lyricsArea.syncScroll(index)}}
                                 Text{id:lyricRowText;anchors.centerIn:parent;width:parent.width-24
-                                    property bool wordSync:index===lyricsArea.activeIdx&&lyricsArea.hasWords(index)
+                                    property bool current:lyricsArea.isActive(index)
+                                    property bool wordSync:current&&lyricsArea.hasWords(index)
                                     textFormat:wordSync?Text.StyledText:Text.PlainText
                                     text:wordSync?lyricsArea.wordHtml(index,lyricsArea.smoothTime,color):modelData
                                     // plain lyrics have no current line, so every row reads at full strength
-                                    color:{if(index===lyricsArea.activeIdx||!player.lyrics_synced)return lyricRow.containsMouse?clrAccent:clrText;return lyricRow.containsMouse?clrText:clrText2}
-                                    font.pixelSize:index===lyricsArea.activeIdx?12:11;font.bold:index===lyricsArea.activeIdx;font.family:"Segoe UI"
+                                    color:{if(current||!player.lyrics_synced)return lyricRow.containsMouse?clrAccent:clrText;return lyricRow.containsMouse?clrText:clrText2}
+                                    // a second voice sung over another line reads as a different singer
+                                    font.pixelSize:current?12:11;font.bold:current;font.italic:lyricsArea.isSecondVoice(index);font.family:"Segoe UI"
                                     wrapMode:Text.WordWrap;horizontalAlignment:Text.AlignHCenter
                                     Behavior on color{ColorAnimation{duration:150}}
                                     Behavior on font.pixelSize{NumberAnimation{duration:150}}

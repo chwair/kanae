@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct LyricLine {
     pub time_secs: f64,
     pub text: String,
@@ -9,6 +9,11 @@ pub struct LyricLine {
     pub words: Vec<LyricWord>,
     /// when the line stops being sung, if the source says so
     pub end_secs: Option<f64>,
+    /// set when the line is still sung after a later line starts (a second
+    /// voice comes in over it), so it stays current until then
+    pub held_until: Option<f64>,
+    /// the line starts while an earlier one is still sung: a second voice
+    pub second_voice: bool,
 }
 
 #[derive(Clone)]
@@ -551,7 +556,7 @@ fn parse_plain(raw: &str) -> Lyrics {
         if is_tag || (l.is_empty() && lines.last().is_none_or(|p| p.text.is_empty())) {
             continue;
         }
-        lines.push(LyricLine { time_secs: 0.0, text: l.to_string(), words: Vec::new(), end_secs: None });
+        lines.push(LyricLine { text: l.to_string(), ..Default::default() });
     }
     while lines.last().is_some_and(|l| l.text.is_empty()) {
         lines.pop();
@@ -606,7 +611,7 @@ pub fn parse_lyricsfile(doc: &str) -> Lyrics {
             } else {
                 normalize_words(&mut words)
             };
-            LyricLine { time_secs: secs(l.start_ms), text, words, end_secs: l.end_ms.map(secs) }
+            LyricLine { time_secs: secs(l.start_ms), text, words, end_secs: l.end_ms.map(secs), ..Default::default() }
         })
         .collect();
 
@@ -620,7 +625,6 @@ pub fn parse_lyricsfile(doc: &str) -> Lyrics {
     Lyrics { lines, synced: true, instrumental: false, language }
 }
 
-/// orders lines by time and settles word ends left open by the parsers.
 /// orders lines by time, settles word ends left open by the parsers and turns
 /// long silences into explicit empty lines, so they can show as breaks.
 fn sort_and_finish(lines: &mut Vec<LyricLine>) {
@@ -640,10 +644,38 @@ fn sort_and_finish(lines: &mut Vec<LyricLine>) {
         }
     }
     insert_breaks(lines);
+    mark_voices(lines);
+}
+
+// shorter overlaps are timing slop between consecutive lines, not two voices
+const MIN_OVERLAP_SECS: f64 = 0.3;
+
+/// finds overlapping lines, where a second voice sings over the first. only
+/// known line ends count, so plain lrc (which has none) never overlaps.
+fn mark_voices(lines: &mut [LyricLine]) {
+    let sung = |l: &LyricLine| !l.text.trim().is_empty();
+    let mut busy_until = f64::NEG_INFINITY;
+    for i in 0..lines.len() {
+        let next = lines.get(i + 1).map(|l| l.time_secs);
+        let line = &mut lines[i];
+        if !sung(line) { continue; }
+        line.second_voice = line.time_secs + MIN_OVERLAP_SECS < busy_until;
+        line.held_until = line.end_secs.filter(|&end| next.is_some_and(|n| end > n + MIN_OVERLAP_SECS));
+        if let Some(end) = line.end_secs {
+            busy_until = busy_until.max(end);
+        }
+    }
+}
+
+/// whether line `i` is being sung at time `t`, given the index of the last line
+/// that started (`latest`). an earlier line stays current while it is held.
+pub fn line_active(lines: &[LyricLine], i: usize, latest: i32, t: f64) -> bool {
+    if latest < 0 || i > latest as usize { return false; }
+    i == latest as usize || lines[i].held_until.is_some_and(|h| t < h)
 }
 
 fn break_line(at: f64) -> LyricLine {
-    LyricLine { time_secs: at, text: String::new(), words: Vec::new(), end_secs: None }
+    LyricLine { time_secs: at, ..Default::default() }
 }
 
 /// adds an empty line where a sung line ends long before the next one starts,
@@ -655,9 +687,14 @@ fn insert_breaks(lines: &mut Vec<LyricLine>) {
     if lines.first().is_some_and(|l| sung(l) && l.time_secs >= BREAK_MIN_SECS) {
         out.push(break_line(0.0));
     }
+    // with overlapping voices the silence starts when the last of them ends
+    let mut sung_until: Option<f64> = None;
     for i in 0..lines.len() {
         let line = lines[i].clone();
-        let gap_from = line.end_secs.filter(|_| sung(&line));
+        if let Some(end) = line.end_secs.filter(|_| sung(&line)) {
+            sung_until = Some(sung_until.map_or(end, |u| u.max(end)));
+        }
+        let gap_from = sung_until.filter(|_| sung(&line) && line.end_secs.is_some());
         out.push(line);
         if let (Some(end), Some(next)) = (gap_from, lines.get(i + 1)) {
             if sung(next) && next.time_secs - end >= BREAK_MIN_SECS {
@@ -767,12 +804,7 @@ pub fn parse_lrc(lrc: &str) -> Vec<LyricLine> {
         // enhanced word tags are absolute, so they only fit a line with a single time
         let words = if times.len() == 1 { words } else { Vec::new() };
         for t in times {
-            lines.push(LyricLine {
-                time_secs: t,
-                text: text.clone(),
-                words: words.clone(),
-                end_secs: None,
-            });
+            lines.push(LyricLine { time_secs: t, text: text.clone(), words: words.clone(), ..Default::default() });
         }
     }
 
@@ -888,6 +920,29 @@ mod tests {
         assert_eq!(break_len(&times, &texts, 0), Some(8.0));
         assert_eq!(break_len(&times, &texts, 2), Some(11.0));
         assert_eq!(break_len(&times, &texts, 1), None);
+    }
+
+    #[test]
+    fn keeps_first_voice_current_under_second() {
+        // trimmed from "Used to be": a backing line sung over the end of a lead line
+        let doc = "version: '1.0'\nmetadata:\n  title: x\n  artist: y\nlines:\n- text: How could you leave?\n  start_ms: 141827\n  end_ms: 148375\n- text: (Now I can see)\n  start_ms: 145101\n  end_ms: 148366\n- text: You used to be me\n  start_ms: 148666\n  end_ms: 154169\n";
+        let lines = parse_lyrics(doc).lines;
+        let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, ["", "How could you leave?", "(Now I can see)", "You used to be me"]);
+        assert!((lines[1].held_until.unwrap() - 148.375).abs() < 1e-9);
+        assert!(!lines[1].second_voice && lines[2].second_voice && !lines[3].second_voice);
+        assert!(lines[2].held_until.is_none());
+        // both voices are current while they overlap, then only the latest
+        assert!(line_active(&lines, 1, 2, 146.0) && line_active(&lines, 2, 2, 146.0));
+        assert!(!line_active(&lines, 1, 2, 148.5));
+        assert!(!line_active(&lines, 1, 3, 149.0));
+    }
+
+    #[test]
+    fn ignores_tiny_overlaps() {
+        let doc = "version: '1.0'\nmetadata:\n  title: x\n  artist: y\nlines:\n- text: a\n  start_ms: 1000\n  end_ms: 2100\n- text: b\n  start_ms: 2000\n  end_ms: 3000\n";
+        let lines = parse_lyrics(doc).lines;
+        assert!(lines.iter().all(|l| l.held_until.is_none() && !l.second_voice));
     }
 
     #[test]
