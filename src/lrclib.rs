@@ -84,37 +84,33 @@ struct SearchResult {
     #[serde(rename = "artistName")]
     artist_name: Option<String>,
     duration: Option<f64>,
-    #[serde(rename = "syncedLyrics")]
-    synced_lyrics: Option<String>,
-    #[serde(rename = "plainLyrics")]
-    plain_lyrics: Option<String>,
-    lyricsfile: Option<String>,
-    #[serde(rename = "hasWordSync")]
-    has_word_sync: Option<bool>,
-    #[serde(rename = "instrumental")]
-    instrumental: Option<bool>,
+    #[serde(rename = "hasWordSync", default)]
+    has_word_sync: bool,
+    #[serde(rename = "hasSyncedLyrics", default)]
+    has_synced_lyrics: bool,
+    #[serde(rename = "hasPlainLyrics", default)]
+    has_plain_lyrics: bool,
+    #[serde(default)]
+    instrumental: bool,
 }
 
+// v2 search results are summaries without lyrics text, so ranking goes by the
+// availability flags and the chosen record is then fetched by id
 impl SearchResult {
     fn word_synced(&self) -> bool {
         self.has_word_sync
-            .unwrap_or_else(|| self.lyricsfile.as_deref().is_some_and(|s| s.contains("words:")))
     }
 
     fn is_synced(&self) -> bool {
-        // a lyricsfile only counts as synced when it has timed lines
-        self.synced_lyrics.as_deref().is_some_and(|s| !s.trim().is_empty())
-            || self.lyricsfile.as_deref().is_some_and(|s| s.contains("start_ms"))
+        self.has_synced_lyrics || self.has_word_sync
     }
 
     fn is_instrumental(&self) -> bool {
-        self.instrumental.unwrap_or(false)
-            || self.lyricsfile.as_deref().is_some_and(|s| s.contains("instrumental: true"))
+        self.instrumental
     }
 
     fn has_plain(&self) -> bool {
-        self.plain_lyrics.as_deref().is_some_and(|s| !s.trim().is_empty())
-            || self.lyricsfile.as_deref().is_some_and(|s| s.contains("plain:"))
+        self.has_plain_lyrics
     }
 
     /// ranking bonus for richer lyrics. lrclib often has several near identical
@@ -307,16 +303,9 @@ pub fn fetch_lyrics(
             score,
         );
 
-        let Some((raw, lyrics)) = best_lyrics(
-            best.lyricsfile.as_deref(),
-            best.synced_lyrics.as_deref(),
-            best.plain_lyrics.as_deref(),
-            best.instrumental.unwrap_or(false),
-        ) else {
-            eprintln!("[lrclib] matched entry has no parseable lyrics");
+        let Some((raw, lyrics)) = fetch_by_id(best.id) else {
             continue;
         };
-        eprintln!("[lrclib] {} lyrics, {} line(s) (id {})", lyrics.kind(), lyrics.lines.len(), best.id);
         if lyrics.synced {
             return Some((best.id, raw, lyrics));
         }
@@ -332,7 +321,7 @@ pub fn fetch_lyrics(
 }
 
 fn search(query: &str) -> Vec<SearchResult> {
-    let url = format!("https://lrclib.net/api/search?{}", query);
+    let url = format!("https://lrclib.net/api/v2/search?{}", query);
     eprintln!("[lrclib] GET {}", url);
     let results: Vec<SearchResult> = match ureq::get(&url).header("User-Agent", USER_AGENT).call() {
         Ok(r) => match r.into_body().read_json() {
@@ -851,11 +840,10 @@ mod tests {
             track_name: Some("Testify".into()),
             artist_name: Some(artist.into()),
             duration: Some(210.0),
-            synced_lyrics: Some("[00:01.00]x".into()),
-            plain_lyrics: None,
-            lyricsfile: None,
-            has_word_sync: Some(word_sync),
-            instrumental: Some(false),
+            has_word_sync: word_sync,
+            has_synced_lyrics: true,
+            has_plain_lyrics: true,
+            instrumental: false,
         }
     }
 
