@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use crate::library::{LibraryScanResult, LibrarySettings, ScanProgress};
+use crate::library::{LibraryScanResult, LibrarySettings, ScanProgress, SearchFilter};
 use crate::library_cache;
 
 // dtos serialised to json for qml
@@ -77,6 +77,7 @@ pub mod library_bridge {
         #[qinvokable] #[cxx_name = "setCrossfadeSecs"]     fn set_crossfade_secs(self: Pin<&mut Self>, value: f64);
         #[qinvokable] #[cxx_name = "setAlbumSort"]         fn set_album_sort(self: Pin<&mut Self>, value: QString);
         #[qinvokable] #[cxx_name = "searchLibrary"]        fn search_library(self: Pin<&mut Self>, query: QString);
+        #[qinvokable] #[cxx_name = "setSearchFilter"]      fn set_search_filter(self: Pin<&mut Self>, filter: QString);
     }
 }
 
@@ -101,6 +102,8 @@ struct LibraryState {
     /// character only has to re-score what already matched.
     last_query: String,
     last_hits:  Vec<usize>,
+    /// which album field the omnibar search matches against.
+    search_filter: SearchFilter,
 }
 
 impl Default for LibraryState {
@@ -120,6 +123,7 @@ impl Default for LibraryState {
             search_index: None,
             last_query: String::new(),
             last_hits:  Vec::new(),
+            search_filter: SearchFilter::All,
         }
     }
 }
@@ -312,11 +316,9 @@ impl library_bridge::LibraryController {
             let mut g = picker_arc.lock().unwrap();
             g.take()
         };
-        if let Some(path_opt) = picker {
-            if let Some(p) = path_opt {
-                let s = p.to_string_lossy().to_string();
-                self.as_mut().set_music_dir(QString::from(s.as_str()));
-            }
+        if let Some(Some(p)) = picker {
+            let s = p.to_string_lossy().to_string();
+            self.as_mut().set_music_dir(QString::from(s.as_str()));
         }
 
         let done = {
@@ -627,6 +629,16 @@ impl library_bridge::LibraryController {
     /// `search_results` (same dto shape the browser grid already renders).
     /// matching is case-insensitive and every whitespace-separated term must
     /// appear somewhere in the album's text.
+    /// change what the search matches against. the caller re-runs
+    /// `searchLibrary` afterwards to refresh the results.
+    pub fn set_search_filter(self: Pin<&mut Self>, filter: QString) {
+        let mut st = self.state.lock().unwrap();
+        st.search_filter = SearchFilter::from_key(&filter.to_string());
+        // the cached hit list was scored under the old filter
+        st.last_query.clear();
+        st.last_hits.clear();
+    }
+
     pub fn search_library(mut self: Pin<&mut Self>, query: QString) {
         let q = query.to_string().to_lowercase();
         let terms: Vec<&str> = q.split_whitespace().collect();
@@ -651,6 +663,7 @@ impl library_bridge::LibraryController {
             }
             // taken out so the hit list can be stored back into `st` below.
             let index = st.search_index.take().unwrap_or_default();
+            let filter = st.search_filter;
 
             // typing another character can only shrink the previous result set,
             // so narrow it instead of walking the whole library again.
@@ -658,11 +671,11 @@ impl library_bridge::LibraryController {
             let mut hits: Vec<(u8, usize)> = Vec::new();
             if narrow {
                 for &i in &st.last_hits {
-                    if let Some(score) = index[i].score(&terms) { hits.push((score, i)); }
+                    if let Some(score) = index[i].score(&terms, filter) { hits.push((score, i)); }
                 }
             } else {
                 for (i, entry) in index.iter().enumerate() {
-                    if let Some(score) = entry.score(&terms) { hits.push((score, i)); }
+                    if let Some(score) = entry.score(&terms, filter) { hits.push((score, i)); }
                 }
             }
             st.last_query = q;
@@ -696,22 +709,45 @@ struct SearchEntry {
     dto:       LibraryNodeDto,
     name_lc:   String,
     artist_lc: String,
-    /// track file stems and the containing folder name, joined by newlines.
-    extra_lc:  String,
+    folder_lc: String,
+    /// track file stems, joined by newlines.
+    tracks_lc: String,
 }
 
 impl SearchEntry {
     /// `None` when any term is missing; otherwise a rank, lower is better.
-    fn score(&self, terms: &[&str]) -> Option<u8> {
+    fn score(&self, terms: &[&str], filter: SearchFilter) -> Option<u8> {
         let mut best = u8::MAX;
         for &term in terms {
-            let rank = if self.name_lc.starts_with(term) { 0 }
-                else if self.name_lc.contains(term) { 1 }
-                else if self.artist_lc.starts_with(term) { 2 }
-                else if self.artist_lc.contains(term) { 3 }
-                else if self.dto.year == term { 4 }
-                else if self.extra_lc.contains(term) { 5 }
-                else { return None };
+            let rank = match filter {
+                SearchFilter::All => {
+                    if self.name_lc.starts_with(term) { 0 }
+                    else if self.name_lc.contains(term) { 1 }
+                    else if self.artist_lc.starts_with(term) { 2 }
+                    else if self.artist_lc.contains(term) { 3 }
+                    else if self.dto.year == term { 4 }
+                    else if self.folder_lc.contains(term) || self.tracks_lc.contains(term) { 5 }
+                    else { return None }
+                }
+                SearchFilter::Album => {
+                    if self.name_lc.starts_with(term) { 0 }
+                    else if self.name_lc.contains(term) { 1 }
+                    else { return None }
+                }
+                SearchFilter::Artist => {
+                    if self.artist_lc.starts_with(term) { 0 }
+                    else if self.artist_lc.contains(term) { 1 }
+                    else { return None }
+                }
+                SearchFilter::Track => {
+                    if self.tracks_lc.contains(term) { 0 } else { return None }
+                }
+                SearchFilter::Year => {
+                    if self.dto.year.starts_with(term) { 0 }
+                    else if self.dto.year.contains(term) { 1 }
+                    else { return None }
+                }
+            };
             best = best.min(rank);
         }
         Some(best)
@@ -726,21 +762,19 @@ fn build_search_index(result: &LibraryScanResult, settings: &LibrarySettings) ->
             let name = if album.album.is_empty() {
                 album.dir.file_name().and_then(|n| n.to_str()).unwrap_or("Unknown").to_string()
             } else { album.album.clone() };
-            let mut extra = String::new();
-            if let Some(folder) = album.dir.file_name().and_then(|n| n.to_str()) {
-                extra.push_str(&folder.to_lowercase());
-                extra.push('\n');
-            }
+            let folder = album.dir.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
+            let mut tracks = String::new();
             for t in &album.track_paths {
                 if let Some(stem) = t.file_stem().and_then(|n| n.to_str()) {
-                    extra.push_str(&stem.to_lowercase());
-                    extra.push('\n');
+                    tracks.push_str(&stem.to_lowercase());
+                    tracks.push('\n');
                 }
             }
             SearchEntry {
                 name_lc:   name.to_lowercase(),
                 artist_lc: album.album_artist.to_lowercase(),
-                extra_lc:  extra,
+                folder_lc: folder,
+                tracks_lc: tracks,
                 dto: LibraryNodeDto {
                     kind: "album".into(),
                     path: album.dir.to_string_lossy().to_string(),

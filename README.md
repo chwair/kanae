@@ -1,6 +1,3 @@
-> [!IMPORTANT]
-> Kanae is in beta!! While most features work, there's still a bit of polish needed to get it in a workable, reliable state. Thanks!
-
 <div align=center>
 <h1>Kanae</h1>
 <p>A music and CD player with a TUI and GUI, written in Rust.<p>

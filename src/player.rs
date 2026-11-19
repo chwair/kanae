@@ -1006,7 +1006,7 @@ impl player_bridge::PlayerController {
         let in_place = {
             let mut state = self.state.lock().unwrap();
             state.playback_start_offset = seconds;
-            let alive = state.playback_thread.as_ref().map_or(false, |h| !h.is_finished())
+            let alive = state.playback_thread.as_ref().is_some_and(|h| !h.is_finished())
                 && !state.playback_ended.load(Ordering::Relaxed);
             let in_place = was_playing && state.is_file_mode && alive;
             if in_place {

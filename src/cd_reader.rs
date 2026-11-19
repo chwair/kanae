@@ -12,6 +12,7 @@ const CD_EXTRA_GAP_SECTORS: u32 = 11_400;
 #[derive(Debug, Clone)]
 pub struct DriveInfo {
     pub path: String,
+    #[cfg_attr(not(feature = "gui"), allow(dead_code))]
     pub display_name: String,
 }
 
@@ -21,6 +22,7 @@ pub struct TrackInfo {
     pub duration_seconds: f64,
 }
 
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
 /// result produced by the background disc-load thread and consumed by poll_load.
 pub enum PendingDiscResult {
     /// toc read successfully; tracks, durations and optional metadata are ready.
@@ -224,7 +226,7 @@ pub fn format_duration(seconds: f64) -> String {
 /// "\\.\D:" (windows), "/dev/sr0" (linux) or "disk6" (macos).
 pub fn drive_letter(drive_path: &str) -> String {
     if drive_path.contains('\\') {
-        drive_path.split('\\').last().unwrap_or(drive_path).to_string()
+        drive_path.split('\\').next_back().unwrap_or(drive_path).to_string()
     } else if let Some(dev) = drive_path.strip_prefix("/dev/") {
         dev.to_string()
     } else {

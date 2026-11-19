@@ -223,7 +223,7 @@ pub fn embedded_cover(path: &Path) -> Option<String> {
     };
     let dest = crate::library_cache::cover_cache_dir()
         .join(format!("kanae_cover_{:016x}.{}", hash, ext));
-    if dest.exists() || std::fs::write(&dest, pic.data()).is_ok() {
+    if dest.exists() || crate::library_cache::write_atomic(&dest, pic.data()).is_ok() {
         let url_path = dest.to_string_lossy().replace('\\', "/");
         // trim any leading slash so format!() produces exactly 3 slashes.
         Some(format!("file:///{}", url_path.trim_start_matches('/')))
@@ -470,7 +470,7 @@ pub fn play_local_file(
                 // back from the last moments of the track still works.
                 let mut drained = false;
                 while !stop_flag.load(Ordering::Relaxed) && seek.generation() == my_gen {
-                    if publish_heard(base_secs, my_gen).map_or(false, |p| p >= sent) {
+                    if publish_heard(base_secs, my_gen).is_some_and(|p| p >= sent) {
                         drained = true;
                         break;
                     }

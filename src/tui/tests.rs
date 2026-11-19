@@ -31,11 +31,13 @@ fn fixture(view: TuiLibraryView, theme: TuiTheme) -> TuiApp {
     }
     let dirs = (0..7).map(|i| root.join(format!("Artist {}", i))).collect();
 
-    let mut library = TuiLibraryState::default();
-    // merged, so the root shows albums (and their covers) rather than folders.
-    library.settings = LibrarySettings { search_paths: vec![root], merge_all_folders: true, ..LibrarySettings::default() };
-    library.scan_result = Some(LibraryScanResult { albums, dirs, dir_mtimes: Default::default() });
-    library.scan_gen = 1;
+    let mut library = TuiLibraryState {
+        // merged, so the root shows albums (and their covers) rather than folders.
+        settings: LibrarySettings { search_paths: vec![root], merge_all_folders: true, ..LibrarySettings::default() },
+        scan_result: Some(LibraryScanResult { albums, dirs, dir_mtimes: Default::default() }),
+        scan_gen: 1,
+        ..TuiLibraryState::default()
+    };
     library.refresh_nodes(None);
 
     let settings = TuiSettings { library_view: view, theme, ..TuiSettings::default() };
@@ -131,6 +133,36 @@ fn search_matches_track_names_and_all_terms() {
 }
 
 #[test]
+fn search_filter_limits_matched_fields() {
+    use crate::library::SearchFilter;
+    let mut app = fixture(TuiLibraryView::List, TuiTheme::Terminal);
+    input::handle_key(&mut app, KeyCode::Char('f'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    // ctrl+shift+f opens the search with the filter already moved on.
+    assert_eq!(app.search.as_ref().unwrap().filter, SearchFilter::Album);
+
+    app.search.as_mut().unwrap().query = "song 3".into();
+    app.tick();
+    // track names do not count when only album titles are searched.
+    assert!(app.visible_nodes().is_empty());
+
+    app.search.as_mut().unwrap().filter = SearchFilter::Track;
+    app.tick();
+    assert_eq!(app.visible_nodes().len(), 40);
+
+    app.search.as_mut().unwrap().query = "artist 6".into();
+    app.tick();
+    assert!(app.visible_nodes().is_empty());
+    app.search.as_mut().unwrap().filter = SearchFilter::Artist;
+    app.tick();
+    assert!(!app.visible_nodes().is_empty());
+
+    // plain ctrl+f while the bar is open keeps cycling.
+    input::handle_key(&mut app, KeyCode::Char('f'), KeyModifiers::CONTROL);
+    assert_eq!(app.search.as_ref().unwrap().filter, SearchFilter::Track);
+    draw_all_sizes(&mut app);
+}
+
+#[test]
 fn grid_navigation_moves_by_rows() {
     let mut app = fixture(TuiLibraryView::Grid, TuiTheme::Terminal);
     let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
@@ -147,9 +179,7 @@ fn grid_navigation_moves_by_rows() {
 
 #[test]
 fn repeat_and_shuffle_pick_the_next_track() {
-    let mut p = TuiPlayerState::default();
-    p.total_tracks = 4;
-    p.current_track = 3;
+    let mut p = TuiPlayerState { total_tracks: 4, current_track: 3, ..TuiPlayerState::default() };
     assert_eq!(p.pick_next_index(), None);
     p.repeat = RepeatMode::All;
     assert_eq!(p.pick_next_index(), Some(0));

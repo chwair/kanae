@@ -1,5 +1,6 @@
 /// persistence for library scan results and settings, so restarts skip a full rescan.
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use crate::library::{LibraryScanResult, LibrarySettings};
 
 // tui-specific settings
@@ -220,16 +221,50 @@ impl Default for TuiSettings {
 }
 
 pub fn load_tui_settings() -> TuiSettings {
-    let path = ensure_dir().join("tui_settings.json");
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    load_settings_file(&ensure_dir().join("tui_settings.json"))
 }
 
 pub fn save_tui_settings(s: &TuiSettings) {
     if let Ok(json) = serde_json::to_string_pretty(s) {
-        let _ = std::fs::write(ensure_dir().join("tui_settings.json"), json);
+        let _ = write_atomic(&ensure_dir().join("tui_settings.json"), json.as_bytes());
+    }
+}
+
+/// writes `bytes` to a sibling temp file and renames it over `path`, so a crash
+/// or power loss mid-write never leaves a truncated file behind. the temp name is
+/// unique per call, so concurrent writers to the same path don't clobber each other.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = path.with_file_name(format!(
+        ".{}.{}.{}.tmp",
+        name,
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed),
+    ));
+    if let Err(e) = std::fs::write(&tmp, bytes) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
+}
+
+/// loads a user settings file, falling back to defaults when it is missing. a file
+/// that exists but fails to parse is moved aside to `<name>.bak` rather than being
+/// silently overwritten by defaults on the next save, so the user can recover it.
+fn load_settings_file<T: serde::de::DeserializeOwned + Default>(path: &Path) -> T {
+    let Ok(text) = std::fs::read_to_string(path) else { return T::default() };
+    match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[settings] {} is unreadable ({}), moving it to .bak", path.display(), e);
+            let mut bak = path.as_os_str().to_owned();
+            bak.push(".bak");
+            let _ = std::fs::rename(path, PathBuf::from(bak));
+            T::default()
+        }
     }
 }
 
@@ -284,16 +319,12 @@ pub fn is_legacy_cache(result: &LibraryScanResult) -> bool {
 }
 
 pub fn load_settings() -> LibrarySettings {
-    let path = ensure_dir().join("library_settings.json");
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    load_settings_file(&ensure_dir().join("library_settings.json"))
 }
 
 pub fn save_settings(s: &LibrarySettings) {
     if let Ok(json) = serde_json::to_string_pretty(s) {
-        let _ = std::fs::write(ensure_dir().join("library_settings.json"), json);
+        let _ = write_atomic(&ensure_dir().join("library_settings.json"), json.as_bytes());
     }
 }
 
@@ -306,7 +337,7 @@ pub fn load_cache() -> Option<LibraryScanResult> {
 
 pub fn save_cache(r: &LibraryScanResult) {
     if let Ok(json) = serde_json::to_string(r) {
-        let _ = std::fs::write(ensure_dir().join("library_cache.json"), json);
+        let _ = write_atomic(&ensure_dir().join("library_cache.json"), json.as_bytes());
     }
 }
 
@@ -353,4 +384,78 @@ pub fn dirs_changed(
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("kanae-test-cache-{}-{}", std::process::id(), name));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn write_atomic_replaces_and_leaves_no_temp_files() {
+        let dir = temp_dir("atomic");
+        let path = dir.join("f.json");
+        write_atomic(&path, b"one").unwrap();
+        write_atomic(&path, b"two").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "two");
+        let names: Vec<_> = std::fs::read_dir(&dir).unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["f.json".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_atomic_errors_when_dir_is_missing() {
+        let dir = temp_dir("atomic-missing");
+        assert!(write_atomic(&dir.join("nope").join("f.json"), b"x").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn settings_round_trip() {
+        let dir = temp_dir("settings");
+        let path = dir.join("tui_settings.json");
+        let s = TuiSettings { show_hints: false, grid_covers: false, ..TuiSettings::default() };
+        write_atomic(&path, serde_json::to_string(&s).unwrap().as_bytes()).unwrap();
+        let back: TuiSettings = load_settings_file(&path);
+        assert!(!back.show_hints);
+        assert!(!back.grid_covers);
+        assert!(back.show_sidebar);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_settings_fall_back_to_default() {
+        let dir = temp_dir("settings-missing");
+        let s: TuiSettings = load_settings_file(&dir.join("absent.json"));
+        assert!(s.show_hints);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupt_settings_are_moved_to_bak() {
+        let dir = temp_dir("settings-corrupt");
+        let path = dir.join("library_settings.json");
+        std::fs::write(&path, "{ truncated").unwrap();
+        let _: LibrarySettings = load_settings_file(&path);
+        assert!(!path.exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("library_settings.json.bak")).unwrap(),
+            "{ truncated",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_cache_detection() {
+        let empty = LibraryScanResult::default();
+        assert!(!is_legacy_cache(&empty));
+    }
 }

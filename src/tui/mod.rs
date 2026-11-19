@@ -557,8 +557,7 @@ impl TuiPlayerState {
                 self.track_titles    = (0..tracks.len()).map(|i| {
                     metadata.as_ref()
                         .and_then(|m| m.track_titles.get(i))
-                        .filter(|s| !s.is_empty())
-                        .map(|s| s.clone())
+                        .filter(|s| !s.is_empty()).cloned()
                         .unwrap_or_else(|| format!("Track {}", i + 1))
                 }).collect();
                 self.track_artists   = (0..tracks.len()).map(|i| {
@@ -869,7 +868,7 @@ impl TuiPlayerState {
         self.heard_position.store(secs.to_bits(), Ordering::Relaxed);
         self.current_position.store(secs.to_bits(), Ordering::Relaxed);
         // a running file stream seeks in place instead of reopening the device
-        let alive = self.playback_thread.as_ref().map_or(false, |h| !h.is_finished())
+        let alive = self.playback_thread.as_ref().is_some_and(|h| !h.is_finished())
             && !self.playback_ended.load(Ordering::Relaxed);
         if was_playing && self.is_file_mode && alive {
             self.seek_signal.request(secs);
@@ -1542,6 +1541,7 @@ struct TuiApp {
     btn_back:   Rect,
     btn_fwd:    Rect,
     btn_search: Rect,
+    btn_search_filter: Rect,
     btn_view:   Rect,
     btn_shuffle: Rect,
     btn_repeat:  Rect,
@@ -1682,6 +1682,7 @@ impl TuiApp {
             btn_back:   Rect::default(),
             btn_fwd:    Rect::default(),
             btn_search: Rect::default(),
+            btn_search_filter: Rect::default(),
             btn_view:   Rect::default(),
             btn_shuffle: Rect::default(),
             btn_repeat:  Rect::default(),
@@ -1955,13 +1956,13 @@ impl TuiApp {
             self.last_drive_scan = now;
         }
 
-        if !self.player.is_playing && !self.player.is_loading && !self.player.is_file_mode {
-            if now.duration_since(self.last_disc_check) > Duration::from_secs(2) {
-                if self.player.current_drive_idx.is_some() {
-                    self.player.load_disc();
-                }
-                self.last_disc_check = now;
+        if !self.player.is_playing && !self.player.is_loading && !self.player.is_file_mode
+            && now.duration_since(self.last_disc_check) > Duration::from_secs(2)
+        {
+            if self.player.current_drive_idx.is_some() {
+                self.player.load_disc();
             }
+            self.last_disc_check = now;
         }
 
         if now.duration_since(self.last_marquee) > Duration::from_millis(350) {
@@ -2227,13 +2228,13 @@ fn rect_contains(r: Rect, x: u16, y: u16) -> bool {
 #[cfg(unix)]
 unsafe fn suppress_stderr() -> i32 {
     extern "C" {
-        fn open(path: *const u8, flags: i32, ...) -> i32;
+        fn open(path: *const std::ffi::c_char, flags: i32, ...) -> i32;
         fn dup(fd: i32) -> i32;
         fn dup2(oldfd: i32, newfd: i32) -> i32;
         fn close(fd: i32) -> i32;
     }
     let saved = dup(2);
-    let devnull = open(b"/dev/null\0".as_ptr(), 1 /* O_WRONLY */);
+    let devnull = open(c"/dev/null".as_ptr(), 1 /* O_WRONLY */);
     if devnull >= 0 { dup2(devnull, 2); close(devnull); }
     saved
 }
@@ -2343,7 +2344,7 @@ fn query_terminal_colors() -> Option<(Rgb, Rgb)> {
 fn parse_osc_color(text: &str, code: &str) -> Option<Rgb> {
     let start = text.find(&format!("]{};rgb:", code))? + code.len() + 6;
     let rest = &text[start..];
-    let end = rest.find(|c: char| c == '\x07' || c == '\x1b').unwrap_or(rest.len());
+    let end = rest.find(['\x07', '\x1b']).unwrap_or(rest.len());
     let mut parts = rest[..end].split('/').map(|h| {
         let v = u32::from_str_radix(h, 16).ok()?;
         let max = (1u32 << (4 * h.len().clamp(1, 4))) - 1;

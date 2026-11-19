@@ -30,17 +30,12 @@ pub struct LibraryAlbum {
     pub is_single:    bool,
 }
 
-/// a node in the library tree that the ui navigates.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub enum LibraryNode {
-    Folder(PathBuf),
-    Album(LibraryAlbum),
-}
-
 fn default_true() -> bool { true }
 fn default_crossfade_secs() -> f64 { 4.0 }
 /// bounds the ui and playback both clamp to.
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
 pub const CROSSFADE_MIN_SECS: f64 = 1.0;
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
 pub const CROSSFADE_MAX_SECS: f64 = 12.0;
 
 /// settings that control scanning behaviour.
@@ -128,6 +123,56 @@ pub fn album_sort_prev(mode: &str) -> &'static str {
     ALBUM_SORT_MODES[(i + ALBUM_SORT_MODES.len() - 1) % ALBUM_SORT_MODES.len()]
 }
 
+/// which part of an album a library search matches against. `All` also
+/// matches folder names.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SearchFilter {
+    #[default]
+    All,
+    Album,
+    Artist,
+    Track,
+    Year,
+}
+
+impl SearchFilter {
+    pub const MODES: [SearchFilter; 5] =
+        [SearchFilter::All, SearchFilter::Album, SearchFilter::Artist, SearchFilter::Track, SearchFilter::Year];
+
+    // key/from_key are the gui's string protocol; the tui keeps the enum.
+    #[cfg_attr(not(feature = "gui"), allow(dead_code))]
+    pub fn key(self) -> &'static str {
+        match self {
+            SearchFilter::All    => "all",
+            SearchFilter::Album  => "album",
+            SearchFilter::Artist => "artist",
+            SearchFilter::Track  => "track",
+            SearchFilter::Year   => "year",
+        }
+    }
+
+    /// unknown keys fall back to `All`.
+    #[cfg_attr(not(feature = "gui"), allow(dead_code))]
+    pub fn from_key(key: &str) -> Self {
+        Self::MODES.into_iter().find(|m| m.key() == key).unwrap_or_default()
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SearchFilter::All    => "All",
+            SearchFilter::Album  => "Albums",
+            SearchFilter::Artist => "Artists",
+            SearchFilter::Track  => "Tracks",
+            SearchFilter::Year   => "Year",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        let i = Self::MODES.iter().position(|m| *m == self).unwrap_or(0);
+        Self::MODES[(i + 1) % Self::MODES.len()]
+    }
+}
+
 /// leading numeric part of a year tag ("2003-05-01" -> 2003). none when absent.
 fn year_num(y: &str) -> Option<i64> {
     let digits: String = y.trim().chars().take_while(|c| c.is_ascii_digit()).collect();
@@ -167,7 +212,6 @@ pub fn compare_albums(
 pub struct ScanProgress {
     pub files_found: usize,
     pub dirs_visited: usize,
-    pub current_dir: PathBuf,
     /// albums newly discovered since the last progress event (may be empty).
     pub new_albums: Vec<LibraryAlbum>,
 }
@@ -283,7 +327,6 @@ pub fn scan(
                 let _ = progress_tx.try_send(ScanProgress {
                     files_found: fc,
                     dirs_visited: dirs_total,
-                    current_dir: dir.clone(),
                     new_albums: albums.clone(),
                 });
             }
@@ -332,7 +375,6 @@ fn walk_dir(
     let _ = progress_tx.try_send(ScanProgress {
         files_found: 0,
         dirs_visited: visited,
-        current_dir: dir.to_path_buf(),
         new_albums: vec![],
     });
 
@@ -424,6 +466,7 @@ fn group_into_albums(dir: &Path, tracks: &[crate::file_player::LocalTrack]) -> V
 // helpers
 
 /// return the os default music directory, or none if unavailable.
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
 pub fn default_music_dir() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {

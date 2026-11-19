@@ -87,6 +87,7 @@ impl Queue {
         self.entries.clear();
     }
 
+    #[cfg_attr(not(feature = "gui"), allow(dead_code))]
     /// the queue as json for the gui, mirroring `album_tracks_json`.
     pub fn to_json(&self) -> String {
         let rows: Vec<serde_json::Value> = self.entries.iter()
@@ -98,5 +99,59 @@ impl Queue {
             }))
             .collect();
         serde_json::to_string(&rows).unwrap_or_else(|_| "[]".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(name: &str) -> QueueEntry {
+        QueueEntry {
+            path: PathBuf::from(format!("/m/{name}.flac")),
+            title: name.to_string(),
+            artist: String::new(),
+            duration: "0:00".to_string(),
+        }
+    }
+
+    fn queue(names: &[&str]) -> Queue {
+        Queue { entries: names.iter().map(|n| entry(n)).collect() }
+    }
+
+    fn titles(q: &Queue) -> Vec<&str> {
+        q.entries().iter().map(|e| e.title.as_str()).collect()
+    }
+
+    #[test]
+    fn pop_front_drains_in_order() {
+        let mut q = queue(&["a", "b"]);
+        assert_eq!(q.pop_front().unwrap().title, "a");
+        assert_eq!(q.pop_front().unwrap().title, "b");
+        assert!(q.pop_front().is_none());
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn remove_ignores_out_of_range() {
+        let mut q = queue(&["a", "b", "c"]);
+        assert!(q.remove(3).is_none());
+        assert_eq!(q.remove(1).unwrap().title, "b");
+        assert_eq!(titles(&q), ["a", "c"]);
+    }
+
+    #[test]
+    fn move_entry_clamps_and_ignores_bad_source() {
+        let mut q = queue(&["a", "b", "c"]);
+        q.move_entry(0, 99);
+        assert_eq!(titles(&q), ["b", "c", "a"]);
+        q.move_entry(2, 0);
+        assert_eq!(titles(&q), ["a", "b", "c"]);
+        q.move_entry(5, 0);
+        q.move_entry(1, 1);
+        assert_eq!(titles(&q), ["a", "b", "c"]);
+        let mut empty = Queue::new();
+        empty.move_entry(0, 0);
+        assert!(empty.is_empty());
     }
 }

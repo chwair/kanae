@@ -48,6 +48,14 @@ pub(super) fn handle_key(app: &mut TuiApp, code: KeyCode, mods: KeyModifiers) {
         KeyCode::Char('C') if app.queue_open => clear_queue(app),
         KeyCode::Tab if app.queue_open => app.queue_focus = !app.queue_focus,
         KeyCode::Char('/') if !ctrl => open_search(app),
+        // most terminals report ctrl+shift+f as plain ctrl+f, so ctrl+f also
+        // cycles the filter once the search bar is already open.
+        KeyCode::Char('f') | KeyCode::Char('F') if ctrl => {
+            let shift = mods.contains(KeyModifiers::SHIFT) || code == KeyCode::Char('F');
+            let was_open = app.view == View::Library && app.search.is_some();
+            open_search(app);
+            if shift || was_open { cycle_search_filter(app); }
+        }
         KeyCode::Char('v') if app.view == View::Library => toggle_library_view(app),
         KeyCode::Char('b') => {
             app.tui_settings.show_sidebar = !app.tui_settings.show_sidebar;
@@ -164,6 +172,13 @@ fn open_search(app: &mut TuiApp) {
     }
 }
 
+fn cycle_search_filter(app: &mut TuiApp) {
+    if let Some(ref mut s) = app.search {
+        s.filter = s.filter.next();
+        app.reset_content_cursor();
+    }
+}
+
 fn close_search(app: &mut TuiApp) {
     app.search = None;
     app.reset_content_cursor();
@@ -199,6 +214,7 @@ fn search_key(app: &mut TuiApp, code: KeyCode, mods: KeyModifiers) -> bool {
         KeyCode::Backspace if ctrl || alt => delete_word(&mut s.query),
         KeyCode::Char('w') if ctrl => delete_word(&mut s.query),
         KeyCode::Char('u') if ctrl => s.query.clear(),
+        KeyCode::Char('f') | KeyCode::Char('F') if ctrl => cycle_search_filter(app),
         KeyCode::Backspace => { s.query.pop(); }
         KeyCode::Char(c) if !ctrl => {
             s.query.push(c);
@@ -495,6 +511,7 @@ fn left_click(app: &mut TuiApp, x: u16, y: u16) {
     if rect_contains(app.btn_lyrics_resync, x, y) { app.lyrics_user_scroll = None; return; }
     if rect_contains(app.btn_back, x, y) { go_back(app); return; }
     if rect_contains(app.btn_fwd, x, y) { go_forward(app); return; }
+    if rect_contains(app.btn_search_filter, x, y) { cycle_search_filter(app); return; }
     if rect_contains(app.btn_search, x, y) { open_search(app); return; }
     if rect_contains(app.btn_view, x, y) { toggle_library_view(app); return; }
 

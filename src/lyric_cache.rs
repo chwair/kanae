@@ -41,7 +41,10 @@ pub struct LyricContentCache {
 
 impl LyricContentCache {
     pub fn load() -> Self {
-        let path = cache_path();
+        Self::load_from(cache_path())
+    }
+
+    fn load_from(path: PathBuf) -> Self {
         let file: CacheFile = if path.exists() {
             std::fs::read_to_string(&path)
                 .ok()
@@ -143,7 +146,7 @@ impl LyricContentCache {
             no_lyrics_entries: self.no_lyrics_entries.clone(),
         };
         if let Ok(json) = serde_json::to_string_pretty(&file) {
-            let _ = std::fs::write(&self.path, json);
+            let _ = crate::library_cache::write_atomic(&self.path, json.as_bytes());
         }
     }
 
@@ -228,3 +231,69 @@ fn config_dir() -> PathBuf {
     PathBuf::from(".")
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_path(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("kanae-test-lyrics-{}-{}", std::process::id(), name));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir.join("lyric_content_cache.json")
+    }
+
+    #[test]
+    fn round_trips_through_disk() {
+        let path = temp_path("roundtrip");
+        let mut c = LyricContentCache::load_from(path.clone());
+        c.insert_lrc("file:/a.flac", "[00:01.00] hi", false);
+        c.insert_no_lyrics("cd:abc:3", false);
+        c.save();
+
+        let mut c = LyricContentCache::load_from(path.clone());
+        assert_eq!(c.get_lrc("file:/a.flac").as_deref(), Some("[00:01.00] hi"));
+        assert!(c.has_no_lyrics("cd:abc:3"));
+        assert!(!c.has_no_lyrics("cd:abc:4"));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn corrupt_file_loads_empty() {
+        let path = temp_path("corrupt");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{ not json").unwrap();
+        let c = LyricContentCache::load_from(path.clone());
+        assert_eq!(c.lrc_count() + c.no_lyrics_count(), 0);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn evicts_to_limit_unless_disabled() {
+        let mut c = LyricContentCache::load_from(temp_path("evict"));
+        for i in 0..MAX_ENTRIES + 10 {
+            c.insert_lrc(&format!("k{i}"), "x", false);
+        }
+        assert_eq!(c.lrc_count(), MAX_ENTRIES);
+
+        let mut c = LyricContentCache::load_from(temp_path("noevict"));
+        for i in 0..MAX_ENTRIES + 10 {
+            c.insert_lrc(&format!("k{i}"), "x", true);
+        }
+        assert_eq!(c.lrc_count(), MAX_ENTRIES + 10);
+    }
+
+    #[test]
+    fn insert_updates_existing_entry() {
+        let mut c = LyricContentCache::load_from(temp_path("update"));
+        c.insert_lrc("k", "old", false);
+        c.insert_lrc("k", "new", false);
+        assert_eq!(c.lrc_count(), 1);
+        assert_eq!(c.get_lrc("k").as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn keys_prefer_path() {
+        assert_eq!(file_key("/m/a.flac", "T", "A"), "file:/m/a.flac");
+        assert_eq!(file_key("", " Title ", "ARTIST"), "track:title:artist");
+        assert_eq!(cd_key("xyz", 2), "cd:xyz:2");
+    }
+}

@@ -196,7 +196,7 @@ fn take_unsaved(st: &mut Store, threshold: usize) -> Option<String> {
 
 fn write_cache(json: Option<String>) {
     if let Some(json) = json {
-        let _ = std::fs::write(crate::library_cache::blurhash_cache_path(), json);
+        let _ = crate::library_cache::write_atomic(&crate::library_cache::blurhash_cache_path(), json.as_bytes());
     }
 }
 

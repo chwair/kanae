@@ -476,7 +476,7 @@ fn split_artists(s: &str) -> Vec<String> {
     for sep in [" feat. ", " feat ", " ft. ", " ft ", " featuring ", " and ", " with ", " x ", " vs. ", " vs "] {
         s = s.replace(sep, ",");
     }
-    s.split(|c: char| matches!(c, ',' | '&' | '/' | ';' | '+' | '\u{3001}' | '\u{00d7}'))
+    s.split([',', '&', '/', ';', '+', '\u{3001}', '\u{00d7}'])
         .map(normalize)
         .filter(|t| !t.is_empty())
         .collect()
@@ -965,4 +965,24 @@ mod tests {
         assert!(score("Enigma", "\u{3055}\u{3093}\u{307e}\u{308b}", 168.5).is_some());
         assert!(score("Enigma", "\u{3055}\u{3093}\u{307e}\u{308b}", 175.0).is_none());
     }
+
+    #[test]
+    fn parses_timestamps() {
+        assert_eq!(parse_timestamp("01:02"), Some(62.0));
+        assert_eq!(parse_timestamp("01:02.50"), Some(62.5));
+        assert_eq!(parse_timestamp("00:00.123"), Some(0.123));
+        assert_eq!(parse_timestamp("1:02:50"), Some(62.5));
+        assert_eq!(parse_timestamp("abc"), None);
+        assert_eq!(parse_timestamp("xx:01"), None);
+        assert_eq!(parse_timestamp("-1:00"), None);
+    }
+
+    #[test]
+    fn parse_lrc_sorts_lines() {
+        let lines = parse_lrc("[00:05.00]second\n[00:01.00]first\n");
+        let texts: Vec<_> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts.first(), Some(&"first"));
+        assert!(texts.contains(&"second"));
+    }
+
 }

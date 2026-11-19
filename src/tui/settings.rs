@@ -367,7 +367,7 @@ pub(super) fn clean_pasted_path(text: &str) -> String {
 /// every candidate name that matched.
 fn complete_path(input: &str) -> Option<(String, Vec<String>)> {
     let expanded = expand_home(input);
-    let split = expanded.rfind(|c| c == '/' || c == std::path::MAIN_SEPARATOR)?;
+    let split = expanded.rfind(['/', std::path::MAIN_SEPARATOR])?;
     let (dir, prefix) = (&expanded[..=split], &expanded[split + 1..]);
     let lc = prefix.to_lowercase();
     let mut names: Vec<String> = std::fs::read_dir(dir).ok()?
@@ -497,9 +497,9 @@ pub(super) fn close(app: &mut TuiApp) {
 }
 
 fn pop_component(input: &mut String) {
-    let trimmed = input.trim_end_matches(|c| c == '/' || c == std::path::MAIN_SEPARATOR).len();
+    let trimmed = input.trim_end_matches(['/', std::path::MAIN_SEPARATOR]).len();
     input.truncate(trimmed);
-    match input.rfind(|c| c == '/' || c == std::path::MAIN_SEPARATOR) {
+    match input.rfind(['/', std::path::MAIN_SEPARATOR]) {
         Some(i) => input.truncate(i + 1),
         None    => input.clear(),
     }

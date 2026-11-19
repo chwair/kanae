@@ -182,7 +182,6 @@ fn main() {
             eprintln!("TUI error: {}", e);
             std::process::exit(1);
         }
-        return;
     }
 
     // gui (gui-only build, or hybrid falling through to qt)
@@ -205,4 +204,5 @@ fn main() {
 
 // pull in the generated cxx-qt code for the library controller.
 #[cfg(feature = "gui")]
+#[allow(unused_imports)]
 use library_controller::library_bridge;

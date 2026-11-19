@@ -47,6 +47,8 @@ Text {
         "queue":         "\ue03d",
         "shuffle":       "\ue043",
         "repeat":        "\ue040",
-        "repeat-one":    "\ue041"
+        "repeat-one":    "\ue041",
+        "filter":        "\ue152",
+        "check":         "\ue5ca"
     })
 }

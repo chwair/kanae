@@ -247,7 +247,7 @@ fn fetch_cover_art(release_id: &str) -> Option<String> {
                         // (discord's upload cache, qt's image cache).
                         let path = std::env::temp_dir()
                             .join(format!("kanae_cover_{}.{}", release_id, ext));
-                        match std::fs::write(&path, &bytes) {
+                        match crate::library_cache::write_atomic(&path, &bytes) {
                             Ok(()) => {
                                 let url_path = path.to_string_lossy().replace('\\', "/");
                                 Some(format!("file:///{}", url_path))
@@ -262,4 +262,48 @@ fn fetch_cover_art(release_id: &str) -> Option<String> {
             Err(e) => { eprintln!("[mb] cover art request error: {}", e); None }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tracks(json: &str) -> Vec<MbTrack> {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn artist_credit_joins_names() {
+        let ac: Vec<MbArtistCredit> = serde_json::from_str(r#"[{"name":"A"},{"name":"B"}]"#).unwrap();
+        assert_eq!(parse_artist_credit(Some(&ac)), "A, B");
+        assert_eq!(parse_artist_credit(Some(&[])), "Unknown Artist");
+        assert_eq!(parse_artist_credit(None), "Unknown Artist");
+    }
+
+    #[test]
+    fn track_artist_blank_when_same_as_album() {
+        let t = tracks(r#"[
+            {"title":"One","recording":{"artist-credit":[{"name":"Band"}]}},
+            {"title":"Two","recording":{"artist-credit":[{"name":"Guest"}]}},
+            {"recording":null}
+        ]"#);
+        let (titles, artists) = parse_tracks(Some(&t), "Band");
+        assert_eq!(titles, ["One", "Two", "Unknown Track"]);
+        assert_eq!(artists, ["", "Guest", ""]);
+        assert_eq!(parse_tracks(None, "Band"), (vec![], vec![]));
+    }
+
+    #[test]
+    fn release_response_deserializes() {
+        let r: MbResponse = serde_json::from_str(r#"{"releases":[{
+            "id":"r1","title":"Album","date":"2003-05-01",
+            "artist-credit":[{"name":"Band"}],
+            "cover-art-archive":{"front":true},
+            "media":[{"format":"CD","position":1,"discs":[{"id":"d1"}],"tracks":[{"title":"One"}]}]
+        }]}"#).unwrap();
+        let rel = &r.releases.unwrap()[0];
+        assert_eq!(rel.title, "Album");
+        assert!(rel.cover_art_archive.as_ref().unwrap().front);
+        assert_eq!(rel.media.as_ref().unwrap()[0].discs.as_ref().unwrap()[0].id.as_deref(), Some("d1"));
+    }
 }

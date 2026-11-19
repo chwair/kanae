@@ -262,16 +262,13 @@ fn init_with_mode(regular_app_on_macos: bool) -> Option<SmtcHandle> {
     })
 }
 
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
 pub fn init_for_gui() -> Option<SmtcHandle> {
     init_with_mode(true)
 }
 
 pub fn init_for_tui() -> Option<SmtcHandle> {
     init_with_mode(false)
-}
-
-pub fn init() -> Option<SmtcHandle> {
-    init_for_gui()
 }
 
 #[cfg(target_os = "windows")]

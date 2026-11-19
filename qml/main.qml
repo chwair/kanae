@@ -102,12 +102,43 @@ ApplicationWindow {
     property string _searchQuery: ""
     readonly property bool _searchActive: _searchOpen && _searchQuery.length > 0
 
+    // which album field the search matches; kept across open/close so a
+    // repeated "search by artist" doesn't need re-picking every time.
+    property string _searchFilter: "all"
+    readonly property var _searchFilters: [
+        { key: "all",    label: "All",     hint: "Search albums, artists, tracks\u2026" },
+        { key: "album",  label: "Albums",  hint: "Search album titles\u2026" },
+        { key: "artist", label: "Artists", hint: "Search artists\u2026" },
+        { key: "track",  label: "Tracks",  hint: "Search track names\u2026" },
+        { key: "year",   label: "Year",    hint: "Search release years\u2026" }
+    ]
+    function _filterInfo(key) {
+        for (var i = 0; i < _searchFilters.length; i++)
+            if (_searchFilters[i].key === key) return _searchFilters[i]
+        return _searchFilters[0]
+    }
+
     function openSearch() {
         if (_view === "album") goBack()
         _searchOpen = true
         omniSearchInput.forceActiveFocus()
     }
+    function setSearchFilter(key) {
+        _searchFilter = key
+        library.setSearchFilter(key)
+        library.searchLibrary(omniSearchInput.text)
+        libGridView.contentY = 0
+        libListView.contentY = 0
+    }
+    // ctrl+shift+f: open the search if needed, then toggle the filter menu.
+    function toggleSearchFilterMenu() {
+        if (!_searchOpen) openSearch()
+        if (searchFilterMenu.visible) searchFilterMenu.visible = false
+        else searchFilterMenu.open()
+        omniSearchInput.forceActiveFocus()
+    }
     function closeSearch() {
+        searchFilterMenu.visible = false
         _searchOpen = false
         _searchQuery = ""
         omniSearchInput.text = ""
@@ -171,6 +202,9 @@ ApplicationWindow {
     function playBrowsedTrack(idx) {
         if (_browseDir !== "") {
             var paths = _browseTracks.map(function(t){ return t.path })
+            // the model swaps from the browse list to the player's list, which
+            // rebuilds the view at the top; restore the scroll once it lands.
+            trackList.holdScroll(paths[0] || "")
             _playingAlbumDir = _browseDir
             _browseDir = ""; _browseAlbumName = ""
             _suppressFileModeFlag = true
@@ -337,6 +371,7 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+Right"; onActivated: goForward() }
     Shortcut { sequence: "Ctrl+,"; onActivated: settingsWindow.show() }
     Shortcut { sequence: "Ctrl+F"; onActivated: window.openSearch() }
+    Shortcut { sequence: "Ctrl+Shift+F"; onActivated: window.toggleSearchFilterMenu() }
 
     property int _lyricsTrackIdx: player.current_track
     on_LyricsTrackIdxChanged: {
@@ -479,27 +514,29 @@ ApplicationWindow {
     }
 
     // settings building blocks
-    // grouped "card" container with an optional heading + caption.
-    component SettingsCard: Rectangle {
+    // flat settings section: heading + content, closed off by a full-width
+    // divider like the rest of the window's panes.
+    component SettingsCard: Item {
         default property alias content: cardCol.data
         property string heading: ""
         property string caption: ""
+        property bool divider: true
         Layout.fillWidth: true
-        color: clrSurface; radius: 8
-        border.color: clrBorder; border.width: 1
-        implicitHeight: cardCol.implicitHeight + 32
+        implicitHeight: cardCol.implicitHeight + 36
         ColumnLayout {
             id: cardCol
             anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-            anchors.margins: 16; spacing: 12
+            anchors.leftMargin: 20; anchors.rightMargin: 20; anchors.topMargin: 18; spacing: 12
             ColumnLayout {
                 Layout.fillWidth: true; spacing: 3
                 visible: heading.length > 0
-                Text { text: heading; color: clrText; font.pixelSize: 13; font.family: "Segoe UI"; font.bold: true }
-                Text { visible: caption.length > 0; text: caption; color: clrText2; font.pixelSize: 11
+                Text { text: heading; color: clrText2; font.pixelSize: 11; font.family: "Segoe UI"; font.bold: true }
+                Text { visible: caption.length > 0; text: caption; color: clrMuted; font.pixelSize: 10
                     font.family: "Segoe UI"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
             }
         }
+        Rectangle { visible: divider; anchors.bottom: parent.bottom; anchors.left: parent.left; anchors.right: parent.right
+            height: 1; color: clrBorder }
     }
 
     // sliding pill switch.
@@ -509,12 +546,12 @@ ApplicationWindow {
         signal toggled()
         implicitWidth: 34; implicitHeight: 20
         Rectangle {
-            anchors.fill: parent; radius: height / 2
+            anchors.fill: parent; radius: 3
             color: tg.checked ? clrAccent : clrSurf2
             border.color: tg.checked ? clrAccent : clrBorder; border.width: 1
             Behavior on color { ColorAnimation { duration: 140 } }
             Rectangle {
-                width: 14; height: 14; radius: 7; y: 3
+                width: 14; height: 14; radius: 2; y: 3
                 x: tg.checked ? parent.width - 17 : 3
                 color: tg.checked ? clrBg : clrText2
                 Behavior on x { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
@@ -531,7 +568,7 @@ ApplicationWindow {
         property string icon: ""
         property bool danger: false
         signal clicked()
-        implicitWidth: btnRow.implicitWidth + 24; implicitHeight: 30; radius: 6
+        implicitWidth: btnRow.implicitWidth + 20; implicitHeight: 26; radius: 3
         color: btnMa.containsMouse ? (danger ? "#3c1a1a" : clrSurf2) : "transparent"
         border.color: clrBorder; border.width: 1
         Behavior on color { ColorAnimation { duration: 100 } }
@@ -626,7 +663,7 @@ ApplicationWindow {
                 id: swFlick
                 anchors.top: swTitleBar.bottom; anchors.topMargin: 0
                 anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
-                contentHeight: swCol.implicitHeight + 32; clip: true
+                contentHeight: swCol.implicitHeight; clip: true
 
                 NumberAnimation{id:swWheelAnim;target:swFlick;property:"contentY";duration:window._wheelDuration;easing.type:Easing.OutCubic;onFinished:target.returnToBounds()}
                 WheelHandler{acceptedDevices:PointerDevice.Mouse;onWheel:function(ev){window.wheelScroll(swFlick,swWheelAnim,ev)}}
@@ -640,9 +677,7 @@ ApplicationWindow {
                 ColumnLayout {
                     id: swCol
                     anchors.left: parent.left; anchors.right: parent.right
-                    anchors.margins: 20; spacing: 16
-
-                    Item { height: 4 }
+                    spacing: 0
 
                     // search paths
                     SettingsCard {
@@ -651,26 +686,24 @@ ApplicationWindow {
 
                         Repeater {
                             model: settingsWindow.settingsObj.search_paths || []
-                            RowLayout {
-                                Layout.fillWidth: true; spacing: 6
-                                Rectangle {
-                                    Layout.fillWidth: true; height: 30; radius: 5; color: clrBg
-                                    border.color: clrBorder; border.width: 1; clip: true
-                                    MatIcon { anchors.left: parent.left; anchors.leftMargin: 9; anchors.verticalCenter: parent.verticalCenter
-                                        name: "folder"; size: 13; color: clrMuted }
-                                    Text { anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.right: parent.right
-                                        anchors.leftMargin: 30; anchors.rightMargin: 10; text: modelData; color: clrText2
+                            Item {
+                                Layout.fillWidth: true; implicitHeight: 30
+                                Rectangle { anchors.bottom: parent.bottom; anchors.left: parent.left; anchors.right: parent.right
+                                    height: 1; color: clrBorder; opacity: 0.5 }
+                                RowLayout {
+                                    anchors.fill: parent; spacing: 8
+                                    MatIcon { name: "folder"; size: 13; color: clrMuted }
+                                    Text { Layout.fillWidth: true; text: modelData; color: clrText2
                                         font.pixelSize: 11; font.family: "Segoe UI"; elide: Text.ElideRight }
-                                }
-                                Rectangle {
-                                    width: 30; height: 30; radius: 5
-                                    color: swRmHov.containsMouse ? "#3c1a1a" : clrBg
-                                    border.color: clrBorder; border.width: 1
-                                    Behavior on color { ColorAnimation { duration: 100 } }
-                                    MatIcon { anchors.centerIn: parent; name: "trash"; size: 14
-                                        color: swRmHov.containsMouse ? "#d07070" : clrText2 }
-                                    MouseArea { id: swRmHov; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                                        property string pv: modelData; onClicked: library.removeSearchPath(pv) }
+                                    Rectangle {
+                                        width: 22; height: 22; radius: 3
+                                        color: swRmHov.containsMouse ? "#3c1a1a" : "transparent"
+                                        Behavior on color { ColorAnimation { duration: 100 } }
+                                        MatIcon { anchors.centerIn: parent; name: "trash"; size: 13
+                                            color: swRmHov.containsMouse ? "#d07070" : clrText2 }
+                                        MouseArea { id: swRmHov; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                            property string pv: modelData; onClicked: library.removeSearchPath(pv) }
+                                    }
                                 }
                             }
                         }
@@ -740,7 +773,7 @@ ApplicationWindow {
                                 }
                             }
                         }
-                        Rectangle { Layout.fillWidth: true; height: 1; color: clrBorder }
+                        Rectangle { Layout.fillWidth: true; height: 1; color: clrBorder; opacity: 0.5 }
                         RowLayout {
                             Layout.fillWidth: true; spacing: 12
                             Column {
@@ -855,10 +888,11 @@ ApplicationWindow {
                     // library maintenance
                     SettingsCard {
                         heading: "Library"
+                        divider: false
                         TextButton { label: "Rescan Library"; icon: "refresh"; onClicked: library.startScan() }
                     }
 
-                    Item { height: 4 }
+                    Item { implicitHeight: 6 }
                 }
             }
         }
@@ -1585,7 +1619,7 @@ ApplicationWindow {
                             TextInput {
                                 id: omniSearchInput
                                 anchors.left: omniSearchIcon.right; anchors.leftMargin: 8
-                                anchors.right: omniSearchClear.left; anchors.rightMargin: 8
+                                anchors.right: omniSearchFilter.left; anchors.rightMargin: 8
                                 anchors.verticalCenter: parent.verticalCenter
                                 height: 20; clip: true
                                 color: clrText; font.pixelSize: 12; font.family: "Segoe UI"
@@ -1602,14 +1636,58 @@ ApplicationWindow {
                                     libGridView.contentY = 0
                                     libListView.contentY = 0
                                 }
-                                Keys.onEscapePressed: window.closeSearch()
+                                // while the filter menu is up the arrows and enter
+                                // drive it, so focus can stay in the field.
+                                Keys.onPressed: function(ev) {
+                                    if (!searchFilterMenu.visible) return
+                                    if (ev.key === Qt.Key_Down || ev.key === Qt.Key_Up) {
+                                        searchFilterMenu.move(ev.key === Qt.Key_Down ? 1 : -1)
+                                        ev.accepted = true
+                                    } else if (ev.key === Qt.Key_Return || ev.key === Qt.Key_Enter) {
+                                        searchFilterMenu.pick(searchFilterMenu.highlighted)
+                                        ev.accepted = true
+                                    }
+                                }
+                                Keys.onEscapePressed: {
+                                    if (searchFilterMenu.visible) searchFilterMenu.visible = false
+                                    else window.closeSearch()
+                                }
 
                                 Text {
                                     anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
                                     visible: omniSearchInput.text.length === 0
-                                    text: "Search albums, artists, tracks…"
+                                    text: window._filterInfo(window._searchFilter).hint
                                     color: clrText2; font.pixelSize: 12; font.family: "Segoe UI"; opacity: 0.6
                                 }
+                            }
+
+                            // filter toggle; shows the active filter's name when it
+                            // narrows the search, so a stale filter is never hidden.
+                            Rectangle {
+                                id: omniSearchFilter
+                                readonly property bool active: window._searchFilter !== "all"
+                                anchors.right: omniSearchClear.left; anchors.rightMargin: 4
+                                anchors.verticalCenter: parent.verticalCenter
+                                height: 22; radius: 3
+                                width: active ? filterRow.implicitWidth + 12 : 22
+                                opacity: window._searchOpen ? 1 : 0
+                                Behavior on opacity { NumberAnimation { duration: 90 } }
+                                color: omniFilterHov.containsMouse || searchFilterMenu.visible || active ? clrSurf2 : "transparent"
+                                Behavior on color { ColorAnimation { duration: 80 } }
+                                Row {
+                                    id: filterRow
+                                    anchors.centerIn: parent; spacing: 4
+                                    MatIcon { anchors.verticalCenter: parent.verticalCenter; name: "filter"; size: 12
+                                        color: omniFilterHov.containsMouse || searchFilterMenu.visible || omniSearchFilter.active ? clrText : clrText2 }
+                                    Text {
+                                        visible: omniSearchFilter.active
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: window._filterInfo(window._searchFilter).label
+                                        color: clrText; font.pixelSize: 10; font.family: "Segoe UI"
+                                    }
+                                }
+                                MouseArea { id: omniFilterHov; anchors.fill: parent; hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor; onClicked: window.toggleSearchFilterMenu() }
                             }
 
                             Rectangle {
@@ -1955,6 +2033,27 @@ ApplicationWindow {
 
                         ListView{id:trackList;anchors.fill:parent;visible:(_browseDir!==""?_browseTracks.length>0:!player.is_loading&&player.total_tracks>0&&!(_showingCdView&&player.is_file_mode));clip:true;spacing:0
                             boundsBehavior:Flickable.StopAtBounds;flickDeceleration:600;maximumFlickVelocity:6000;model:_effectiveTracklist
+                            // scroll offset to put back once the model holds the list
+                            // starting with _holdFirstPath; -1 when nothing is held.
+                            property real _holdY: -1
+                            property string _holdFirstPath: ""
+                            function holdScroll(firstPath) {
+                                trackWheelAnim.stop()
+                                _holdY = contentY - originY
+                                _holdFirstPath = firstPath
+                            }
+                            function _restoreScroll() {
+                                if (_holdY < 0 || !visible) return
+                                var m = window._effectiveTracklist
+                                if (_browseDir !== "" || m.length === 0 || (m[0].path || "") !== _holdFirstPath) return
+                                var y = _holdY
+                                _holdY = -1
+                                forceLayout()
+                                contentY = originY + Math.max(0, Math.min(y, contentHeight - height))
+                            }
+                            Connections{target:window;function on_EffectiveTracklistChanged(){Qt.callLater(trackList._restoreScroll)}}
+                            // hidden while the player loads, so the size is only right once shown.
+                            onVisibleChanged: if (visible) Qt.callLater(_restoreScroll)
                             add:Transition{NumberAnimation{property:"opacity";from:0;to:1;duration:180}}
                             delegate:Rectangle{
                                 readonly property bool isCurrent:_browseDir===""&&index===player.current_track
@@ -2582,6 +2681,66 @@ ApplicationWindow {
         MouseArea {
             anchors.fill: parent; z: 199; visible: itemCtxMenu.visible
             acceptedButtons: Qt.LeftButton | Qt.RightButton; onClicked: itemCtxMenu.visible = false
+        }
+
+        // search filter dropdown, hung under the omnibar's filter button
+        Rectangle {
+            id: searchFilterMenu
+            visible: false; z: 200
+            width: 140; radius: 4; clip: true
+            color: clrSurf2; border.color: clrBorder; border.width: 1
+            height: filterMenuCol.implicitHeight + 8
+            property int highlighted: 0
+
+            function open() {
+                var keys = window._searchFilters.map(function(f) { return f.key })
+                highlighted = Math.max(0, keys.indexOf(window._searchFilter))
+                var p = omniSearchFilter.mapToItem(rootBg, omniSearchFilter.width, omniSearchFilter.height)
+                x = Math.max(4, Math.min(p.x - width, rootBg.width - width - 4))
+                y = p.y + 4
+                visible = true
+            }
+            function move(d) {
+                var n = window._searchFilters.length
+                highlighted = (highlighted + d + n) % n
+            }
+            function pick(i) {
+                visible = false
+                window.setSearchFilter(window._searchFilters[i].key)
+                omniSearchInput.forceActiveFocus()
+            }
+
+            Column {
+                id: filterMenuCol
+                anchors.left: parent.left; anchors.right: parent.right
+                anchors.top: parent.top; anchors.topMargin: 4
+                Text {
+                    text: "Search in"; color: clrText2
+                    leftPadding: 12; topPadding: 2; bottomPadding: 4
+                    font.pixelSize: 10; font.family: "Segoe UI"
+                }
+                Repeater {
+                    model: window._searchFilters
+                    Rectangle {
+                        width: filterMenuCol.width; height: 28
+                        color: searchFilterMenu.highlighted === index ? clrSurface : "transparent"
+                        Behavior on color { ColorAnimation { duration: 80 } }
+                        Text { anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 12
+                            text: modelData.label; color: clrText; font.pixelSize: 12; font.family: "Segoe UI" }
+                        MatIcon { anchors.verticalCenter: parent.verticalCenter; anchors.right: parent.right; anchors.rightMargin: 10
+                            visible: window._searchFilter === modelData.key
+                            name: "check"; size: 12; color: clrText }
+                        MouseArea { anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onEntered: searchFilterMenu.highlighted = index
+                            onClicked: searchFilterMenu.pick(index) }
+                    }
+                }
+            }
+            MouseArea { anchors.fill: parent; acceptedButtons: Qt.NoButton }
+        }
+        MouseArea {
+            anchors.fill: parent; z: 199; visible: searchFilterMenu.visible
+            acceptedButtons: Qt.LeftButton | Qt.RightButton; onClicked: searchFilterMenu.visible = false
         }
 
         // no disc popup

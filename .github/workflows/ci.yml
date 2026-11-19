@@ -1,0 +1,88 @@
+name: CI
+
+# lint + test on every push/pr. full packaging lives in release.yml.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # keep in sync with release.yml
+  QT_VERSION: '6.8.*'
+  QT_MODULES: 'qtshadertools'
+
+jobs:
+  # tui-only on all three platforms: no qt, so this is the fast signal
+  tui:
+    name: tui (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      # alsa for rodio, d-bus for souvlaki (mpris)
+      - name: Install system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libdbus-1-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: tui
+
+      - name: Clippy
+        run: cargo clippy --no-default-features --features tui --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --no-default-features --features tui
+
+  # hybrid (gui + tui) on linux only: exercises cxx-qt codegen and the gui-only
+  # code paths without paying for three qt installs per commit
+  hybrid:
+    name: hybrid (ubuntu)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libdbus-1-dev pkg-config \
+            libglib2.0-dev libwayland-dev libxkbcommon-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: hybrid
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          modules: ${{ env.QT_MODULES }}
+          cache: true
+
+      - name: Set QMAKE
+        run: echo "QMAKE=$(which qmake)" >> "$GITHUB_ENV"
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings

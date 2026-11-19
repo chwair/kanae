@@ -11,6 +11,7 @@ use ratatui::{
 use ratatui_image::{FilterType, Resize, StatefulImage};
 use unicode_width::UnicodeWidthChar;
 
+use crate::library::SearchFilter;
 use crate::library_cache::TuiLibraryView;
 use super::theme::Theme;
 use super::thumbs::{cover_url_to_path, Thumb};
@@ -288,7 +289,7 @@ pub(super) fn render(app: &mut TuiApp, frame: &mut Frame) {
     app.queue_item_rects.clear();
     app.queue_fullscreen = false;
     for r in [&mut app.btn_prev, &mut app.btn_play, &mut app.btn_next, &mut app.btn_back,
-              &mut app.btn_fwd, &mut app.btn_search, &mut app.btn_view, &mut app.seek_bar_rect,
+              &mut app.btn_fwd, &mut app.btn_search, &mut app.btn_search_filter, &mut app.btn_view, &mut app.seek_bar_rect,
               &mut app.vol_bar_rect, &mut app.divider_rect, &mut app.queue_rect, &mut app.btn_shuffle,
               &mut app.btn_repeat, &mut app.btn_queue_clear, &mut app.btn_queue_close, &mut app.btn_queue_toggle, &mut app.lyrics_rect, &mut app.btn_lyrics_resync] {
         *r = Rect::default();
@@ -723,7 +724,11 @@ fn render_search_bar(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         format!("{} result{} ", search.total, if search.total == 1 { "" } else { "s" })
     };
     let lead = format!(" {} ", app.icons.search);
-    let avail = (area.width as usize).saturating_sub(display_width(&lead) + display_width(&count) + 2);
+    let filter = search.filter;
+    let filter_txt = format!(" {} ", filter.label());
+    let filter_style = if filter == SearchFilter::All { t.text2 } else { t.accent.add_modifier(Modifier::BOLD) };
+    let avail = (area.width as usize)
+        .saturating_sub(display_width(&lead) + display_width(&count) + display_width(&filter_txt) + 3);
     let query = truncate_left(&search.query, avail);
     let mut spans = vec![
         Span::styled(lead, if editing { t.accent } else { t.muted }),
@@ -737,15 +742,29 @@ fn render_search_bar(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         spans.push(Span::styled(" ", t.text.add_modifier(Modifier::REVERSED)));
     }
     if search.query.is_empty() && editing {
-        spans.push(Span::styled(" albums, artists, tracks", t.muted));
+        let hint = match filter {
+            SearchFilter::All    => " albums, artists, tracks",
+            SearchFilter::Album  => " album titles",
+            SearchFilter::Artist => " artists",
+            SearchFilter::Track  => " track names",
+            SearchFilter::Year   => " release years",
+        };
+        spans.push(Span::styled(hint, t.muted));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    // right side: result count, then the filter toggle.
     let cw = display_width(&count) as u16;
-    if cw > 0 && cw < area.width {
-        frame.render_widget(
-            Paragraph::new(Span::styled(count, t.muted)),
-            Rect { x: area.right() - cw, width: cw, ..area },
-        );
+    let fw = display_width(&filter_txt) as u16;
+    if cw + fw + 1 < area.width {
+        let fr = Rect { x: area.right() - fw, width: fw, ..area };
+        app.btn_search_filter = fr;
+        frame.render_widget(Paragraph::new(Span::styled(filter_txt, filter_style.add_modifier(Modifier::REVERSED))), fr);
+        if cw > 0 {
+            frame.render_widget(
+                Paragraph::new(Span::styled(count, t.muted)),
+                Rect { x: fr.x - cw - 1, width: cw, ..area },
+            );
+        }
     }
 }
 
@@ -1008,7 +1027,7 @@ fn render_library_grid(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     // covers are square, so a tile's cover height follows from its width.
     // when that gets too tall for two rows to show, narrower tiles (more
     // columns) keep the covers square instead of squashing them.
-    let two_rows = ((area.height + 1) / 2).saturating_sub(text_h + 1);
+    let two_rows = area.height.div_ceil(2).saturating_sub(text_h + 1);
     let mut pref = GRID_TILE_PREF;
     if two_rows >= 5 {
         let max_w = ((two_rows as f32) / ratio).floor() as u16;
@@ -1359,7 +1378,7 @@ fn render_controls(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
 
 fn hint_pairs(app: &TuiApp) -> Vec<(&'static str, &'static str)> {
     if app.search.as_ref().is_some_and(|s| s.editing) && app.view == View::Library {
-        return vec![("Enter", "results"), ("\u{2193}", "results"), ("Esc", "close"), ("Ctrl+U", "clear")];
+        return vec![("Enter", "results"), ("\u{2193}", "results"), ("Esc", "close"), ("Ctrl+F", "filter"), ("Ctrl+U", "clear")];
     }
     if app.view == View::Settings && app.settings.input.is_some() {
         return vec![("Tab", "complete"), ("Enter", "add"), ("Esc", "cancel"), ("Ctrl+W", "up a folder")];
@@ -1472,7 +1491,8 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("Bksp  Esc", "back"),
         ("Shift+\u{2190}\u{2192}", "history back / forward"),
         ("PgUp PgDn g G", "jump"),
-        ("/", "search the library"),
+        ("/  Ctrl+F", "search the library"),
+        ("Ctrl+Shift+F", "search filter"),
         ("v", "grid / list layout"),
         ("b", "show / hide sidebar"),
     ]),

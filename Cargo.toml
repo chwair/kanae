@@ -1,11 +1,17 @@
 [package]
 name = "kanae"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
+description = "CD and file music player with a Qt GUI and a terminal UI"
+license = "MIT"
+repository = "https://github.com/chwair/kanae"
+readme = "README.md"
+keywords = ["music", "player", "cd", "tui", "audio"]
+categories = ["multimedia::audio", "command-line-utilities"]
 
 [package.metadata.bundle]
 name = "Kanae"
-identifier = "com.kanae.player"
+identifier = "com.chair.kanae"
 category = "public.app-category.music"
 short_description = "CD and file music player"
 long_description = "Kanae is a Qt/QML + Rust music player supporting CDs and local files."
@@ -35,6 +41,9 @@ rayon = "1"
 # opt-simd enables sse/avx/neon dsp.
 symphonia = { version = "0.6", features = ["all", "opt-simd"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+souvlaki = "0.8.3"
+kakasi = "0.1.0"
+serde_yaml_ng = "0.10.0"
 
 # gui-only
 cxx          = { version = "1.0",  optional = true }
@@ -42,15 +51,12 @@ cxx-qt       = { version = "0.8",  optional = true }
 cxx-qt-lib   = { version = "0.8",  features = ["qt_full"], optional = true }
 rfd          = { version = "0.15", optional = true }
 blurhash     = { version = "0.2",  optional = true }
-souvlaki     = "0.8.3"
 
 # tui-only
 ratatui      = { version = "0.30", optional = true }
 crossterm    = { version = "0.29", features = ["event-stream"], optional = true }
 unicode-width = { version = "0.2", optional = true }
 ratatui-image = { version = "10",  default-features = false, features = ["crossterm", "image-defaults"], optional = true }
-kakasi = "0.1.0"
-serde_yaml_ng = "0.10.0"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "processthreadsapi", "fileapi", "winioctl", "ioapiset", "handleapi", "wincon", "consoleapi", "processenv", "winbase", "winnt", "dwmapi"] }
@@ -70,3 +76,15 @@ lto = false
 [build-dependencies]
 # always present; only invoked when the 'gui' feature is active (see build.rs).
 cxx-qt-build = { version = "0.8", features = ["link_qt_object_files"] }
+
+[lints.rust]
+# objc 0.2's msg_send! expands to cfg(feature = "cargo-clippy"), which newer rustc flags
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
+
+[lints.clippy]
+# these fire on deliberate shapes in this codebase (decode-thread entry points,
+# shared Arc<Mutex<Option<..>>> poll slots, fixed-size dsp index loops)
+too_many_arguments = "allow"
+type_complexity = "allow"
+needless_range_loop = "allow"
+large_enum_variant = "allow"

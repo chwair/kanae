@@ -225,7 +225,7 @@ impl AudioController {
             .map_err(|e| format!("Failed to open audio sink: {:?}", e))?;
         // a sink is opened per track; the drop notice is expected, not a bug.
         sink_handle.log_on_drop(false);
-        let player = Player::connect_new(&sink_handle.mixer());
+        let player = Player::connect_new(sink_handle.mixer());
         Ok(Self { _sink_handle: sink_handle, player })
     }
 
@@ -305,15 +305,21 @@ pub fn bytes_to_f32_samples(bytes: &[u8]) -> Vec<f32> {
 
 // spectrum visualizer
 
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
 /// default bar count, and the band count the tilt/bleed constants were tuned
 /// against - both are scaled relative to it so a wider sidebar looks the same.
 pub const VIS_BANDS: usize = 20;
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
 const VIS_BANDS_REF: f32 = 20.0;
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
 pub const VIS_BANDS_MIN: usize = 8;
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
 pub const VIS_BANDS_MAX: usize = 64;
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
 /// fft window size (power of two). at 44.1 kHz this is ~23 ms of audio, a good
 /// trade between frequency resolution and responsiveness.
 const VIS_FFT: usize = 1024;
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
 /// frequency mapping assumes a typical rate - the band layout is aesthetic, not
 /// measurement-grade, so a fixed reference keeps `VisTap` free of rate state.
 const VIS_RATE: f32 = 44100.0;
@@ -368,6 +374,7 @@ impl VisTap {
         }
     }
 
+    #[cfg_attr(not(feature = "gui"), allow(dead_code))]
     /// how far the write cursor is ahead of what has actually been played,
     /// in mono frames, clamped to what the ring can still serve.
     fn lag_frames(&self) -> usize {
@@ -381,6 +388,7 @@ impl VisTap {
         (lag as usize).min(VIS_RING - VIS_FFT)
     }
 
+    #[cfg_attr(not(feature = "gui"), allow(dead_code))]
     /// copy the `VIS_FFT` samples ending at the current playback point out in
     /// chronological order.
     fn snapshot(&self, out: &mut [f32; VIS_FFT]) {
@@ -391,6 +399,7 @@ impl VisTap {
     }
 }
 
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
 /// in-place iterative radix-2 cooley-tukey fft. `re`/`im` length must be a
 /// power of two.
 fn fft(re: &mut [f32], im: &mut [f32]) {
@@ -426,6 +435,7 @@ fn fft(re: &mut [f32], im: &mut [f32]) {
     }
 }
 
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
 /// snapshot the tap and reduce it to `bands` **linear** magnitudes (log-spaced
 /// in frequency). no gain, curve, or clamp is applied here; the caller
 /// (`update_visualizer`) handles auto-gain, logarithmic scaling, and gravity. the
