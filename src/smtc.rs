@@ -190,6 +190,8 @@ fn ensure_nsapplication(regular_app: bool) {
     });
 }
 
+// the flag only matters on macos
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
 fn init_with_mode(regular_app_on_macos: bool) -> Option<SmtcHandle> {
     eprintln!("[smtc] init() called");
 

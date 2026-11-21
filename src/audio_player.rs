@@ -295,11 +295,8 @@ impl AudioController {
 // cd helpers
 
 pub fn bytes_to_f32_samples(bytes: &[u8]) -> Vec<f32> {
-    bytes.chunks_exact(2)
-        .map(|chunk| {
-            let i16_sample = i16::from_le_bytes([chunk[0], chunk[1]]);
-            i16_sample as f32 / 32768.0
-        })
+    bytes.as_chunks::<2>().0.iter()
+        .map(|&chunk| i16::from_le_bytes(chunk) as f32 / 32768.0)
         .collect()
 }
 
