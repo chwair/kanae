@@ -48,6 +48,8 @@ pub mod library_bridge {
         #[qproperty(QString, pending_open_dir)]
         #[qproperty(QString, album_tracks_json)]
         #[qproperty(QString, search_results)]
+        #[qproperty(QString, app_version)]
+        #[qproperty(QString, app_repo)]
         type LibraryController = super::LibraryControllerRust;
 
         #[qinvokable] #[cxx_name = "startScan"]     fn start_scan(self: Pin<&mut Self>);
@@ -140,6 +142,9 @@ pub struct LibraryControllerRust {
     pending_open_dir: QString,
     album_tracks_json: QString,
     search_results:   QString,
+    // build-time package metadata for the about section in settings
+    app_version:      QString,
+    app_repo:         QString,
     state: Arc<Mutex<LibraryState>>,
 }
 
@@ -160,6 +165,8 @@ impl Default for LibraryControllerRust {
             pending_open_dir: QString::from(""),
             album_tracks_json: QString::from("[]"),
             search_results: QString::from("[]"),
+            app_version: QString::from(env!("CARGO_PKG_VERSION")),
+            app_repo:    QString::from(env!("CARGO_PKG_REPOSITORY")),
             state: Arc::new(Mutex::new(LibraryState::default())),
         }
     }

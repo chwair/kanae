@@ -894,8 +894,29 @@ ApplicationWindow {
                     // library maintenance
                     SettingsCard {
                         heading: "Library"
-                        divider: false
                         TextButton { label: "Rescan Library"; icon: "refresh"; onClicked: library.startScan() }
+                    }
+
+                    // about
+                    SettingsCard {
+                        heading: "About"
+                        divider: false
+                        RowLayout {
+                            Layout.fillWidth: true; spacing: 10
+                            Image {
+                                source: "qrc:/images/kanae.png"
+                                Layout.preferredWidth: 32; Layout.preferredHeight: 32
+                                sourceSize.width: 64; sourceSize.height: 64
+                                fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true
+                            }
+                            Column {
+                                Layout.fillWidth: true; spacing: 2
+                                Text { text: "Kanae"; color: clrText; font.pixelSize: 12; font.family: uiFont; font.bold: true }
+                                Text { text: "Version " + library.app_version; color: clrText2; font.pixelSize: 10; font.family: uiFont }
+                            }
+                            TextButton { label: "Source"; onClicked: Qt.openUrlExternally(library.app_repo) }
+                            TextButton { label: "Releases"; onClicked: Qt.openUrlExternally(library.app_repo + "/releases") }
+                        }
                     }
 
                     Item { implicitHeight: 6 }

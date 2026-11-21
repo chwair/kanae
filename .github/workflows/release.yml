@@ -46,6 +46,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # stamp the release version into Cargo.toml so the binary and about screen report it
+      - name: Set version
+        shell: bash
+        run: scripts/set-version.sh "$VERSION"
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable-x86_64-pc-windows-msvc
@@ -138,6 +143,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+
+      # stamp the release version into Cargo.toml so the binary and about screen report it
+      - name: Set version
+        shell: bash
+        run: scripts/set-version.sh "$VERSION"
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -249,6 +259,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+
+      # stamp the release version into Cargo.toml so the binary and about screen report it
+      - name: Set version
+        shell: bash
+        run: scripts/set-version.sh "$VERSION"
 
       - name: Install system dependencies (common)
         run: |
@@ -365,3 +380,28 @@ jobs:
             artifacts/kanae-gui-linux-x86_64-${{ env.VERSION }}.AppImage
             artifacts/kanae-hybrid-linux-x86_64-${{ env.VERSION }}.AppImage
             artifacts/kanae-tui-linux-x86_64-${{ env.VERSION }}
+
+  # commit the released version back so Cargo.toml on the default branch stays current.
+  # rolling "dev" builds are not committed.
+  bump-version:
+    needs: release
+    # the env context isn't available in a job-level if, so this mirrors VERSION's tag/input check
+    if: ${{ startsWith(github.ref, 'refs/tags/') || inputs.version != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Commit version bump
+        run: |
+          version="$(scripts/set-version.sh "$VERSION")"
+          if git diff --quiet -- Cargo.toml Cargo.lock; then
+            echo "Cargo.toml is already at $version"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore: bump version to $version [skip ci]"
+          git push origin HEAD:${{ github.event.repository.default_branch }}

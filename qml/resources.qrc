@@ -3,4 +3,7 @@
   <qresource prefix="/fonts">
     <file alias="MaterialSymbolsSharp-Filled.ttf">fonts/MaterialSymbolsSharp-Filled.ttf</file>
   </qresource>
+  <qresource prefix="/images">
+    <file alias="kanae.png">../assets/kanae.png</file>
+  </qresource>
 </RCC>

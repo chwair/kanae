@@ -60,7 +60,11 @@ enum Key {
     PurgeLrc,
     PurgeNoLyrics,
     Discord,
+    Version,
+    Source,
 }
+
+const REPO: &str = env!("CARGO_PKG_REPOSITORY");
 
 enum Row {
     Header(&'static str),
@@ -102,6 +106,9 @@ fn rows(app: &TuiApp) -> Vec<Row> {
         Row::Item(Key::PurgeNoLyrics),
         Row::Header("Integrations"),
         Row::Item(Key::Discord),
+        Row::Header("About"),
+        Row::Item(Key::Version),
+        Row::Item(Key::Source),
     ]);
     r
 }
@@ -138,6 +145,8 @@ fn label(app: &TuiApp, key: Key) -> String {
         Key::PurgeLrc      => format!("{} Clear cached lyrics", app.icons.trash),
         Key::PurgeNoLyrics => format!("{} Clear no-lyrics list", app.icons.trash),
         Key::Discord       => "Discord Rich Presence".into(),
+        Key::Version       => "Kanae".into(),
+        Key::Source        => "Source code".into(),
     }
 }
 
@@ -167,6 +176,8 @@ fn value(app: &mut TuiApp, key: Key) -> Value {
         Key::PurgeLrc      => Value::Action(format!("{} saved", lyric_counts(app).0)),
         Key::PurgeNoLyrics => Value::Action(format!("{} songs", lyric_counts(app).1)),
         Key::Discord       => Value::Toggle(lib.discord_rpc),
+        Key::Version       => Value::Action(format!("v{}", env!("CARGO_PKG_VERSION"))),
+        Key::Source        => Value::Action(REPO.trim_start_matches("https://").into()),
     }
 }
 
@@ -204,6 +215,8 @@ fn describe(app: &TuiApp, key: Key) -> String {
         Key::PurgeLrc      => "Delete all downloaded lyrics. They are fetched again when needed.".into(),
         Key::PurgeNoLyrics => "Forget songs marked as having no lyrics, so they are looked up again.".into(),
         Key::Discord       => "Show what you're listening to on your Discord profile.".into(),
+        Key::Version       => "CD and file music player, built with Rust. Enter opens the release notes.".into(),
+        Key::Source        => "Enter opens the repository in your browser. Bug reports and ideas are welcome there.".into(),
     }
 }
 
@@ -320,7 +333,29 @@ fn activate(app: &mut TuiApp, key: Key, step: isize) {
             app.library.settings.discord_rpc = !app.library.settings.discord_rpc;
             save_lib(app);
         }
+        Key::Version => {
+            if step == 0 { open_url(app, &format!("{}/releases", REPO)); }
+        }
+        Key::Source => {
+            if step == 0 { open_url(app, REPO); }
+        }
     }
+}
+
+/// hand a url to the system browser. output is discarded so it can't scribble
+/// over the tui.
+fn open_url(app: &mut TuiApp, url: &str) {
+    use std::process::{Command, Stdio};
+    #[cfg(target_os = "macos")]
+    let mut cmd = Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut cmd = { let mut c = Command::new("cmd"); c.args(["/C", "start", ""]); c };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut cmd = Command::new("xdg-open");
+    let ok = cmd.arg(url)
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+        .spawn().is_ok();
+    app.toast(if ok { "Opened in browser" } else { "Could not open a browser" });
 }
 
 fn remove_path(app: &mut TuiApp, i: usize) {
