@@ -127,6 +127,13 @@ jobs:
 
   macos:
     runs-on: macos-latest
+    env:
+      # qt 6.8's qyieldcpu.h implicitly declares __yield, which newer apple clang
+      # rejects as an error. scoped to this job so msvc never sees the flag.
+      CXXFLAGS: -Wno-implicit-function-declaration
+      # without this cc-rs targets the runner's own sdk version, so the c++ parts
+      # (and the app) would need the latest macos despite LSMinimumSystemVersion 12.0
+      MACOSX_DEPLOYMENT_TARGET: '12.0'
     strategy:
       fail-fast: false
       matrix:
