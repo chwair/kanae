@@ -2272,7 +2272,7 @@ unsafe fn suppress_stderr() -> *mut std::ffi::c_void {
 
     let saved = GetStdHandle(STD_ERROR_HANDLE);
     let nul = CreateFileA(
-        b"NUL\0".as_ptr(),
+        c"NUL".as_ptr().cast(),
         GENERIC_WRITE,
         FILE_SHARE_WRITE,
         std::ptr::null(),
@@ -2340,7 +2340,8 @@ fn query_terminal_colors() -> Option<(Rgb, Rgb)> {
 }
 
 /// pull "rgb:RRRR/GGGG/BBBB" out of an osc `code` reply; each channel has 1-4
-/// hex digits.
+/// hex digits. only the unix colour query calls it outside tests.
+#[cfg_attr(not(unix), allow(dead_code))]
 fn parse_osc_color(text: &str, code: &str) -> Option<Rgb> {
     let start = text.find(&format!("]{};rgb:", code))? + code.len() + 6;
     let rest = &text[start..];
