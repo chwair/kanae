@@ -27,6 +27,12 @@ ApplicationWindow {
     readonly property color clrMuted:   "#404040"
     readonly property color clrAccent:  "#bfbfbf"
 
+    // fonts that exist on the running platform. naming a family the system lacks
+    // (segoe ui / consolas off windows) makes qt enumerate every installed font
+    // to resolve aliases, which cost ~0.8s of startup on macos.
+    readonly property string uiFont: Qt.platform.os === "windows" ? "Segoe UI" : Qt.application.font.family
+    readonly property string monoFont: Qt.platform.os === "windows" ? "Consolas" : Qt.platform.os === "osx" ? "Menlo" : "monospace"
+
     property bool coverOnSide: false
     property bool queueOpen: false
     property bool _resizing: false
@@ -393,7 +399,7 @@ ApplicationWindow {
         property string text: ""
         property color  textColor: clrText
         property real   pixelSize: 13
-        property string fontFamily: "Segoe UI"
+        property string fontFamily: uiFont
         property bool   bold: false
         property bool   centered: false
         readonly property bool scrolling: stLabel.implicitWidth > stRoot.width
@@ -429,7 +435,7 @@ ApplicationWindow {
             model: wtRoot.text.length
             delegate: Text {
                 text: wtRoot.text[index]
-                font.pixelSize: wtRoot.pixelSize; font.family: "Segoe UI"
+                font.pixelSize: wtRoot.pixelSize; font.family: uiFont
                 color: clrText2
                 SequentialAnimation on color {
                     loops: Animation.Infinite
@@ -530,9 +536,9 @@ ApplicationWindow {
             ColumnLayout {
                 Layout.fillWidth: true; spacing: 3
                 visible: heading.length > 0
-                Text { text: heading; color: clrText2; font.pixelSize: 11; font.family: "Segoe UI"; font.bold: true }
+                Text { text: heading; color: clrText2; font.pixelSize: 11; font.family: uiFont; font.bold: true }
                 Text { visible: caption.length > 0; text: caption; color: clrMuted; font.pixelSize: 10
-                    font.family: "Segoe UI"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+                    font.family: uiFont; Layout.fillWidth: true; wrapMode: Text.WordWrap }
             }
         }
         Rectangle { visible: divider; anchors.bottom: parent.bottom; anchors.left: parent.left; anchors.right: parent.right
@@ -582,7 +588,7 @@ ApplicationWindow {
             Text {
                 anchors.verticalCenter: parent.verticalCenter; text: btn.label
                 color: btn.danger && btnMa.containsMouse ? "#d07070" : clrText2
-                font.pixelSize: 11; font.family: "Segoe UI"
+                font.pixelSize: 11; font.family: uiFont
             }
         }
         MouseArea { id: btnMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: btn.clicked() }
@@ -638,7 +644,7 @@ ApplicationWindow {
 
                 Text {
                     anchors.centerIn: parent
-                    text: "Settings"; color: clrText2; font.pixelSize: 11; font.family: "Segoe UI"
+                    text: "Settings"; color: clrText2; font.pixelSize: 11; font.family: uiFont
                 }
 
                 // close button
@@ -694,7 +700,7 @@ ApplicationWindow {
                                     anchors.fill: parent; spacing: 8
                                     MatIcon { name: "folder"; size: 13; color: clrMuted }
                                     Text { Layout.fillWidth: true; text: modelData; color: clrText2
-                                        font.pixelSize: 11; font.family: "Segoe UI"; elide: Text.ElideRight }
+                                        font.pixelSize: 11; font.family: uiFont; elide: Text.ElideRight }
                                     Rectangle {
                                         width: 22; height: 22; radius: 3
                                         color: swRmHov.containsMouse ? "#3c1a1a" : "transparent"
@@ -718,8 +724,8 @@ ApplicationWindow {
                             Layout.fillWidth: true; spacing: 12
                             Column {
                                 Layout.fillWidth: true; spacing: 3
-                                Text { text: "Merge all folders"; color: clrText; font.pixelSize: 12; font.family: "Segoe UI" }
-                                Text { text: "Show only albums, hide folder tiles"; color: clrText2; font.pixelSize: 10; font.family: "Segoe UI" }
+                                Text { text: "Merge all folders"; color: clrText; font.pixelSize: 12; font.family: uiFont }
+                                Text { text: "Show only albums, hide folder tiles"; color: clrText2; font.pixelSize: 10; font.family: uiFont }
                             }
                             PillToggle {
                                 checked: settingsWindow.settingsObj.merge_all_folders === true
@@ -736,7 +742,7 @@ ApplicationWindow {
                             model: settingsWindow.settingsObj.merged_folders || []
                             RowLayout {
                                 Layout.fillWidth: true; spacing: 6
-                                Text { Layout.fillWidth: true; text: modelData; color: clrText2; font.pixelSize: 11; font.family: "Segoe UI"; elide: Text.ElideRight }
+                                Text { Layout.fillWidth: true; text: modelData; color: clrText2; font.pixelSize: 11; font.family: uiFont; elide: Text.ElideRight }
                                 TextButton { label: "Unmerge"; property string pv: modelData; onClicked: library.setFolderOption(pv, "merge_remove") }
                             }
                         }
@@ -749,7 +755,7 @@ ApplicationWindow {
                             model: settingsWindow.settingsObj.ignored_folders || []
                             RowLayout {
                                 Layout.fillWidth: true; spacing: 6
-                                Text { Layout.fillWidth: true; text: modelData; color: clrText2; font.pixelSize: 11; font.family: "Segoe UI"; elide: Text.ElideRight }
+                                Text { Layout.fillWidth: true; text: modelData; color: clrText2; font.pixelSize: 11; font.family: uiFont; elide: Text.ElideRight }
                                 TextButton { label: "Show"; property string pv: modelData; onClicked: library.setFolderOption(pv, "ignore_remove") }
                             }
                         }
@@ -762,8 +768,8 @@ ApplicationWindow {
                             Layout.fillWidth: true; spacing: 12
                             Column {
                                 Layout.fillWidth: true; spacing: 3
-                                Text { text: "Romanize Japanese lyrics"; color: clrText; font.pixelSize: 12; font.family: "Segoe UI" }
-                                Text { text: "Convert kana and kanji to romaji"; color: clrText2; font.pixelSize: 10; font.family: "Segoe UI" }
+                                Text { text: "Romanize Japanese lyrics"; color: clrText; font.pixelSize: 12; font.family: uiFont }
+                                Text { text: "Convert kana and kanji to romaji"; color: clrText2; font.pixelSize: 10; font.family: uiFont }
                             }
                             PillToggle {
                                 checked: settingsWindow.settingsObj.romanize_lyrics === true
@@ -778,8 +784,8 @@ ApplicationWindow {
                             Layout.fillWidth: true; spacing: 12
                             Column {
                                 Layout.fillWidth: true; spacing: 3
-                                Text { text: "Disable 100-entry limit"; color: clrText; font.pixelSize: 12; font.family: "Segoe UI" }
-                                Text { text: "Keep all cached lyrics indefinitely"; color: clrText2; font.pixelSize: 10; font.family: "Segoe UI" }
+                                Text { text: "Disable 100-entry limit"; color: clrText; font.pixelSize: 12; font.family: uiFont }
+                                Text { text: "Keep all cached lyrics indefinitely"; color: clrText2; font.pixelSize: 10; font.family: uiFont }
                             }
                             PillToggle {
                                 checked: settingsWindow.settingsObj.lrc_limit_disabled === true
@@ -800,8 +806,8 @@ ApplicationWindow {
                             Layout.fillWidth: true; spacing: 12
                             Column {
                                 Layout.fillWidth: true; spacing: 3
-                                Text { text: "Spectrum visualizer"; color: clrText; font.pixelSize: 12; font.family: "Segoe UI" }
-                                Text { text: "Show animated bars under the lyrics"; color: clrText2; font.pixelSize: 10; font.family: "Segoe UI" }
+                                Text { text: "Spectrum visualizer"; color: clrText; font.pixelSize: 12; font.family: uiFont }
+                                Text { text: "Show animated bars under the lyrics"; color: clrText2; font.pixelSize: 10; font.family: uiFont }
                             }
                             PillToggle {
                                 checked: settingsWindow.settingsObj.visualizer !== false
@@ -817,9 +823,9 @@ ApplicationWindow {
                             Layout.fillWidth: true; spacing: 12
                             Column {
                                 Layout.fillWidth: true; spacing: 3
-                                Text { text: "Crossfade"; color: clrText; font.pixelSize: 12; font.family: "Segoe UI" }
+                                Text { text: "Crossfade"; color: clrText; font.pixelSize: 12; font.family: uiFont }
                                 Text { text: "Overlap the end of a track with the next one"
-                                    color: clrText2; font.pixelSize: 10; font.family: "Segoe UI" }
+                                    color: clrText2; font.pixelSize: 10; font.family: uiFont }
                             }
                             PillToggle {
                                 checked: settingsWindow.settingsObj.crossfade === true
@@ -834,7 +840,7 @@ ApplicationWindow {
                             Layout.fillWidth: true; spacing: 12
                             opacity: settingsWindow.settingsObj.crossfade === true ? 1.0 : 0.4
                             Behavior on opacity { NumberAnimation { duration: 130 } }
-                            Text { text: "Duration"; color: clrText2; font.pixelSize: 11; font.family: "Segoe UI" }
+                            Text { text: "Duration"; color: clrText2; font.pixelSize: 11; font.family: uiFont }
                             Slider {
                                 id: xfSlider
                                 Layout.fillWidth: true
@@ -858,7 +864,7 @@ ApplicationWindow {
                                     color: xfSlider.pressed ? "#ffffff" : clrAccent }
                             }
                             Text { text: xfSlider.value.toFixed(1) + "s"; color: clrText
-                                font.pixelSize: 11; font.family: "Consolas, monospace"
+                                font.pixelSize: 11; font.family: monoFont
                                 horizontalAlignment: Text.AlignRight
                                 Layout.preferredWidth: 34 }
                         }
@@ -871,8 +877,8 @@ ApplicationWindow {
                             Layout.fillWidth: true; spacing: 12
                             Column {
                                 Layout.fillWidth: true; spacing: 3
-                                Text { text: "Discord Rich Presence"; color: clrText; font.pixelSize: 12; font.family: "Segoe UI" }
-                                Text { text: "Show what you're listening to on Discord"; color: clrText2; font.pixelSize: 10; font.family: "Segoe UI" }
+                                Text { text: "Discord Rich Presence"; color: clrText; font.pixelSize: 12; font.family: uiFont }
+                                Text { text: "Show what you're listening to on Discord"; color: clrText2; font.pixelSize: 10; font.family: uiFont }
                             }
                             PillToggle {
                                 checked: settingsWindow.settingsObj.discord_rpc !== false
@@ -989,7 +995,7 @@ ApplicationWindow {
                         : ""
                     return head + "<font color='#a8a8a8'>" + title + "</font>"
                 }
-                font.pixelSize: 11; font.family: "Segoe UI"
+                font.pixelSize: 11; font.family: uiFont
             }
 
             // windows titlebar buttons
@@ -1272,7 +1278,7 @@ ApplicationWindow {
                                     // plain lyrics have no current line, so every row reads at full strength
                                     color:{if(current||!player.lyrics_synced)return lyricRow.containsMouse?clrAccent:clrText;return lyricRow.containsMouse?clrText:clrText2}
                                     // a second voice sung over another line reads as a different singer
-                                    font.pixelSize:current?12:11;font.bold:current;font.italic:lyricsArea.isSecondVoice(index);font.family:"Segoe UI"
+                                    font.pixelSize:current?12:11;font.bold:current;font.italic:lyricsArea.isSecondVoice(index);font.family:uiFont
                                     wrapMode:Text.WordWrap;horizontalAlignment:Text.AlignHCenter
                                     Behavior on color{ColorAnimation{duration:150}}
                                     Behavior on font.pixelSize{NumberAnimation{duration:150}}
@@ -1301,7 +1307,7 @@ ApplicationWindow {
                             }}
                         Rectangle{visible:lyricsArea.userScrolled&&player.lyric_lines.length>0;anchors.bottom:parent.bottom;anchors.left:parent.left;anchors.margins:8
                             width:resyncLabel.implicitWidth+16;height:20;radius:3;color:clrSurf2;border.color:clrBorder;border.width:1;z:2
-                            Text{id:resyncLabel;anchors.centerIn:parent;text:"\u21A9 resync";color:clrText2;font.pixelSize:10;font.family:"Segoe UI"}
+                            Text{id:resyncLabel;anchors.centerIn:parent;text:"\u21A9 resync";color:clrText2;font.pixelSize:10;font.family:uiFont}
                             MouseArea{anchors.fill:parent;cursorShape:Qt.PointingHandCursor;onClicked:{lyricsArea.userScrolled=false;lyricsArea.syncScroll(lyricsArea.activeIdx)}}
                         }
 
@@ -1315,7 +1321,7 @@ ApplicationWindow {
                                 id: noLyricsText
                                 anchors.centerIn: parent
                                 text: player.lyrics_instrumental ? "Instrumental" : "No lyrics found."
-                                font.pixelSize: 11; font.family: "Segoe UI"
+                                font.pixelSize: 11; font.family: uiFont
                                 visible: !player.lyrics_loading
                                 color: clrText2
                             }
@@ -1461,7 +1467,7 @@ ApplicationWindow {
                                             Text {
                                                 visible: crumbDelegate.index > 0
                                                 text: "\u2044"
-                                                color: clrMuted; font.pixelSize: 13; font.family: "Segoe UI"
+                                                color: clrMuted; font.pixelSize: 13; font.family: uiFont
                                                 anchors.verticalCenter: parent.verticalCenter
                                                 leftPadding: 4; rightPadding: 2
                                             }
@@ -1469,7 +1475,7 @@ ApplicationWindow {
                                             Text {
                                                 anchors.verticalCenter: parent.verticalCenter
                                                 text: crumbDelegate.modelData.name
-                                                font.pixelSize: 12; font.family: "Segoe UI"
+                                                font.pixelSize: 12; font.family: uiFont
                                                 color: crumbDelegate.crumbIsLast ? clrText
                                                      : crumbMa.containsMouse       ? clrAccent
                                                      : clrText2
@@ -1539,7 +1545,7 @@ ApplicationWindow {
                                             anchors.verticalCenter: parent.verticalCenter
                                             text: sortToggle._labels[sortToggle._cur]
                                             color: sortHov.containsMouse ? clrText : clrText2
-                                            font.pixelSize: 10; font.family: "Segoe UI"
+                                            font.pixelSize: 10; font.family: uiFont
                                         }
                                     }
                                     MouseArea {
@@ -1622,7 +1628,7 @@ ApplicationWindow {
                                 anchors.right: omniSearchFilter.left; anchors.rightMargin: 8
                                 anchors.verticalCenter: parent.verticalCenter
                                 height: 20; clip: true
-                                color: clrText; font.pixelSize: 12; font.family: "Segoe UI"
+                                color: clrText; font.pixelSize: 12; font.family: uiFont
                                 verticalAlignment: TextInput.AlignVCenter
                                 selectByMouse: true
                                 selectionColor: clrSurf2; selectedTextColor: clrText
@@ -1657,7 +1663,7 @@ ApplicationWindow {
                                     anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
                                     visible: omniSearchInput.text.length === 0
                                     text: window._filterInfo(window._searchFilter).hint
-                                    color: clrText2; font.pixelSize: 12; font.family: "Segoe UI"; opacity: 0.6
+                                    color: clrText2; font.pixelSize: 12; font.family: uiFont; opacity: 0.6
                                 }
                             }
 
@@ -1683,7 +1689,7 @@ ApplicationWindow {
                                         visible: omniSearchFilter.active
                                         anchors.verticalCenter: parent.verticalCenter
                                         text: window._filterInfo(window._searchFilter).label
-                                        color: clrText; font.pixelSize: 10; font.family: "Segoe UI"
+                                        color: clrText; font.pixelSize: 10; font.family: uiFont
                                     }
                                 }
                                 MouseArea { id: omniFilterHov; anchors.fill: parent; hoverEnabled: true
@@ -1732,7 +1738,7 @@ ApplicationWindow {
                                 }
                                 Text { anchors.horizontalCenter:parent.horizontalCenter
                                     text: window._searchActive ? "No matches" : "No music found"
-                                    color:clrText2;font.pixelSize:13;font.family:"Segoe UI" }
+                                    color:clrText2;font.pixelSize:13;font.family:uiFont }
                                 Row {
                                     visible: !window._searchActive
                                     anchors.horizontalCenter:parent.horizontalCenter;spacing:8
@@ -1741,7 +1747,7 @@ ApplicationWindow {
                                         color:addFolHov.containsMouse?clrSurf2:"transparent"
                                         border.color:clrBorder;border.width:1
                                         Behavior on color{ColorAnimation{duration:100}}
-                                        Text{id:addFolderLbl;anchors.centerIn:parent;text:"Add Folder";color:clrText2;font.pixelSize:11;font.family:"Segoe UI"}
+                                        Text{id:addFolderLbl;anchors.centerIn:parent;text:"Add Folder";color:clrText2;font.pixelSize:11;font.family:uiFont}
                                         MouseArea{id:addFolHov;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor;onClicked:library.openFolderPicker()}
                                     }
                                 }
@@ -1757,7 +1763,7 @@ ApplicationWindow {
                                     ShapePath { strokeColor:clrText2;strokeWidth:2;fillColor:"transparent";capStyle:ShapePath.RoundCap
                                         PathAngleArc{centerX:13;centerY:13;radiusX:10;radiusY:10;startAngle:-90;sweepAngle:250} }
                                 }
-                                Text { anchors.horizontalCenter:parent.horizontalCenter;text:library.scan_message;color:clrText2;font.pixelSize:11;font.family:"Segoe UI" }
+                                Text { anchors.horizontalCenter:parent.horizontalCenter;text:library.scan_message;color:clrText2;font.pixelSize:11;font.family:uiFont }
                             }
 
                             property bool useGrid: window._libUseGrid
@@ -1878,7 +1884,7 @@ ApplicationWindow {
                                             Text {
                                                 anchors.verticalCenter: parent.verticalCenter
                                                 text: window._cdBadgeLabel
-                                                color: clrAccent; font.pixelSize: 9; font.bold: true; font.family: "Segoe UI"
+                                                color: clrAccent; font.pixelSize: 9; font.bold: true; font.family: uiFont
                                             }
                                         }
                                     }
@@ -1889,9 +1895,9 @@ ApplicationWindow {
                                         anchors.bottom: parent.bottom; anchors.topMargin: 6
                                         anchors.leftMargin: 7; anchors.rightMargin: 7; spacing: 2
                                         WaveText { visible: modelData.loading === true; animating: visible; text: "Reading CD..."; pixelSize: 11 }
-                                        Text { width:parent.width;visible:modelData.loading!==true;text:modelData.name;color:clrText;font.pixelSize:11;font.family:"Segoe UI";elide:Text.ElideRight;wrapMode:Text.NoWrap }
-                                        Text { width:parent.width;text:modelData.album_artist.length>0?modelData.album_artist:(modelData.year.length>0?modelData.year:"");color:clrText2;font.pixelSize:10;font.family:"Segoe UI";elide:Text.ElideRight }
-                                        Text { width:parent.width;visible:modelData.album_artist.length>0&&modelData.year.length>0;text:modelData.year;color:clrMuted;font.pixelSize:9;font.family:"Segoe UI" }
+                                        Text { width:parent.width;visible:modelData.loading!==true;text:modelData.name;color:clrText;font.pixelSize:11;font.family:uiFont;elide:Text.ElideRight;wrapMode:Text.NoWrap }
+                                        Text { width:parent.width;text:modelData.album_artist.length>0?modelData.album_artist:(modelData.year.length>0?modelData.year:"");color:clrText2;font.pixelSize:10;font.family:uiFont;elide:Text.ElideRight }
+                                        Text { width:parent.width;visible:modelData.album_artist.length>0&&modelData.year.length>0;text:modelData.year;color:clrMuted;font.pixelSize:9;font.family:uiFont }
                                     }
 
                                     // pin dot
@@ -1963,8 +1969,8 @@ ApplicationWindow {
                                         }
                                         Column{Layout.fillWidth:true;spacing:1
                                             WaveText{visible:modelData.loading===true;animating:visible;text:"Reading CD...";pixelSize:12}
-                                            Text{width:parent.width;visible:modelData.loading!==true;text:modelData.name;color:clrText;font.pixelSize:12;font.family:"Segoe UI";elide:Text.ElideRight}
-                                            Text{width:parent.width;visible:modelData.album_artist.length>0;text:modelData.album_artist;color:clrText2;font.pixelSize:10;font.family:"Segoe UI";elide:Text.ElideRight}
+                                            Text{width:parent.width;visible:modelData.loading!==true;text:modelData.name;color:clrText;font.pixelSize:12;font.family:uiFont;elide:Text.ElideRight}
+                                            Text{width:parent.width;visible:modelData.album_artist.length>0;text:modelData.album_artist;color:clrText2;font.pixelSize:10;font.family:uiFont;elide:Text.ElideRight}
                                         }
                                         // cd badge - marks the audio-cd row apart from library albums
                                         Rectangle{
@@ -1977,11 +1983,11 @@ ApplicationWindow {
                                                 Text {
                                                     anchors.verticalCenter: parent.verticalCenter
                                                     text: window._cdBadgeLabel
-                                                    color: clrAccent; font.pixelSize: 9; font.bold: true; font.family: "Segoe UI"
+                                                    color: clrAccent; font.pixelSize: 9; font.bold: true; font.family: uiFont
                                                 }
                                             }
                                         }
-                                        Text{text:modelData.year;color:clrText2;font.pixelSize:11;font.family:"Segoe UI";visible:modelData.year.length>0}
+                                        Text{text:modelData.year;color:clrText2;font.pixelSize:11;font.family:uiFont;visible:modelData.year.length>0}
                                         Rectangle{width:6;height:6;radius:3;color:clrAccent;visible:modelData.pinned}
                                     }
                                     MouseArea {
@@ -2027,7 +2033,7 @@ ApplicationWindow {
                         Item{anchors.fill:parent;visible:!window._cdLoading&&_browseDir===""&&(player.total_tracks===0||(_showingCdView&&player.is_file_mode))
                             Column{anchors.centerIn:parent;spacing:12
                                 Canvas{width:48;height:48;anchors.horizontalCenter:parent.horizontalCenter;opacity:0.45;onPaint:{var c=getContext("2d");c.clearRect(0,0,48,48);c.beginPath();c.arc(24,24,21,0,2*Math.PI);c.strokeStyle="#555";c.lineWidth=1.5;c.stroke();c.beginPath();c.arc(24,24,4,0,2*Math.PI);c.fillStyle="#3a3a3a";c.fill()}}
-                                Text{anchors.horizontalCenter:parent.horizontalCenter;text:player.drive_status.length>0?player.drive_status:"No disc inserted";color:clrText2;font.pixelSize:13;font.family:"Segoe UI"}
+                                Text{anchors.horizontalCenter:parent.horizontalCenter;text:player.drive_status.length>0?player.drive_status:"No disc inserted";color:clrText2;font.pixelSize:13;font.family:uiFont}
                             }
                         }
 
@@ -2063,12 +2069,12 @@ ApplicationWindow {
                                 Rectangle{visible:isCurrent;width:2;height:18;anchors.left:parent.left;anchors.verticalCenter:parent.verticalCenter;color:clrAccent}
                                 Rectangle{anchors.bottom:parent.bottom;anchors.left:parent.left;anchors.right:parent.right;height:1;color:clrBorder;opacity:0.5}
                                 RowLayout{anchors.fill:parent;anchors.leftMargin:14;anchors.rightMargin:14;spacing:10
-                                    Text{Layout.preferredWidth:22;text:(index+1).toString().padStart(2,"0");color:isCurrent?clrAccent:"#3a3a3a";font.pixelSize:11;font.bold:true;font.family:"Segoe UI";Behavior on color{ColorAnimation{duration:110}}}
+                                    Text{Layout.preferredWidth:22;text:(index+1).toString().padStart(2,"0");color:isCurrent?clrAccent:"#3a3a3a";font.pixelSize:11;font.bold:true;font.family:uiFont;Behavior on color{ColorAnimation{duration:110}}}
                                     Column{Layout.fillWidth:true;spacing:1
                                         ScrollText{width:parent.width;text:modelData.title;textColor:isCurrent?clrText:clrText2;pixelSize:13}
-                                        Text{width:parent.width;visible:modelData.artist!=="";text:modelData.artist;color:isCurrent?"#888":"#3a3a3a";font.pixelSize:10;font.family:"Segoe UI";elide:Text.ElideRight}
+                                        Text{width:parent.width;visible:modelData.artist!=="";text:modelData.artist;color:isCurrent?"#888":"#3a3a3a";font.pixelSize:10;font.family:uiFont;elide:Text.ElideRight}
                                     }
-                                    Text{text:modelData.duration;color:isCurrent?"#888":"#3a3a3a";font.pixelSize:11;font.family:"Consolas, monospace";Behavior on color{ColorAnimation{duration:110}}}
+                                    Text{text:modelData.duration;color:isCurrent?"#888":"#3a3a3a";font.pixelSize:11;font.family:monoFont;Behavior on color{ColorAnimation{duration:110}}}
                                 }
                                 MouseArea{id:rowMs;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor
                                     acceptedButtons:Qt.LeftButton|Qt.RightButton
@@ -2169,16 +2175,16 @@ ApplicationWindow {
                             RowLayout {
                                 anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 8; spacing: 6
                                 MatIcon { name: "queue"; size: 12; color: clrText2 }
-                                Text { text: "Queue"; color: clrText; font.pixelSize: 11; font.bold: true; font.family: "Segoe UI" }
+                                Text { text: "Queue"; color: clrText; font.pixelSize: 11; font.bold: true; font.family: uiFont }
                                 Text { text: player.queue_len > 0 ? player.queue_len.toString() : ""
-                                    color: clrText2; font.pixelSize: 10; font.family: "Segoe UI" }
+                                    color: clrText2; font.pixelSize: 10; font.family: uiFont }
                                 Item { Layout.fillWidth: true }
                                 Rectangle {
                                     width: 46; height: 20; radius: 3
                                     visible: player.queue_len > 0
                                     color: qClrMa.containsMouse ? clrSurf2 : "transparent"
                                     border.color: qClrMa.containsMouse ? clrBorder : "transparent"
-                                    Text { anchors.centerIn: parent; text: "Clear"; color: clrText2; font.pixelSize: 10; font.family: "Segoe UI" }
+                                    Text { anchors.centerIn: parent; text: "Clear"; color: clrText2; font.pixelSize: 10; font.family: uiFont }
                                     MouseArea { id: qClrMa; anchors.fill: parent; hoverEnabled: true
                                         cursorShape: Qt.PointingHandCursor; onClicked: player.queueClear() }
                                 }
@@ -2193,7 +2199,7 @@ ApplicationWindow {
                                 visible: queuePane.rows.length === 0
                                 text: "Queue is empty.\nRight-click a song or album to add it."
                                 horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap
-                                color: clrText2; font.pixelSize: 10; font.family: "Segoe UI"
+                                color: clrText2; font.pixelSize: 10; font.family: uiFont
                             }
 
                             ListView {
@@ -2308,10 +2314,10 @@ ApplicationWindow {
                                                 ScrollText { width: parent.width; text: qRow.modelData.title; textColor: clrText2; pixelSize: 12 }
                                                 Text { width: parent.width; visible: qRow.modelData.artist !== ""
                                                     text: qRow.modelData.artist; color: "#3a3a3a"; font.pixelSize: 9
-                                                    font.family: "Segoe UI"; elide: Text.ElideRight }
+                                                    font.family: uiFont; elide: Text.ElideRight }
                                             }
                                             Text { text: qRow.modelData.duration; color: "#3a3a3a"; font.pixelSize: 10
-                                                font.family: "Consolas, monospace" }
+                                                font.family: monoFont }
                                             Item {
                                                 width: 18; height: 18
                                                 MatIcon { anchors.centerIn: parent; name: "close"; size: 11
@@ -2390,13 +2396,13 @@ ApplicationWindow {
             // seek section
             Rectangle{Layout.fillWidth:true;height:1;color:clrBorder;visible:_view==="album"||player.is_playing}
 
-            TextMetrics{id:timeMetrics;font.pixelSize:11;font.family:Qt.platform.os==="osx"?"Menlo":"Consolas";text:"00:00"}
+            TextMetrics{id:timeMetrics;font.pixelSize:11;font.family:monoFont;text:"00:00"}
 
             // single compact row: current time / seek slider / total time
             RowLayout{
                 Layout.fillWidth:true;Layout.leftMargin:14;Layout.rightMargin:14;Layout.topMargin:8;Layout.bottomMargin:6
                 spacing:10;visible:_view==="album"||player.is_playing
-                Text{text:formatTime(player.current_time);color:clrText;font.pixelSize:11;font.family:Qt.platform.os==="osx"?"Menlo":"Consolas";Layout.preferredWidth:timeMetrics.advanceWidth;horizontalAlignment:Text.AlignLeft}
+                Text{text:formatTime(player.current_time);color:clrText;font.pixelSize:11;font.family:monoFont;Layout.preferredWidth:timeMetrics.advanceWidth;horizontalAlignment:Text.AlignLeft}
                 Slider{id:seekSlider;Layout.fillWidth:true
                     implicitHeight:20;padding:0;from:0;to:Math.max(player.total_time,1)
                     enabled:player.total_tracks>0;onPressedChanged:{if(!pressed)player.seek(value)}
@@ -2460,10 +2466,10 @@ ApplicationWindow {
                         // of straddling two rows and reading as 2px.
                         x:Math.round(Math.max(0,Math.min(seekSlider.width-width,seekSlider.previewX-width/2)))
                         Text{id:seekTipText;anchors.centerIn:parent;text:formatTime(seekSlider.previewTime)
-                            color:clrText;font.pixelSize:10;font.family:Qt.platform.os==="osx"?"Menlo":"Consolas"}
+                            color:clrText;font.pixelSize:10;font.family:monoFont}
                     }
                 }
-                Text{text:formatTime(player.total_time);color:clrText2;font.pixelSize:11;font.family:Qt.platform.os==="osx"?"Menlo":"Consolas";Layout.preferredWidth:timeMetrics.advanceWidth;horizontalAlignment:Text.AlignRight}
+                Text{text:formatTime(player.total_time);color:clrText2;font.pixelSize:11;font.family:monoFont;Layout.preferredWidth:timeMetrics.advanceWidth;horizontalAlignment:Text.AlignRight}
             }
 
             // transport + volume
@@ -2656,7 +2662,7 @@ ApplicationWindow {
                         color: ctxRowMa.containsMouse ? clrSurface : "transparent"
                         Behavior on color { ColorAnimation { duration: 80 } }
                         Text { anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 12
-                            text: modelData.label; color: clrText; font.pixelSize: 12; font.family: "Segoe UI" }
+                            text: modelData.label; color: clrText; font.pixelSize: 12; font.family: uiFont }
                         MouseArea { id: ctxRowMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                             onClicked: {
                                 itemCtxMenu.visible = false
@@ -2717,7 +2723,7 @@ ApplicationWindow {
                 Text {
                     text: "Search in"; color: clrText2
                     leftPadding: 12; topPadding: 2; bottomPadding: 4
-                    font.pixelSize: 10; font.family: "Segoe UI"
+                    font.pixelSize: 10; font.family: uiFont
                 }
                 Repeater {
                     model: window._searchFilters
@@ -2726,7 +2732,7 @@ ApplicationWindow {
                         color: searchFilterMenu.highlighted === index ? clrSurface : "transparent"
                         Behavior on color { ColorAnimation { duration: 80 } }
                         Text { anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 12
-                            text: modelData.label; color: clrText; font.pixelSize: 12; font.family: "Segoe UI" }
+                            text: modelData.label; color: clrText; font.pixelSize: 12; font.family: uiFont }
                         MatIcon { anchors.verticalCenter: parent.verticalCenter; anchors.right: parent.right; anchors.rightMargin: 10
                             visible: window._searchFilter === modelData.key
                             name: "check"; size: 12; color: clrText }
@@ -2750,8 +2756,8 @@ ApplicationWindow {
             width: 260; height: 80; modal: true; focus: true
             background: Rectangle { color:clrSurf2; border.color:clrBorder; border.width:1; radius:6 }
             Column { anchors.centerIn:parent; spacing:8
-                Text { anchors.horizontalCenter:parent.horizontalCenter; text:"No disc in drive"; color:clrText; font.pixelSize:13; font.family:"Segoe UI"; font.bold:true }
-                Text { anchors.horizontalCenter:parent.horizontalCenter; text:"Insert a CD and try again"; color:clrText2; font.pixelSize:11; font.family:"Segoe UI" }
+                Text { anchors.horizontalCenter:parent.horizontalCenter; text:"No disc in drive"; color:clrText; font.pixelSize:13; font.family:uiFont; font.bold:true }
+                Text { anchors.horizontalCenter:parent.horizontalCenter; text:"Insert a CD and try again"; color:clrText2; font.pixelSize:11; font.family:uiFont }
             }
         }
 
@@ -2765,26 +2771,26 @@ ApplicationWindow {
 
             ColumnLayout {
                 anchors.fill: parent; anchors.margins: 24; spacing: 14
-                Text { text:"Where is your music?"; color:clrText; font.pixelSize:14; font.family:"Segoe UI"; font.bold:true; Layout.alignment:Qt.AlignHCenter }
-                Text { text:"Kanae couldn't find a Music folder on this system."; color:clrText2; font.pixelSize:11; font.family:"Segoe UI"; Layout.alignment:Qt.AlignHCenter; wrapMode:Text.WordWrap; horizontalAlignment:Text.AlignHCenter; Layout.fillWidth:true }
+                Text { text:"Where is your music?"; color:clrText; font.pixelSize:14; font.family:uiFont; font.bold:true; Layout.alignment:Qt.AlignHCenter }
+                Text { text:"Kanae couldn't find a Music folder on this system."; color:clrText2; font.pixelSize:11; font.family:uiFont; Layout.alignment:Qt.AlignHCenter; wrapMode:Text.WordWrap; horizontalAlignment:Text.AlignHCenter; Layout.fillWidth:true }
                 RowLayout { Layout.fillWidth:true; spacing:8
                     Rectangle {
                         Layout.fillWidth:true; height:28; radius:3; color:clrBg; border.color:clrBorder; border.width:1
                         TextInput {
                             id:musicDirInput; anchors.fill:parent; anchors.leftMargin:8; anchors.rightMargin:8
-                            verticalAlignment:TextInput.AlignVCenter; color:clrText; font.pixelSize:11; font.family:"Segoe UI"; clip:true
+                            verticalAlignment:TextInput.AlignVCenter; color:clrText; font.pixelSize:11; font.family:uiFont; clip:true
                         }
                         Text { anchors.verticalCenter:parent.verticalCenter; anchors.left:parent.left; anchors.leftMargin:8
-                            text:"Path to music folder"; color:clrText2; font.pixelSize:11; font.family:"Segoe UI"
+                            text:"Path to music folder"; color:clrText2; font.pixelSize:11; font.family:uiFont
                             visible:musicDirInput.text.length===0; opacity:0.5 }
                     }
                     Rectangle { width:28;height:28;radius:3;color:browseHov.containsMouse?clrSurf2:"transparent";border.color:clrBorder;border.width:1
                         Behavior on color{ColorAnimation{duration:100}}
-                        Text{anchors.centerIn:parent;text:"\u2026";color:clrText2;font.pixelSize:14;font.family:"Segoe UI"}
+                        Text{anchors.centerIn:parent;text:"\u2026";color:clrText2;font.pixelSize:14;font.family:uiFont}
                         MouseArea{id:browseHov;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor;onClicked:library.openFolderPicker()} }
                     Rectangle { width:52;height:28;radius:3;color:confirmHov.containsMouse?clrSurf2:clrSurface;border.color:clrBorder;border.width:1
                         Behavior on color{ColorAnimation{duration:100}}
-                        Text{anchors.centerIn:parent;text:"OK";color:clrText;font.pixelSize:11;font.family:"Segoe UI"}
+                        Text{anchors.centerIn:parent;text:"OK";color:clrText;font.pixelSize:11;font.family:uiFont}
                         MouseArea{id:confirmHov;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor
                             onClicked:{ if(musicDirInput.text.length>0) library.setMusicDir(musicDirInput.text) }} }
                 }
@@ -2806,7 +2812,7 @@ ApplicationWindow {
                     ShapePath{strokeColor:clrAccent;strokeWidth:1.5;fillColor:"transparent";capStyle:ShapePath.RoundCap
                         PathAngleArc{centerX:7;centerY:7;radiusX:5;radiusY:5;startAngle:-90;sweepAngle:250}}
                 }
-                Text{id:toastText;text:library.scan_message;color:clrAccent;font.pixelSize:11;font.family:"Segoe UI";anchors.verticalCenter:parent.verticalCenter}
+                Text{id:toastText;text:library.scan_message;color:clrAccent;font.pixelSize:11;font.family:uiFont;anchors.verticalCenter:parent.verticalCenter}
             }
         }
 

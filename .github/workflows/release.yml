@@ -179,6 +179,8 @@ jobs:
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           cp target/release/kanae "$APP/Contents/MacOS/kanae"
           chmod +x "$APP/Contents/MacOS/kanae"
+          # Assets.car is the liquid glass icon (macos 26+), Kanae.icns the fallback
+          cp assets/macos/Assets.car assets/macos/Kanae.icns "$APP/Contents/Resources/"
           printf 'APPL????' > "$APP/Contents/PkgInfo"
 
           cat > "$APP/Contents/Info.plist" <<PLIST
@@ -190,6 +192,8 @@ jobs:
             <key>CFBundleIdentifier</key><string>com.chair.kanae</string>
             <key>CFBundleName</key><string>Kanae</string>
             <key>CFBundleDisplayName</key><string>Kanae</string>
+            <key>CFBundleIconFile</key><string>Kanae</string>
+            <key>CFBundleIconName</key><string>Kanae</string>
             <key>CFBundlePackageType</key><string>APPL</string>
             <key>CFBundleVersion</key><string>${SHORT_VERSION}</string>
             <key>CFBundleShortVersionString</key><string>${SHORT_VERSION}</string>
@@ -305,20 +309,7 @@ jobs:
           Categories=AudioVideo;Player;
           EOF
 
-          python3 - <<'PYEOF'
-          import struct, zlib
-          def make_png(w, h, r, g, b):
-              def chunk(tag, data):
-                  c = tag + data
-                  return struct.pack('>I', len(data)) + c + struct.pack('>I', zlib.crc32(c) & 0xFFFFFFFF)
-              raw = (b'\x00' + bytes([r, g, b, 255]) * w) * h
-              return (b'\x89PNG\r\n\x1a\n'
-                  + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0))
-                  + chunk(b'IDAT', zlib.compress(raw))
-                  + chunk(b'IEND', b''))
-          with open('AppDir/usr/share/icons/hicolor/256x256/apps/kanae.png', 'wb') as f:
-              f.write(make_png(256, 256, 30, 30, 60))
-          PYEOF
+          cp assets/kanae.png AppDir/usr/share/icons/hicolor/256x256/apps/kanae.png
 
           export QML_SOURCES_PATHS="$PWD/qml"
           export EXTRA_QT_MODULES="qml;quick;quickcontrols2;quicktemplates2;quicklayouts;quickshapes;network"

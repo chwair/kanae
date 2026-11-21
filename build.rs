@@ -1,4 +1,12 @@
 fn main() {
+    // explorer, the taskbar and the installer's shortcuts all read the exe's icon resource
+    println!("cargo:rerun-if-changed=assets/kanae.ico");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        let mut res = winresource::WindowsResource::new();
+        res.set_icon("assets/kanae.ico");
+        res.compile().expect("failed to embed the windows icon resource");
+    }
+
     // only link qt and generate cxx-qt bindings when the 'gui' feature is active.
     if std::env::var("CARGO_FEATURE_GUI").is_ok() {
         let mut builder = cxx_qt_build::CxxQtBuilder::new_qml_module(

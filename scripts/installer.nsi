@@ -68,6 +68,8 @@
 
 Name    "${APPNAME}"
 OutFile "${ROOT}\kanae-${VARIANT}-windows-x64-${VERSION}.exe"
+Icon          "${ROOT}\assets\kanae.ico"
+UninstallIcon "${ROOT}\assets\kanae.ico"
 Unicode True
 
 InstallDir      "$PROGRAMFILES64\${APPNAME}"

@@ -8,7 +8,8 @@ Text {
 
     width: size
     height: size
-    font.family: _matFont.status === FontLoader.Ready ? _matFont.name : "Material Symbols Sharp"
+    // empty until loaded; a name the system lacks would trigger a full font scan
+    font.family: _matFont.name
     font.pixelSize: size
     color: "#dfdfdf"
     text: _glyphs[name] || ""

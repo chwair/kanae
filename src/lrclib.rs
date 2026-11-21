@@ -267,8 +267,8 @@ fn best_lyrics(
     if lyrics.is_empty() { None } else { Some((plain.to_string(), lyrics)) }
 }
 
-/// search for lyrics, preferring synced ones; plain or instrumental records are
-/// only used when no query finds synced lyrics. returns `(lrclib_id, raw, parsed)`.
+/// search for lyrics, preferring word-synced over line-synced ones; plain or
+/// instrumental records are only used when no query finds synced lyrics. returns `(lrclib_id, raw, parsed)`.
 pub fn fetch_lyrics(
     track_name: &str,
     artist_name: &str,
@@ -291,14 +291,25 @@ pub fn fetch_lyrics(
     }
     if !artist_name.is_empty() {
         queries.push(format!("q={}", url_encode(&format!("{} {}", track_name, artist_name))));
+        // lrclib's index sometimes misses a record on the full title but finds it
+        // with the words reordered or on a single title word
+        queries.push(format!("q={}", url_encode(&format!("{} {}", artist_name, track_name))));
+        for word in title_keywords(track_name) {
+            queries.push(format!("track_name={}&artist_name={}", url_encode(&word), url_encode(artist_name)));
+        }
     }
 
+    // line-synced lyrics are kept while later queries look for word-synced ones
+    let mut line_synced: Option<(u64, String, Lyrics)> = None;
     let mut fallback: Option<(f64, (u64, String, Lyrics))> = None;
     for query in &queries {
         let results = search(query);
         let Some((best, score)) = pick_best(&results, track_name, artist_name, duration_secs) else {
             continue;
         };
+        if line_synced.is_some() && !best.word_synced() {
+            continue;
+        }
 
         eprintln!(
             "[lrclib] best match: \"{}\" by \"{}\" (duration: {:?}s, score: {:.2})",
@@ -311,14 +322,23 @@ pub fn fetch_lyrics(
         let Some((raw, lyrics)) = fetch_by_id(best.id) else {
             continue;
         };
-        if lyrics.synced {
+        if lyrics.word_synced() {
             return Some((best.id, raw, lyrics));
+        }
+        if lyrics.synced {
+            if line_synced.is_none() {
+                line_synced = Some((best.id, raw, lyrics));
+            }
+            continue;
         }
         if fallback.as_ref().is_none_or(|(s, _)| score > *s) {
             fallback = Some((score, (best.id, raw, lyrics)));
         }
     }
 
+    if line_synced.is_some() {
+        return line_synced;
+    }
     if fallback.is_none() {
         eprintln!("[lrclib] no acceptable lyrics for \"{}\" / \"{}\"", track_name, artist_name);
     }
@@ -373,7 +393,12 @@ fn pick_best<'a>(
             }
             score.map(|s| (r, s + bonus))
         })
-        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        // any plausible word-synced match beats the rest, then the best score wins
+        .max_by(|a, b| {
+            a.0.word_synced()
+                .cmp(&b.0.word_synced())
+                .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        })
 }
 
 // a different length almost always means a different song or edit, and even the
@@ -453,6 +478,18 @@ fn strip_brackets(s: &str) -> String {
         }
     }
     out
+}
+
+/// the two longest words of a multi-word title, for single-word fallback searches
+fn title_keywords(title: &str) -> Vec<String> {
+    let bare = normalize(&strip_brackets(title));
+    let mut words: Vec<&str> = bare.split(' ').filter(|w| w.chars().count() >= 3).collect();
+    if bare.split(' ').count() < 2 {
+        return vec![];
+    }
+    words.sort_by_key(|w| std::cmp::Reverse(w.chars().count()));
+    words.dedup();
+    words.into_iter().take(2).map(str::to_string).collect()
 }
 
 fn title_similarity(a: &str, b: &str) -> f64 {
@@ -890,6 +927,15 @@ mod tests {
     }
 
     #[test]
+    fn prefers_word_synced_over_better_line_synced_match() {
+        let mut word = result(2, "void (Mournfinale)", true);
+        word.duration = Some(216.0);
+        let results = vec![result(1, "void (Mournfinale)", false), word];
+        let (best, _) = pick_best(&results, "Testify", "void (Mournfinale)", 210.0).unwrap();
+        assert_eq!(best.id, 2);
+    }
+
+    #[test]
     fn parses_instrumental_and_plain_lyricsfiles() {
         let inst = parse_lyrics("version: '1.0'\nmetadata:\n  title: x\n  artist: y\n  instrumental: true\nlines: []\nplain: ''\n");
         assert!(inst.instrumental && inst.lines.is_empty() && !inst.is_empty());
@@ -948,6 +994,13 @@ mod tests {
     #[test]
     fn rejects_same_title_different_artist() {
         assert!(score("Enigma", "AMI, Tata Vlad", 168.0).is_none());
+    }
+
+    #[test]
+    fn title_keywords_for_fallback() {
+        assert_eq!(title_keywords("City Blue"), vec!["city", "blue"]);
+        assert_eq!(title_keywords("Rubber Human (feat. x)"), vec!["rubber", "human"]);
+        assert!(title_keywords("Bulbel").is_empty());
     }
 
     #[test]
