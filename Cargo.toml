@@ -1,6 +1,6 @@
 [package]
 name = "kanae"
-version = "1.0.0"
+version = "1.0.0-rc.1"
 edition = "2021"
 description = "CD and file music player with a Qt GUI and a terminal UI"
 license = "MIT"
